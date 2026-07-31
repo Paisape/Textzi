@@ -1,0 +1,32 @@
+.env
+.env.bak
+
+# Claude Code's own local settings -- has held real secrets/credentials in its permission-
+# allowlist history in this project before (curl commands with real admin keys/passwords baked
+# in) -- never commit this directory.
+.claude/
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+dist/
+.pytest_cache/
+
+# Purchased theme source (licensed reference material, not part of the deployed app --
+# apps/web was built FROM this, not on top of it at runtime)
+/Theme/
+*.zip
+
+# Local uploads (real deployments use the uploads_data Docker volume, never committed)
+uploads/
+
+# Business/product docs -- kept locally, left out of the repo by default (unclear if this repo
+# will end up public); ask to include them if you want them versioned too.
+/*.docx
+
+# Stray local logs / OS / editor cruft
+*.log
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

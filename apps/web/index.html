@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  <link rel="icon" href="/favicon.ico" />
+  <meta name="robots" content="noindex, nofollow" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Textzi - WhatsApp &amp; SMS Business Messaging</title>
+  <link rel="stylesheet" type="text/css" href="/loader.css" />
+</head>
+
+<body>
+  <div id="app">
+    <div id="loading-bg">
+      <div class="loading-logo">
+        <!-- SVG Logo -->
+        <svg width="64" height="64" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="32" height="32" rx="10" fill="var(--initial-loader-color)"/>
+          <path fill-rule="evenodd" clip-rule="evenodd" fill="#fff"
+            d="M11.5 6.5 H22.5 A4.5 4.5 0 0 1 27 11 V16.5 A4.5 4.5 0 0 1 22.5 21 H14 L8 27 L9.8 20.3 A4.5 4.5 0 0 1 5 16.5 V11 A4.5 4.5 0 0 1 9.5 6.5 Z M9.5 11.5 H22.5 V13.2 H9.5 Z M9.5 15.2 H18.5 V16.9 H9.5 Z"
+/>
+        </svg>
+      </div>
+      <div class=" loading">
+        <div class="effect-1 effects"></div>
+        <div class="effect-2 effects"></div>
+        <div class="effect-3 effects"></div>
+      </div>
+    </div>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
+  <script>
+    const loaderColor = localStorage.getItem('vuexy-initial-loader-bg') || '#FFFFFF'
+    const primaryColor = localStorage.getItem('vuexy-initial-loader-color') || '#F1600D'
+
+    if (loaderColor)
+      document.documentElement.style.setProperty('--initial-loader-bg', loaderColor)
+    if (loaderColor)
+      document.documentElement.style.setProperty('--initial-loader-bg', loaderColor)
+
+    if (primaryColor)
+      document.documentElement.style.setProperty('--initial-loader-color', primaryColor)
+    </script>
+  </body>
+</html>

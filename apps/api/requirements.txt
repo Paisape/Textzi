@@ -1,0 +1,15 @@
+fastapi==0.115.8
+uvicorn[standard]==0.34.0
+sqlalchemy==2.0.38
+psycopg[binary]==3.2.4
+pydantic[email]==2.10.6
+pydantic-settings==2.7.1
+PyJWT==2.10.1
+pwdlib[argon2]==0.2.1
+cryptography==43.0.3
+razorpay==1.4.2
+setuptools==75.8.0
+python-multipart==0.0.20
+pyotp==2.9.0
+fpdf2==2.8.2
+redis==5.2.1
