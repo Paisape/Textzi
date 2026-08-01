@@ -37,9 +37,10 @@ async function afterLogin(accessToken: string) {
   useCookie('accessToken').value = accessToken
   await nextTick()
 
-  const profile = await $api<{ organization_id: string | null }>('/v1/auth/me')
+  const profile = await $api<{ organization_id: string | null, role: string }>('/v1/auth/me')
   const redirectTo = typeof route.query.redirect === 'string' ? route.query.redirect : null
-  router.push(redirectTo || (profile.organization_id ? '/dashboard' : '/onboarding'))
+  const needsOnboarding = profile.role === 'enterprise_customer' && !profile.organization_id
+  router.push(redirectTo || (needsOnboarding ? '/onboarding' : '/dashboard'))
 }
 
 async function onSubmit() {
