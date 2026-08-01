@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'sales',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'sales') : null)
 
 type CustomerRow = {
   organization_id: string
@@ -49,7 +49,7 @@ async function loadCustomers() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'sales'))
       return
     customers.value = await $api<CustomerRow[]>('/v1/admin/customers', { query: search.value ? { search: search.value } : {} })
   }
@@ -118,11 +118,11 @@ onMounted(loadCustomers)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Sales Team roles.
   </VAlert>
 
   <VAlert
@@ -133,7 +133,7 @@ onMounted(loadCustomers)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin">
+  <template v-else-if="hasAccess">
     <div class="d-flex align-center justify-space-between mb-4 gap-4 flex-wrap">
       <AppTextField
         v-model="search"

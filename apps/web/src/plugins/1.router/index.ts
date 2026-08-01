@@ -67,6 +67,12 @@ router.beforeEach(async to => {
     // any route tagged requiresAdmin is unreachable by a non-admin regardless.
     if (to.meta.requiresAdmin && !authStore.isAdmin)
       return '/dashboard'
+
+    // Scoped staff areas (finance_team/sales_team/support_team) -- a route tagged staffArea is
+    // reachable by full admins (who can reach everything) or by a staff account whose own area
+    // matches, and by nobody else. Same backstop role as requiresAdmin above, just narrower.
+    if (to.meta.staffArea && !authStore.isAdmin && authStore.staffArea !== to.meta.staffArea)
+      return '/dashboard'
   }
 })
 

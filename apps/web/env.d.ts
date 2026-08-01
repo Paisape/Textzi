@@ -9,5 +9,6 @@ declare module 'vue-router' {
     unauthenticatedOnly?: boolean
     public?: boolean
     requiresAdmin?: boolean
+    staffArea?: 'finance' | 'sales' | 'support'
   }
 }

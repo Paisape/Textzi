@@ -208,3 +208,81 @@ export const adminNav = [
     ],
   },
 ]
+
+// Scoped platform-staff roles (finance_team/sales_team/support_team) -- each sees only its own
+// slice of the admin panel, enforced backend-side by admin.STAFF_AREA_ROLES; these arrays just
+// decide what to show, not what's actually reachable.
+export const financeNav = [
+  {
+    title: 'Home',
+    to: { name: 'dashboard' },
+    icon: { icon: 'tabler-smart-home' },
+  },
+  {
+    title: 'Billing',
+    icon: { icon: 'tabler-building-bank' },
+    children: [
+      {
+        title: 'Wallet Credits',
+        to: { name: 'admin-wallet-credits' },
+        icon: { icon: 'tabler-coin' },
+      },
+      {
+        title: 'Invoices',
+        to: { name: 'admin-invoices' },
+        icon: { icon: 'tabler-receipt' },
+      },
+      {
+        title: 'Wallet Top-up Report',
+        to: { name: 'admin-wallet-topup-report' },
+        icon: { icon: 'tabler-shield-check' },
+      },
+      {
+        title: 'Usage',
+        to: { name: 'admin-usage' },
+        icon: { icon: 'tabler-chart-bar' },
+      },
+    ],
+  },
+]
+
+export const salesNav = [
+  {
+    title: 'Home',
+    to: { name: 'dashboard' },
+    icon: { icon: 'tabler-smart-home' },
+  },
+  {
+    title: 'Customers',
+    to: { name: 'customers' },
+    icon: { icon: 'tabler-building-store' },
+  },
+  {
+    title: 'Rate Cards',
+    to: { name: 'rate-cards' },
+    icon: { icon: 'tabler-receipt-rupee' },
+  },
+]
+
+export const supportNav = [
+  {
+    title: 'Home',
+    to: { name: 'dashboard' },
+    icon: { icon: 'tabler-smart-home' },
+  },
+  {
+    title: 'Contact Us Submissions',
+    to: { name: 'admin-contact-messages' },
+    icon: { icon: 'tabler-mail-question' },
+  },
+  {
+    title: 'Users',
+    to: { name: 'users' },
+    icon: { icon: 'tabler-users' },
+  },
+  {
+    title: 'Audit Log',
+    to: { name: 'admin-audit-log' },
+    icon: { icon: 'tabler-history' },
+  },
+]

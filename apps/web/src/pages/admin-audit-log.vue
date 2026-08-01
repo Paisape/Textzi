@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'support',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'support') : null)
 
 type AuditLogRow = {
   id: string
@@ -41,7 +41,7 @@ async function load() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'support'))
       return
     rows.value = await $api<AuditLogRow[]>('/v1/admin/audit-log', { query: actorEmail.value ? { actor_email: actorEmail.value } : {} })
   }
@@ -67,11 +67,11 @@ onMounted(load)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Support Team roles.
   </VAlert>
 
   <VAlert
@@ -82,7 +82,7 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin">
+  <template v-else-if="hasAccess">
     <AppTextField
       v-model="actorEmail"
       placeholder="Filter by actor email"

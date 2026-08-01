@@ -5,12 +5,12 @@ import { useStepUpAuth } from '@/composables/useStepUpAuth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'support',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'support') : null)
 const stepUp = useStepUpAuth()
 
 type ContactMessageRow = {
@@ -33,7 +33,7 @@ async function load() {
   loading.value = true
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'support'))
       return
     rows.value = await stepUp.withStepUp(() => $api<ContactMessageRow[]>('/v1/admin/contact-messages'))
   }
@@ -57,11 +57,11 @@ onMounted(load)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Support Team roles.
   </VAlert>
 
   <VAlert
@@ -72,7 +72,7 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
-  <VCard v-else-if="isAdmin">
+  <VCard v-else-if="hasAccess">
     <VTable>
       <thead>
         <tr>

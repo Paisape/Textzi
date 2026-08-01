@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'finance',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'finance') : null)
 
 type OrgBreakdown = {
   organization_id: string
@@ -36,7 +36,7 @@ async function loadSummary() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'finance'))
       return
     summary.value = await $api<UsageSummary>('/v1/admin/usage/summary')
   }
@@ -73,11 +73,11 @@ onMounted(loadSummary)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Finance Team roles.
   </VAlert>
 
   <VAlert
@@ -88,7 +88,7 @@ onMounted(loadSummary)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin && summary">
+  <template v-else-if="hasAccess && summary">
     <VRow class="mb-2">
       <VCol cols="12" sm="6" md="3">
         <VCard>

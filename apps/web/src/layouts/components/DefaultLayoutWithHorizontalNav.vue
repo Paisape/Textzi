@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { adminNav, customerNav } from '@/navigation/horizontal'
+import { adminNav, customerNav, financeNav, salesNav, supportNav } from '@/navigation/horizontal'
 import { useAuthStore } from '@/stores/auth'
 
 import { themeConfig } from '@themeConfig'
@@ -16,7 +16,14 @@ const authStore = useAuthStore()
 
 onMounted(() => authStore.load())
 
-const navItems = computed(() => authStore.isAdmin ? adminNav : customerNav)
+const STAFF_AREA_NAV = { finance: financeNav, sales: salesNav, support: supportNav } as const
+const navItems = computed(() => {
+  if (authStore.isAdmin)
+    return adminNav
+  if (authStore.staffArea)
+    return STAFF_AREA_NAV[authStore.staffArea]
+  return customerNav
+})
 </script>
 
 <template>

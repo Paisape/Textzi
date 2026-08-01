@@ -61,6 +61,37 @@ def require_admin(x_admin_key: str | None = Header(default=None), authorization:
     raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Admin access required: provide X-Admin-Key or log in with an admin account")
 
 
+STAFF_AREA_ROLES: dict[str, set[str]] = {
+    "finance": ADMIN_ROLES | {UserRole.finance_team.value},
+    "sales": ADMIN_ROLES | {UserRole.sales_team.value},
+    "support": ADMIN_ROLES | {UserRole.support_team.value},
+}
+
+
+def require_staff(area: str):
+    """Factory for a require_admin-equivalent scoped to one staff area (finance/sales/support)
+    plus the two full-admin roles, which can always reach everything -- same dual-path
+    (X-Admin-Key or a logged-in user's Bearer token) as require_admin, since the bootstrap key
+    isn't tied to any single role and should keep bypassing every area check the same way it
+    bypasses require_admin."""
+    def _dependency(x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+        if x_admin_key:
+            if settings.environment != "development" and settings.admin_bootstrap_key.startswith("development-"):
+                raise HTTPException(status_code=503, detail="Admin key is not configured")
+            if hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
+                return
+        if authorization and authorization.startswith("Bearer "):
+            try:
+                claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
+                user = db.get(User, claims.get("sub"))
+                if user and user.role in STAFF_AREA_ROLES[area] and user.status == UserStatus.active:
+                    return
+            except jwt.PyJWTError:
+                pass
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access required: provide X-Admin-Key or log in with an authorized account")
+    return _dependency
+
+
 def _caller_email(authorization: str | None, db: Session) -> str:
     """Best-effort actor identity for audit-log entries on admin endpoints that don't otherwise
     need the caller's identity for authorization decisions -- falls back to a label rather than
@@ -224,13 +255,13 @@ def _validate_slabs(slabs: list) -> None:
             raise HTTPException(status_code=422, detail="Rate card slabs must not overlap -- check the min/max amount ranges")
 
 
-@router.get("/rate-cards", response_model=list[RateCardOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/rate-cards", response_model=list[RateCardOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def list_rate_cards(db: Session = Depends(get_db)):
     cards = db.scalars(select(RateCard).order_by(RateCard.created_at)).all()
     return [_rate_card_out(db, c) for c in cards]
 
 
-@router.post("/rate-cards", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/rate-cards", response_model=RateCardOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def create_rate_card(payload: RateCardCreate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     if db.scalar(select(RateCard).where(RateCard.name == payload.name)):
         raise HTTPException(status_code=409, detail=f"A rate card named '{payload.name}' already exists")
@@ -245,7 +276,7 @@ def create_rate_card(payload: RateCardCreate, request: Request, authorization: s
     return _rate_card_out(db, card)
 
 
-@router.put("/rate-cards/{card_id}/slabs", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.put("/rate-cards/{card_id}/slabs", response_model=RateCardOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def replace_rate_card_slabs(card_id: str, payload: RateCardSlabsReplace, db: Session = Depends(get_db)):
     card = db.get(RateCard, card_id)
     if not card:
@@ -260,7 +291,7 @@ def replace_rate_card_slabs(card_id: str, payload: RateCardSlabsReplace, db: Ses
     return _rate_card_out(db, card)
 
 
-@router.put("/rate-cards/{card_id}/min-recharge", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.put("/rate-cards/{card_id}/min-recharge", response_model=RateCardOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def update_rate_card_min_recharge(card_id: str, payload: RateCardMinRechargeUpdate, db: Session = Depends(get_db)):
     card = db.get(RateCard, card_id)
     if not card:
@@ -270,7 +301,7 @@ def update_rate_card_min_recharge(card_id: str, payload: RateCardMinRechargeUpda
     return _rate_card_out(db, card)
 
 
-@router.post("/rate-cards/{card_id}/set-default", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/rate-cards/{card_id}/set-default", response_model=RateCardOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def set_default_rate_card(card_id: str, db: Session = Depends(get_db)):
     card = db.get(RateCard, card_id)
     if not card:
@@ -284,7 +315,7 @@ def set_default_rate_card(card_id: str, db: Session = Depends(get_db)):
     return _rate_card_out(db, card)
 
 
-@router.put("/rate-cards/{card_id}/public-settings", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.put("/rate-cards/{card_id}/public-settings", response_model=RateCardOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def update_rate_card_public_settings(card_id: str, payload: RateCardPublicSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Controls whether/how this card appears on the public marketing site's Pricing section."""
     card = db.get(RateCard, card_id)
@@ -297,7 +328,7 @@ def update_rate_card_public_settings(card_id: str, payload: RateCardPublicSettin
     return _rate_card_out(db, card)
 
 
-@router.delete("/rate-cards/{card_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.delete("/rate-cards/{card_id}", dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def delete_rate_card(card_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     card = db.get(RateCard, card_id)
     if not card:
@@ -319,7 +350,7 @@ def delete_rate_card(card_id: str, request: Request, authorization: str | None =
     return {"id": card_id, "removed": True}
 
 
-@router.get("/rate-cards/assignments", response_model=list[RateCardAssignmentOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/rate-cards/assignments", response_model=list[RateCardAssignmentOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def list_rate_card_assignments(db: Session = Depends(get_db)):
     assignments = db.scalars(select(UserRateCard)).all()
     out = []
@@ -331,7 +362,7 @@ def list_rate_card_assignments(db: Session = Depends(get_db)):
     return out
 
 
-@router.post("/rate-cards/assignments", response_model=RateCardAssignmentOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/rate-cards/assignments", response_model=RateCardAssignmentOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def upsert_rate_card_assignment(payload: RateCardAssignmentRequest, db: Session = Depends(get_db)):
     user = db.get(User, payload.user_id)
     if not user:
@@ -349,7 +380,7 @@ def upsert_rate_card_assignment(payload: RateCardAssignmentRequest, db: Session 
     return RateCardAssignmentOut(user_id=user.id, user_email=user.email, rate_card_id=card.id, rate_card_name=card.name)
 
 
-@router.delete("/rate-cards/assignments/{user_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.delete("/rate-cards/assignments/{user_id}", dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def delete_rate_card_assignment(user_id: str, db: Session = Depends(get_db)):
     assignment = db.get(UserRateCard, user_id)
     if not assignment:
@@ -463,7 +494,7 @@ def _user_admin_out(db: Session, user: User) -> UserAdminOut:
     )
 
 
-@router.get("/users", response_model=list[UserAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/users", response_model=list[UserAdminOut], dependencies=[Depends(require_staff("support")), Depends(require_admin_recent_2fa)])
 def list_users(search: str | None = None, db: Session = Depends(get_db)):
     """Platform staff only -- every tenant/customer-side account (enterprise_customer, sub_user,
     finance_user, marketing_user, read_only_user) is managed instead through /admin/customers,
@@ -479,7 +510,7 @@ def list_users(search: str | None = None, db: Session = Depends(get_db)):
     return [UserAdminOut(id=u.id, email=u.email, full_name=u.full_name, role=u.role, status=u.status, organization_id=u.organization_id, email_verified=u.email_verified, mobile_verified=u.mobile_verified, two_factor_enabled=u.id in two_factor_enabled_ids) for u in users]
 
 
-@router.get("/customer-users", response_model=list[UserAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/customer-users", response_model=list[UserAdminOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def list_customer_users(search: str | None = None, db: Session = Depends(get_db)):
     """The customer-side counterpart to list_users -- every user belonging to an organization
     (enterprise_customer, sub_user, finance_user, marketing_user, read_only_user), for pickers
@@ -685,7 +716,7 @@ def _invoice_admin_out(db: Session, invoice: Invoice) -> InvoiceAdminOut:
     return InvoiceAdminOut(**base.model_dump(), entity_name=entity.name if entity else "(deleted entity)", organization_name=org.name if org else "(deleted organization)")
 
 
-@router.get("/invoices", response_model=list[InvoiceAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/invoices", response_model=list[InvoiceAdminOut], dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def list_all_invoices(invoice_status: str | None = None, entity_id: str | None = None, db: Session = Depends(get_db)):
     query = select(Invoice).order_by(Invoice.created_at.desc())
     if invoice_status:
@@ -696,7 +727,7 @@ def list_all_invoices(invoice_status: str | None = None, entity_id: str | None =
     return [_invoice_admin_out(db, i) for i in invoices]
 
 
-@router.get("/invoices/{invoice_id}/pdf", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/invoices/{invoice_id}/pdf", dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def download_invoice_admin(invoice_id: str, db: Session = Depends(get_db)):
     invoice = db.get(Invoice, invoice_id)
     if not invoice or not invoice.pdf_path:
@@ -704,7 +735,7 @@ def download_invoice_admin(invoice_id: str, db: Session = Depends(get_db)):
     return FileResponse(invoice.pdf_path, filename=f"{invoice.invoice_number}.pdf", media_type="application/pdf")
 
 
-@router.post("/invoices/{invoice_id}/issue", response_model=InvoiceAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/invoices/{invoice_id}/issue", response_model=InvoiceAdminOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def issue_invoice_admin(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     invoice = db.get(Invoice, invoice_id)
     if not invoice:
@@ -719,7 +750,7 @@ def issue_invoice_admin(invoice_id: str, request: Request, authorization: str | 
     return _invoice_admin_out(db, invoice)
 
 
-@router.post("/invoices/issue-all-drafts", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/invoices/issue-all-drafts", dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def bulk_issue_draft_invoices(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     drafts = db.scalars(select(Invoice).where(Invoice.status == "draft")).all()
     for invoice in drafts:
@@ -730,7 +761,7 @@ def bulk_issue_draft_invoices(request: Request, authorization: str | None = Head
     return {"issued_count": len(drafts)}
 
 
-@router.post("/invoices/{invoice_id}/retry-erpnext-sync", response_model=ErpNextRetryResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/invoices/{invoice_id}/retry-erpnext-sync", response_model=ErpNextRetryResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def retry_erpnext_sync(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Re-attempts the exact same Customer/Item/Sales-Invoice/PDF-fetch chain issue_invoice tried
     -- for an invoice that was already issued (with Textzi's own fallback PDF, if the first
@@ -791,7 +822,7 @@ def list_erpnext_call_log(status_filter: str | None = None, limit: int = 100, db
     ]
 
 
-@router.post("/wallet-credits", response_model=WalletCreditResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/wallet-credits", response_model=WalletCreditResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def create_wallet_credit(payload: WalletCreditRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Admin manual SMS credit. `amount` is rupees, converted to credits via the target entity's
     own assigned rate card (same conversion as self-service recharge). Always creates a draft
@@ -839,7 +870,7 @@ def create_wallet_credit(payload: WalletCreditRequest, request: Request, authori
     return WalletCreditResponse(entity_id=entity.id, credits_added=round(credits, 2), available_balance=available, invoice=_invoice_out(invoice) if invoice else None)
 
 
-@router.get("/wallet-topup-report", response_model=list[WalletTopupReportRowOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/wallet-topup-report", response_model=list[WalletTopupReportRowOut], dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def wallet_topup_report(mismatches_only: bool = False, db: Session = Depends(get_db)):
     """Every Razorpay wallet top-up (paid orders only), with the credits actually applied
     alongside what the order's own snapshotted rate says they should be -- see
@@ -984,7 +1015,7 @@ def _bulk_customer_stats(db: Session, organization_ids: list[str]):
     return entities_by_org, wallets_by_entity, message_counts, last_activity, primary_by_org
 
 
-@router.post("/customers", response_model=AdminCreateCustomerResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.post("/customers", response_model=AdminCreateCustomerResponse, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(get_db)):
     """Manually provisions a complete customer in one step -- organization, entity, both wallets,
     and a primary-contact login -- skipping self-registration and onboarding entirely (without
@@ -1056,7 +1087,7 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     )
 
 
-@router.get("/customers", response_model=list[CustomerAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/customers", response_model=list[CustomerAdminOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def list_customers(search: str | None = None, db: Session = Depends(get_db)):
     """Every organization shown with its primary contact's name -- the organization name alone
     (e.g. "Acme Retail Pvt Ltd") doesn't identify who the actual customer is, which made picking
@@ -1101,7 +1132,7 @@ def list_customers(search: str | None = None, db: Session = Depends(get_db)):
     return out
 
 
-@router.get("/usage/summary", response_model=UsageSummaryResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/usage/summary", response_model=UsageSummaryResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def get_usage_summary(db: Session = Depends(get_db)):
     orgs = db.scalars(select(Organization)).all()
     total_entities = db.scalar(select(func.count()).select_from(Entity)) or 0
@@ -1134,7 +1165,7 @@ AUDIT_LOG_LIMIT = 300
 LOW_PLATFORM_WALLET_THRESHOLD = 100
 
 
-@router.get("/audit-log", response_model=list[AdminAuditLogEntryOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/audit-log", response_model=list[AdminAuditLogEntryOut], dependencies=[Depends(require_staff("support")), Depends(require_admin_recent_2fa)])
 def get_audit_log(actor_email: str | None = None, event_type: str | None = None, db: Session = Depends(get_db)):
     """Cross-organization view of AccountActivity -- the per-customer Reports > Activity Log
     (reports.py) only ever shows one org's own rows; this is the only place an admin can see
@@ -1223,7 +1254,7 @@ def list_admin_platform_messages(limit: int = MESSAGE_LOG_LIMIT, offset: int = 0
     ]
 
 
-@router.get("/contact-messages", response_model=list[ContactMessageAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/contact-messages", response_model=list[ContactMessageAdminOut], dependencies=[Depends(require_staff("support")), Depends(require_admin_recent_2fa)])
 def list_contact_messages(limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
     """Submissions from the public marketing site's Contact form (public.py's submit_contact) --
     persisted independent of whether the internal notification email actually sent, so nothing
@@ -1413,7 +1444,7 @@ def get_admin_notifications(db: Session = Depends(get_db)):
     return notifications
 
 
-@router.get("/organizations/{organization_id}/overview", response_model=OrganizationOverviewResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+@router.get("/organizations/{organization_id}/overview", response_model=OrganizationOverviewResponse, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
 def get_organization_overview(organization_id: str, db: Session = Depends(get_db)):
     """The complete admin-side view of one customer: org details, every entity with its full DLT
     hierarchy (PE IDs -> headers, plus templates), team, invoices, recharge ledger, and raw

@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'sales',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'sales') : null)
 
 type RateCardSlab = { id: string, min_amount: number, max_amount: number | null, price_per_sms: number }
 type RateCard = { id: string, name: string, channel: string, is_default: boolean, min_recharge_amount: number, show_on_public_pricing: boolean, public_tagline: string | null, slabs: RateCardSlab[] }
@@ -33,7 +33,7 @@ async function load() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'sales'))
       return
     const [cardList, assignmentList, userList] = await Promise.all([
       $api<RateCard[]>('/v1/admin/rate-cards'),
@@ -306,11 +306,11 @@ onMounted(load)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Sales Team roles.
   </VAlert>
 
   <VAlert
@@ -321,7 +321,7 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin">
+  <template v-else-if="hasAccess">
     <VCard class="mb-6">
       <VCardText>
         <h6 class="text-h6 mb-4">

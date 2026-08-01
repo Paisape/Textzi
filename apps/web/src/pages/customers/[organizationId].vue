@@ -4,13 +4,13 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'sales',
   },
 })
 
 const route = useRoute('customers-organization-id')
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'sales') : null)
 
 type TeamMemberRow = { id: string, email: string, full_name: string, role: string, status: string }
 type InvoiceRow = {
@@ -67,7 +67,7 @@ async function loadOverview() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'sales'))
       return
     overview.value = await $api<OrgOverview>(`/v1/admin/organizations/${route.params.organizationId}/overview`)
   }
@@ -113,11 +113,11 @@ onMounted(loadOverview)
 
 <template>
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Sales Team roles.
   </VAlert>
 
   <VAlert
@@ -128,7 +128,7 @@ onMounted(loadOverview)
     {{ loadError }}
   </VAlert>
 
-  <VRow v-else-if="isAdmin && overview">
+  <VRow v-else-if="hasAccess && overview">
     <VCol cols="12" md="4">
       <VCard class="mb-6">
         <VCardText class="text-center">

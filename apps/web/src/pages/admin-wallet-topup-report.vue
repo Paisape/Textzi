@@ -5,12 +5,12 @@ import { useStepUpAuth } from '@/composables/useStepUpAuth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'finance',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'finance') : null)
 const stepUp = useStepUpAuth()
 
 type ReportRow = {
@@ -38,7 +38,7 @@ async function load() {
   loading.value = true
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'finance'))
       return
     rows.value = await stepUp.withStepUp(() =>
       $api<ReportRow[]>('/v1/admin/wallet-topup-report', { query: { mismatches_only: mismatchesOnly.value } }),
@@ -70,11 +70,11 @@ onMounted(load)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Finance Team roles.
   </VAlert>
 
   <VAlert
@@ -85,7 +85,7 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin">
+  <template v-else-if="hasAccess">
     <VAlert
       v-if="mismatchCount > 0"
       type="error"

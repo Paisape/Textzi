@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { adminNav, customerNav } from '@/navigation/vertical'
+import { adminNav, customerNav, financeNav, salesNav, supportNav } from '@/navigation/vertical'
 import { useAuthStore } from '@/stores/auth'
 import { themeConfig } from '@themeConfig'
 
@@ -16,10 +16,18 @@ const authStore = useAuthStore()
 
 onMounted(() => authStore.load())
 
-// Admin and customer get two entirely separate menus -- platform admins see zero tenant-facing
-// items, tenants see zero platform-facing items. Defaults to customerNav until the profile is
-// confirmed loaded, so an admin never sees a flash of the wrong menu's content.
-const navItems = computed(() => authStore.isAdmin ? adminNav : customerNav)
+// Admin, each scoped staff area, and customer all get entirely separate menus -- platform admins
+// see zero tenant-facing items, tenants see zero platform-facing items, and a scoped staff role
+// (finance_team/sales_team/support_team) sees only its own slice of the admin panel. Defaults to
+// customerNav until the profile is confirmed loaded, so nobody sees a flash of the wrong menu.
+const STAFF_AREA_NAV = { finance: financeNav, sales: salesNav, support: supportNav } as const
+const navItems = computed(() => {
+  if (authStore.isAdmin)
+    return adminNav
+  if (authStore.staffArea)
+    return STAFF_AREA_NAV[authStore.staffArea]
+  return customerNav
+})
 </script>
 
 <template>

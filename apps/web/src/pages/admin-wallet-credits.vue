@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'finance',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'finance') : null)
 
 type CustomerRow = { organization_id: string, organization_name: string, primary_contact_name: string | null, primary_contact_email: string | null }
 type EntityRow = { id: string, organization_id: string, name: string, status: string }
@@ -71,7 +71,7 @@ watch(selectedOrgId, async orgId => {
 async function loadOrgs() {
   error.value = ''
   await authStore.load()
-  if (!authStore.isAdmin)
+  if (!(authStore.isAdmin || authStore.staffArea === 'finance'))
     return
   await searchCustomers('')
 }
@@ -114,15 +114,15 @@ onMounted(loadOrgs)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Finance Team roles.
   </VAlert>
 
   <VCard
-    v-else-if="isAdmin"
+    v-else-if="hasAccess"
     max-width="640"
   >
     <VCardText>

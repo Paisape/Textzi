@@ -11,6 +11,29 @@ definePage({
 const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
 
+// Scoped staff (finance_team/sales_team/support_team) get neither the tenant view (they have no
+// organization/wallet -- it would just show a confusing onboarding prompt) nor the full admin
+// view (its widgets call require_admin-only endpoints like /v1/admin/notifications, which they
+// can't reach) -- a plain welcome card linking into their own nav instead.
+const STAFF_AREA_LABELS: Record<string, string> = { finance: 'Finance Team', sales: 'Sales Team', support: 'Support Team' }
+const STAFF_AREA_LINKS: Record<string, { label: string, to: string, icon: string }[]> = {
+  finance: [
+    { label: 'Wallet Credits', to: '/admin-wallet-credits', icon: 'tabler-coin' },
+    { label: 'Invoices', to: '/admin-invoices', icon: 'tabler-receipt' },
+    { label: 'Wallet Top-up Report', to: '/admin-wallet-topup-report', icon: 'tabler-shield-check' },
+    { label: 'Usage', to: '/admin-usage', icon: 'tabler-chart-bar' },
+  ],
+  sales: [
+    { label: 'Customers', to: '/customers', icon: 'tabler-building-store' },
+    { label: 'Rate Cards', to: '/rate-cards', icon: 'tabler-receipt-rupee' },
+  ],
+  support: [
+    { label: 'Contact Us Submissions', to: '/admin-contact-messages', icon: 'tabler-mail-question' },
+    { label: 'Users', to: '/users', icon: 'tabler-users' },
+    { label: 'Audit Log', to: '/admin-audit-log', icon: 'tabler-history' },
+  ],
+}
+
 // -- Customer --------------------------------------------------------------
 type ChannelStatus = { subscription_paid: boolean, dlt_status: string, channel_active: boolean }
 type ReportsSummary = { total: number, submitted: number, failed: number, accepted: number }
@@ -75,7 +98,7 @@ async function load() {
   await authStore.load()
   if (authStore.isAdmin)
     await loadAdminDashboard()
-  else
+  else if (!authStore.staffArea)
     await loadCustomerDashboard()
 }
 
@@ -199,6 +222,29 @@ onMounted(load)
       @submit="stepUp.submit"
       @cancel="stepUp.cancel"
     />
+  </template>
+
+  <template v-else-if="authStore.staffArea">
+    <h1 class="text-h4 mb-1">
+      Welcome
+    </h1>
+    <p class="text-medium-emphasis mb-6">
+      You're signed in as {{ STAFF_AREA_LABELS[authStore.staffArea] }}.
+    </p>
+
+    <VCard title="Your area">
+      <VCardText class="d-flex flex-wrap gap-3">
+        <VBtn
+          v-for="link in STAFF_AREA_LINKS[authStore.staffArea]"
+          :key="link.to"
+          variant="tonal"
+          :prepend-icon="link.icon"
+          :to="link.to"
+        >
+          {{ link.label }}
+        </VBtn>
+      </VCardText>
+    </VCard>
   </template>
 
   <template v-else-if="isAdmin === false">

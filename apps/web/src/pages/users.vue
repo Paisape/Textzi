@@ -4,7 +4,7 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'support',
   },
 })
 
@@ -23,15 +23,15 @@ const ROLES = [
   { value: 'developer', title: 'Developer' },
 ]
 
-// Narrower than ROLES above -- the backend's require_admin (every admin-panel endpoint) and the
-// frontend's admin/customer nav split both only ever recognize Super Admin / Operator Admin as
-// "admin". finance_team/support_team/sales_team/reseller/agency/developer exist as role values
-// with broad capability grants, but have no admin-panel UI or route access wired up yet -- an
-// invited account in one of those roles would have nowhere to go after logging in. Only offering
-// the roles that actually work here until that's built out.
+// finance_team/sales_team/support_team now have their own scoped admin-panel slice (see
+// admin.STAFF_AREA_ROLES) so they have somewhere to land after being invited -- reseller/agency/
+// developer still don't have any wired-up area, so they stay off this list until that exists.
 const INVITABLE_STAFF_ROLES = [
   { value: 'super_admin', title: 'Super Admin' },
   { value: 'operator_admin', title: 'Operator Admin' },
+  { value: 'finance_team', title: 'Finance Team' },
+  { value: 'sales_team', title: 'Sales Team' },
+  { value: 'support_team', title: 'Support Team' },
 ]
 type AdminUser = {
   id: string
@@ -52,13 +52,17 @@ const saveError = ref('')
 const search = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'support') : null)
+// Support Team can view this page but not act on it -- every mutation endpoint (invite,
+// role-change, status-change, reset-password, force-disable-2FA) stays require_admin-only on the
+// backend, so the controls that would call them are hidden rather than left visible-but-broken.
+const canManage = computed(() => authStore.isAdmin)
 
 async function load() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!hasAccess.value)
       return
     users.value = await $api<AdminUser[]>('/v1/admin/users', { query: search.value ? { search: search.value } : {} })
   }
@@ -206,15 +210,16 @@ onMounted(load)
     Users
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Every platform-staff account and its role. Customer-side accounts live under Customers instead. Only Super Admin and Operator Admin can view or change this.
+    Every platform-staff account and its role. Customer-side accounts live under Customers instead.
+    Super Admin and Operator Admin can manage this; Support Team can view it.
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Support Team roles.
   </VAlert>
 
   <VAlert
@@ -226,7 +231,7 @@ onMounted(load)
   </VAlert>
 
   <div
-    v-if="isAdmin"
+    v-if="hasAccess"
     class="d-flex align-center justify-space-between mb-4 gap-4 flex-wrap"
   >
     <AppTextField
@@ -237,6 +242,7 @@ onMounted(load)
       clearable
     />
     <VBtn
+      v-if="canManage"
       prepend-icon="tabler-user-plus"
       @click="showInviteDialog = true"
     >
@@ -244,7 +250,7 @@ onMounted(load)
     </VBtn>
   </div>
 
-  <VCard v-if="isAdmin">
+  <VCard v-if="hasAccess">
     <VCardText>
       <VAlert
         v-if="saveError"
@@ -276,6 +282,7 @@ onMounted(load)
             <td>{{ user.email }}</td>
             <td style="min-inline-size: 220px;">
               <VSelect
+                v-if="canManage"
                 :model-value="user.role"
                 :items="ROLES"
                 item-title="title"
@@ -287,6 +294,7 @@ onMounted(load)
                 :disabled="savingId === user.id"
                 @update:model-value="(value: string) => onRoleChange(user, value)"
               />
+              <span v-else class="text-capitalize">{{ user.role.replace('_', ' ') }}</span>
             </td>
             <td>
               <VChip
@@ -324,7 +332,7 @@ onMounted(load)
               >—</span>
             </td>
             <td>
-              <div class="d-flex gap-1">
+              <div v-if="canManage" class="d-flex gap-1">
                 <VBtn
                   size="small"
                   variant="text"
@@ -351,6 +359,7 @@ onMounted(load)
                   {{ user.status === 'suspended' ? 'Reactivate' : 'Suspend' }}
                 </VBtn>
               </div>
+              <span v-else class="text-medium-emphasis">—</span>
             </td>
           </tr>
         </tbody>

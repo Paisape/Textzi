@@ -4,12 +4,12 @@ import { useAuthStore } from '@/stores/auth'
 definePage({
   meta: {
     layout: 'default',
-    requiresAdmin: true,
+    staffArea: 'finance',
   },
 })
 
 const authStore = useAuthStore()
-const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
+const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'finance') : null)
 
 type InvoiceAdminRow = {
   id: string
@@ -45,7 +45,7 @@ async function loadInvoices() {
   loadError.value = ''
   try {
     await authStore.load()
-    if (!authStore.isAdmin)
+    if (!(authStore.isAdmin || authStore.staffArea === 'finance'))
       return
     invoices.value = await $api<InvoiceAdminRow[]>('/v1/admin/invoices')
   }
@@ -164,11 +164,11 @@ onMounted(loadInvoices)
   </p>
 
   <VAlert
-    v-if="isAdmin === false"
+    v-if="hasAccess === false"
     type="warning"
     variant="tonal"
   >
-    This page is restricted to Super Admin and Operator Admin roles.
+    This page is restricted to Super Admin, Operator Admin, and Finance Team roles.
   </VAlert>
 
   <VAlert
@@ -179,7 +179,7 @@ onMounted(loadInvoices)
     {{ loadError }}
   </VAlert>
 
-  <template v-else-if="isAdmin">
+  <template v-else-if="hasAccess">
     <div class="d-flex align-center justify-end gap-2 mb-4">
       <VBtn
         v-if="draftCount > 0"
