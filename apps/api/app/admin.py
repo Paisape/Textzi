@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 import jwt
 import razorpay
-from fastapi import APIRouter, Depends, Header, HTTPException, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.exc import IntegrityError
@@ -231,7 +231,7 @@ def list_rate_cards(db: Session = Depends(get_db)):
 
 
 @router.post("/rate-cards", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def create_rate_card(payload: RateCardCreate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def create_rate_card(payload: RateCardCreate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     if db.scalar(select(RateCard).where(RateCard.name == payload.name)):
         raise HTTPException(status_code=409, detail=f"A rate card named '{payload.name}' already exists")
     _validate_slabs(payload.slabs)
@@ -240,7 +240,7 @@ def create_rate_card(payload: RateCardCreate, authorization: str | None = Header
     db.add(card); db.flush()
     for slab in payload.slabs:
         db.add(RateCardSlab(rate_card_id=card.id, min_amount=slab.min_amount, max_amount=slab.max_amount, price_per_sms=slab.price_per_sms))
-    log_activity(db, None, "rate_card_created", f"Rate card '{payload.name}' created.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "rate_card_created", f"Rate card '{payload.name}' created.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(card)
     return _rate_card_out(db, card)
 
@@ -285,20 +285,20 @@ def set_default_rate_card(card_id: str, db: Session = Depends(get_db)):
 
 
 @router.put("/rate-cards/{card_id}/public-settings", response_model=RateCardOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_rate_card_public_settings(card_id: str, payload: RateCardPublicSettingsUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_rate_card_public_settings(card_id: str, payload: RateCardPublicSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Controls whether/how this card appears on the public marketing site's Pricing section."""
     card = db.get(RateCard, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Rate card not found")
     card.show_on_public_pricing = payload.show_on_public_pricing
     card.public_tagline = payload.public_tagline
-    log_activity(db, None, "rate_card_public_settings_updated", f"Rate card '{card.name}' public-pricing visibility set to {payload.show_on_public_pricing}.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "rate_card_public_settings_updated", f"Rate card '{card.name}' public-pricing visibility set to {payload.show_on_public_pricing}.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(card)
     return _rate_card_out(db, card)
 
 
 @router.delete("/rate-cards/{card_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def delete_rate_card(card_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def delete_rate_card(card_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     card = db.get(RateCard, card_id)
     if not card:
         raise HTTPException(status_code=404, detail="Rate card not found")
@@ -313,7 +313,7 @@ def delete_rate_card(card_id: str, authorization: str | None = Header(default=No
     # ordering doesn't apply here; without this flush the card's DELETE can be issued before the
     # slabs' DELETEs, violating rate_card_slabs_rate_card_id_fkey.
     db.flush()
-    log_activity(db, None, "rate_card_deleted", f"Rate card '{card.name}' deleted.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "rate_card_deleted", f"Rate card '{card.name}' deleted.", actor_email=_caller_email(authorization, db), request=request)
     db.delete(card)
     db.commit()
     return {"id": card_id, "removed": True}
@@ -434,14 +434,14 @@ def list_dlt_requests(request_status: str | None = None, entity_id: str | None =
 
 
 @router.patch("/dlt-requests/{request_id}", response_model=DltOnboardingRequestAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_dlt_request_status(request_id: str, payload: DltOnboardingRequestStatusUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_dlt_request_status(request_id: str, payload: DltOnboardingRequestStatusUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     request_row = db.get(DltOnboardingRequest, request_id)
     if not request_row:
         raise HTTPException(status_code=404, detail="DLT registration request not found")
     entity = db.get(Entity, request_row.entity_id)
     old_status = request_row.status
     request_row.status = payload.status
-    log_activity(db, entity.organization_id if entity else None, "dlt_request_status_changed", f"DLT request status changed from {old_status} to {payload.status}.", actor_email=_caller_email(authorization, db))
+    log_activity(db, entity.organization_id if entity else None, "dlt_request_status_changed", f"DLT request status changed from {old_status} to {payload.status}.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(request_row)
     return _dlt_request_admin_out(db, request_row)
 
@@ -494,7 +494,7 @@ def list_customer_users(search: str | None = None, db: Session = Depends(get_db)
 
 
 @router.post("/users/invite", response_model=TeamInviteResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def invite_staff_user(payload: AdminInviteUserRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def invite_staff_user(payload: AdminInviteUserRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Invites a new platform-staff account -- the only other ways any account comes into
     existence are self-registration (always enterprise_customer) or a team invite (always one of
     the customer-side sub-roles), neither of which can produce an internal-tier account. Mirrors
@@ -550,7 +550,7 @@ def invite_staff_user(payload: AdminInviteUserRequest, authorization: str | None
 
 
 @router.patch("/users/{user_id}/role", response_model=UserAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_user_role(user_id: str, payload: UserRoleUpdateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_user_role(user_id: str, payload: UserRoleUpdateRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """No self-role-change (even a legitimate admin acting on their own account here is
     indistinguishable from a stolen-token attacker granting themself more privilege -- a peer
     admin must make this change instead), and only an existing Super Admin can grant OR REVOKE
@@ -576,7 +576,7 @@ def update_user_role(user_id: str, payload: UserRoleUpdateRequest, authorization
         raise HTTPException(status_code=403, detail="Only Super Admin can grant or revoke an admin-tier role")
     old_role = user.role
     user.role = payload.role.value
-    log_activity(db, user.organization_id, "role_changed", f"{user.email}'s role changed from {old_role.replace('_', ' ')} to {payload.role.value.replace('_', ' ')}.", user_id=user.id, actor_email=caller.email if caller else "admin (bootstrap key)")
+    log_activity(db, user.organization_id, "role_changed", f"{user.email}'s role changed from {old_role.replace('_', ' ')} to {payload.role.value.replace('_', ' ')}.", user_id=user.id, actor_email=caller.email if caller else "admin (bootstrap key)", request=request)
     db.commit(); db.refresh(user)
     return _user_admin_out(db, user)
 
@@ -596,7 +596,7 @@ def admin_update_two_factor(user_id: str, payload: TwoFactorAdminUpdate, db: Ses
 
 
 @router.post("/users/{user_id}/reset-password", response_model=AdminResetPasswordResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def admin_reset_password(user_id: str, db: Session = Depends(get_db)):
+def admin_reset_password(user_id: str, request: Request, db: Session = Depends(get_db)):
     """The only way a platform-staff account's password ever gets reset -- forgot_password
     (auth.py) refuses staff outright, by design. Generates a fresh random password, emails it,
     and clears any login lockout so the reset itself isn't immediately unusable."""
@@ -607,7 +607,7 @@ def admin_reset_password(user_id: str, db: Session = Depends(get_db)):
     user.password_hash = hash_password(generated_password)
     user.failed_login_attempts = 0
     user.login_locked_until = None
-    log_activity(db, user.organization_id, "password_reset_by_admin", f"{user.email}'s password was reset by an admin.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "password_reset_by_admin", f"{user.email}'s password was reset by an admin.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     send_email(
         db,
@@ -626,7 +626,7 @@ def admin_reset_password(user_id: str, db: Session = Depends(get_db)):
 
 
 @router.patch("/users/{user_id}/status", response_model=UserAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_user_status(user_id: str, payload: UserStatusUpdateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_user_status(user_id: str, payload: UserStatusUpdateRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Suspend/reactivate any account (staff or customer) -- same self-action and admin-tier
     protections as update_user_role, since suspending is just as capable of being used for
     privilege abuse as a role change is (a stolen operator_admin token suspending the one
@@ -650,13 +650,13 @@ def update_user_status(user_id: str, payload: UserStatusUpdateRequest, authoriza
     if payload.status == UserStatus.active:
         user.failed_login_attempts = 0
         user.login_locked_until = None
-    log_activity(db, user.organization_id, "status_changed", f"{user.email}'s status changed from {old_status.value.replace('_', ' ')} to {payload.status.value.replace('_', ' ')}.", user_id=user.id, actor_email=caller.email if caller else "admin (bootstrap key)")
+    log_activity(db, user.organization_id, "status_changed", f"{user.email}'s status changed from {old_status.value.replace('_', ' ')} to {payload.status.value.replace('_', ' ')}.", user_id=user.id, actor_email=caller.email if caller else "admin (bootstrap key)", request=request)
     db.commit(); db.refresh(user)
     return _user_admin_out(db, user)
 
 
 @router.patch("/entities/{entity_id}/status", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_entity_status(entity_id: str, payload: EntityStatusUpdateRequest, db: Session = Depends(get_db)):
+def update_entity_status(entity_id: str, payload: EntityStatusUpdateRequest, request: Request, db: Session = Depends(get_db)):
     """Deactivating an entity doesn't touch its users' logins -- it stops that entity's own
     sending (require_channel_active-style checks live at dispatch time, not here) without
     suspending the people who manage it."""
@@ -664,7 +664,7 @@ def update_entity_status(entity_id: str, payload: EntityStatusUpdateRequest, db:
     if not entity:
         raise HTTPException(status_code=404, detail="Entity not found")
     entity.status = payload.status
-    log_activity(db, entity.organization_id, "entity_status_changed", f"Entity '{entity.name}' status changed to {payload.status.value}.", actor_email="admin")
+    log_activity(db, entity.organization_id, "entity_status_changed", f"Entity '{entity.name}' status changed to {payload.status.value}.", actor_email="admin", request=request)
     db.commit(); db.refresh(entity)
     return {"id": entity.id, "name": entity.name, "status": entity.status}
 
@@ -705,7 +705,7 @@ def download_invoice_admin(invoice_id: str, db: Session = Depends(get_db)):
 
 
 @router.post("/invoices/{invoice_id}/issue", response_model=InvoiceAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def issue_invoice_admin(invoice_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def issue_invoice_admin(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     invoice = db.get(Invoice, invoice_id)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -713,25 +713,25 @@ def issue_invoice_admin(invoice_id: str, authorization: str | None = Header(defa
         raise HTTPException(status_code=409, detail="This invoice has already been issued")
     issue_invoice(db, invoice)
     entity = db.get(Entity, invoice.entity_id)
-    log_activity(db, entity.organization_id if entity else None, "invoice_issued_by_admin", f"Invoice for entity issued (Rs.{float(invoice.total_amount):.2f}).", actor_email=_caller_email(authorization, db))
+    log_activity(db, entity.organization_id if entity else None, "invoice_issued_by_admin", f"Invoice for entity issued (Rs.{float(invoice.total_amount):.2f}).", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     db.refresh(invoice)
     return _invoice_admin_out(db, invoice)
 
 
 @router.post("/invoices/issue-all-drafts", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def bulk_issue_draft_invoices(authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def bulk_issue_draft_invoices(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     drafts = db.scalars(select(Invoice).where(Invoice.status == "draft")).all()
     for invoice in drafts:
         issue_invoice(db, invoice)
     if drafts:
-        log_activity(db, None, "bulk_invoices_issued", f"{len(drafts)} draft invoice(s) issued in bulk.", actor_email=_caller_email(authorization, db))
+        log_activity(db, None, "bulk_invoices_issued", f"{len(drafts)} draft invoice(s) issued in bulk.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     return {"issued_count": len(drafts)}
 
 
 @router.post("/invoices/{invoice_id}/retry-erpnext-sync", response_model=ErpNextRetryResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def retry_erpnext_sync(invoice_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def retry_erpnext_sync(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Re-attempts the exact same Customer/Item/Sales-Invoice/PDF-fetch chain issue_invoice tried
     -- for an invoice that was already issued (with Textzi's own fallback PDF, if the first
     attempt failed) once whatever caused the original failure has been fixed. On success, the
@@ -760,7 +760,7 @@ def retry_erpnext_sync(invoice_id: str, authorization: str | None = Header(defau
     log_activity(
         db, entity.organization_id if entity else None, "erpnext_sync_retried",
         f"ERPNext sync retried for invoice {invoice.invoice_number} -- {invoice.erpnext_sync_status}.",
-        actor_email=_caller_email(authorization, db),
+        actor_email=_caller_email(authorization, db), request=request,
     )
     db.refresh(invoice)
     return ErpNextRetryResponse(
@@ -792,7 +792,7 @@ def list_erpnext_call_log(status_filter: str | None = None, limit: int = 100, db
 
 
 @router.post("/wallet-credits", response_model=WalletCreditResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def create_wallet_credit(payload: WalletCreditRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def create_wallet_credit(payload: WalletCreditRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Admin manual SMS credit. `amount` is rupees, converted to credits via the target entity's
     own assigned rate card (same conversion as self-service recharge). Always creates a draft
     invoice for accounting/GST traceability -- issued immediately only if `generate_invoice` is
@@ -830,7 +830,7 @@ def create_wallet_credit(payload: WalletCreditRequest, authorization: str | None
     invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=0.0, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None)
     if payload.generate_invoice:
         issue_invoice(db, invoice)
-    log_activity(db, entity.organization_id, "wallet_credited_by_admin", f"Admin credited Rs.{payload.amount:.2f} ({round(credits, 2)} credits) to entity '{entity.name}'.", actor_email=admin_user.email if admin_user else "admin (bootstrap key)")
+    log_activity(db, entity.organization_id, "wallet_credited_by_admin", f"Admin credited Rs.{payload.amount:.2f} ({round(credits, 2)} credits) to entity '{entity.name}'.", actor_email=admin_user.email if admin_user else "admin (bootstrap key)", request=request)
     db.commit()
 
     available = float(wallet.prepaid_balance) + max(0, float(wallet.credit_limit) - float(wallet.credit_used))
@@ -1118,7 +1118,7 @@ def get_audit_log(actor_email: str | None = None, event_type: str | None = None,
     return [
         AdminAuditLogEntryOut(
             id=r.id, event_type=r.event_type, description=r.description, actor_email=r.actor_email,
-            ip_address=r.ip_address, organization_name=org_names.get(r.organization_id), created_at=r.created_at.isoformat(),
+            ip_address=r.ip_address, user_agent=r.user_agent, organization_name=org_names.get(r.organization_id), created_at=r.created_at.isoformat(),
         )
         for r in rows
     ]
@@ -1240,7 +1240,7 @@ def list_testimonials(status_filter: str | None = None, db: Session = Depends(ge
 
 
 @router.post("/testimonials", response_model=TestimonialAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def create_testimonial(payload: TestimonialAdminCreateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def create_testimonial(payload: TestimonialAdminCreateRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Admin-authored testimonial -- e.g. a quote a customer emailed in rather than submitted
     through the form. Live/public immediately, no separate approval step needed since an admin
     is the one entering it."""
@@ -1249,7 +1249,7 @@ def create_testimonial(payload: TestimonialAdminCreateRequest, authorization: st
         status="approved", reviewed_at=datetime.now(timezone.utc), reviewed_by=_caller_email(authorization, db),
     )
     db.add(row)
-    log_activity(db, None, "testimonial_created_by_admin", f"Admin added a testimonial from '{payload.author_name}'.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "testimonial_created_by_admin", f"Admin added a testimonial from '{payload.author_name}'.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     db.refresh(row)
     return TestimonialAdminOut(
@@ -1260,14 +1260,14 @@ def create_testimonial(payload: TestimonialAdminCreateRequest, authorization: st
 
 
 @router.patch("/testimonials/{testimonial_id}/status", response_model=TestimonialAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_testimonial_status(testimonial_id: str, payload: TestimonialStatusUpdateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_testimonial_status(testimonial_id: str, payload: TestimonialStatusUpdateRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     row = db.get(Testimonial, testimonial_id)
     if not row:
         raise HTTPException(status_code=404, detail="Testimonial not found")
     row.status = payload.status
     row.reviewed_at = datetime.now(timezone.utc)
     row.reviewed_by = _caller_email(authorization, db)
-    log_activity(db, row.organization_id, f"testimonial_{payload.status}", f"Testimonial from '{row.author_name}' {payload.status} by admin.", actor_email=row.reviewed_by)
+    log_activity(db, row.organization_id, f"testimonial_{payload.status}", f"Testimonial from '{row.author_name}' {payload.status} by admin.", actor_email=row.reviewed_by, request=request)
     db.commit()
     db.refresh(row)
 
@@ -1289,11 +1289,11 @@ def update_testimonial_status(testimonial_id: str, payload: TestimonialStatusUpd
 
 
 @router.delete("/testimonials/{testimonial_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def delete_testimonial(testimonial_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def delete_testimonial(testimonial_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     row = db.get(Testimonial, testimonial_id)
     if not row:
         raise HTTPException(status_code=404, detail="Testimonial not found")
-    log_activity(db, row.organization_id, "testimonial_deleted", f"Testimonial from '{row.author_name}' deleted by admin.", actor_email=_caller_email(authorization, db))
+    log_activity(db, row.organization_id, "testimonial_deleted", f"Testimonial from '{row.author_name}' deleted by admin.", actor_email=_caller_email(authorization, db), request=request)
     db.delete(row)
     db.commit()
     return {"id": testimonial_id, "deleted": True}

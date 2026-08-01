@@ -364,12 +364,19 @@ def resolve_primary_user(db: Session, organization_id: str) -> User | None:
     return db.scalar(select(User).where(User.organization_id == organization_id).order_by(User.created_at.asc()))
 
 
-def log_activity(db: Session, organization_id: str | None, event_type: str, description: str, user_id: str | None = None, actor_email: str | None = None, ip_address: str | None = None) -> None:
+def log_activity(db: Session, organization_id: str | None, event_type: str, description: str, user_id: str | None = None, actor_email: str | None = None, ip_address: str | None = None, request: Request | None = None) -> None:
     """Writes one Activity Log row. organization_id may legitimately be None -- platform-staff
     accounts have no organization at all, so their own logins/actions (and org-agnostic admin
     mutations like a rate card change) still get recorded, just filed under the cross-org admin
-    audit log (GET /v1/admin/audit-log) instead of any single customer's Reports > Activity Log."""
-    db.add(AccountActivity(organization_id=organization_id, user_id=user_id, actor_email=actor_email or "", event_type=event_type, description=description, ip_address=ip_address))
+    audit log (GET /v1/admin/audit-log) instead of any single customer's Reports > Activity Log.
+
+    Pass `request` (not just `ip_address`) wherever the caller has it -- it derives both IP and
+    User-Agent in one go via client_ip()/the same header this project already trusts for
+    UserSession (see auth.py's _create_session), so every event carries the same device/browser
+    telemetry already shown on the Sessions page instead of just an IP."""
+    resolved_ip = ip_address if ip_address is not None else (client_ip(request) if request else None)
+    user_agent = request.headers.get("user-agent", "")[:300] if request else None
+    db.add(AccountActivity(organization_id=organization_id, user_id=user_id, actor_email=actor_email or "", event_type=event_type, description=description, ip_address=resolved_ip, user_agent=user_agent))
 
 
 ALL_CAPABILITIES = {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view"}

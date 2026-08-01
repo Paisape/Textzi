@@ -90,7 +90,7 @@ def activity_log(user: User = Depends(require_capability("activity:view")), db: 
         select(AccountActivity).where(AccountActivity.organization_id == user.organization_id).order_by(AccountActivity.created_at.desc()).limit(LEDGER_LIMIT),
     ).all()
     return [
-        ActivityLogEntryOut(id=a.id, event_type=a.event_type, description=a.description, actor_email=a.actor_email, ip_address=a.ip_address, created_at=a.created_at.isoformat())
+        ActivityLogEntryOut(id=a.id, event_type=a.event_type, description=a.description, actor_email=a.actor_email, ip_address=a.ip_address, user_agent=a.user_agent, created_at=a.created_at.isoformat())
         for a in rows
     ]
 

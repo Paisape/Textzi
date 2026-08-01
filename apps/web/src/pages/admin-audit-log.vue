@@ -17,6 +17,7 @@ type AuditLogRow = {
   description: string
   actor_email: string
   ip_address: string | null
+  user_agent: string | null
   organization_name: string | null
   created_at: string
 }
@@ -100,6 +101,7 @@ onMounted(load)
             <th>Actor</th>
             <th>Organization</th>
             <th>IP Address</th>
+            <th>Device / User Agent</th>
             <th>Date</th>
           </tr>
         </thead>
@@ -121,11 +123,18 @@ onMounted(load)
             <td>{{ row.actor_email }}</td>
             <td>{{ row.organization_name ?? '—' }}</td>
             <td>{{ row.ip_address ?? '—' }}</td>
+            <td
+              class="text-truncate"
+              style="max-inline-size: 260px;"
+              :title="row.user_agent ?? ''"
+            >
+              {{ row.user_agent ?? '—' }}
+            </td>
             <td>{{ new Date(row.created_at).toLocaleString('en-IN') }}</td>
           </tr>
           <tr v-if="!rows.length">
             <td
-              colspan="6"
+              colspan="7"
               class="text-center text-medium-emphasis"
             >
               No activity recorded yet.

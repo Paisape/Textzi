@@ -449,10 +449,21 @@ class ContactMessageAdminOut(BaseModel):
     created_at: str
 
 
+def _not_blank(v: str) -> str:
+    v = v.strip()
+    if not v:
+        raise ValueError("must not be blank")
+    return v
+
+
 class TestimonialSubmitRequest(BaseModel):
     author_name: str = Field(min_length=1, max_length=120)
     author_role: str = Field(min_length=1, max_length=160)
     quote: str = Field(min_length=1, max_length=600)
+
+    # min_length=1 alone lets a whitespace-only string (e.g. a single space) through, which then
+    # renders as a visually blank testimonial card -- strip and reject anything blank after that.
+    _validate_not_blank = field_validator("author_name", "author_role", "quote")(_not_blank)
 
 
 class TestimonialOut(BaseModel):
@@ -481,6 +492,8 @@ class TestimonialAdminCreateRequest(BaseModel):
     author_name: str = Field(min_length=1, max_length=120)
     author_role: str = Field(min_length=1, max_length=160)
     quote: str = Field(min_length=1, max_length=600)
+
+    _validate_not_blank = field_validator("author_name", "author_role", "quote")(_not_blank)
 
 
 class TestimonialStatusUpdateRequest(BaseModel):
@@ -698,6 +711,7 @@ class ActivityLogEntryOut(BaseModel):
     description: str
     actor_email: str
     ip_address: str | None
+    user_agent: str | None
     created_at: str
 
 
@@ -707,6 +721,7 @@ class AdminAuditLogEntryOut(BaseModel):
     description: str
     actor_email: str
     ip_address: str | None
+    user_agent: str | None
     organization_name: str | None
     created_at: str
 

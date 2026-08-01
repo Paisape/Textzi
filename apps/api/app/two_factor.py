@@ -3,7 +3,7 @@ and step-up re-verification (`/v1/auth/step-up-2fa`) live in auth.py alongside `
 since both need direct access to token issuance; this router only manages the secret itself."""
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .auth import _verify_totp_with_lockout, require_user
@@ -38,7 +38,7 @@ def enroll(user: User = Depends(require_user), db: Session = Depends(get_db)):
 
 
 @router.post("/confirm", response_model=TwoFactorStatusOut)
-def confirm(payload: TwoFactorCodeRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def confirm(payload: TwoFactorCodeRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     row = db.get(TwoFactorAuth, user.id)
     if not row:
         raise HTTPException(status_code=422, detail="Start enrollment first")
@@ -47,18 +47,18 @@ def confirm(payload: TwoFactorCodeRequest, user: User = Depends(require_user), d
     _verify_totp_with_lockout(db, row, payload.code)
     row.enabled = True
     row.enabled_at = datetime.now(timezone.utc)
-    log_activity(db, user.organization_id, "2fa_enabled", "Two-factor authentication enabled.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "2fa_enabled", "Two-factor authentication enabled.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return TwoFactorStatusOut(enabled=True)
 
 
 @router.post("/disable", response_model=TwoFactorStatusOut)
-def disable(payload: TwoFactorCodeRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def disable(payload: TwoFactorCodeRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     row = db.get(TwoFactorAuth, user.id)
     if not row or not row.enabled:
         raise HTTPException(status_code=422, detail="2FA is not enabled")
     _verify_totp_with_lockout(db, row, payload.code)
     db.delete(row)
-    log_activity(db, user.organization_id, "2fa_disabled", "Two-factor authentication disabled.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "2fa_disabled", "Two-factor authentication disabled.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return TwoFactorStatusOut(enabled=False)

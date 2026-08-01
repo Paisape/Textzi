@@ -16,6 +16,7 @@ type ActivityRow = {
   description: string
   actor_email: string
   ip_address: string | null
+  user_agent: string | null
   created_at: string
 }
 
@@ -79,6 +80,7 @@ onMounted(load)
           <th>Description</th>
           <th>User</th>
           <th>IP address</th>
+          <th>Device / User Agent</th>
           <th>Date</th>
         </tr>
       </thead>
@@ -99,11 +101,18 @@ onMounted(load)
           <td>{{ row.description }}</td>
           <td>{{ row.actor_email }}</td>
           <td>{{ row.ip_address ?? '—' }}</td>
+          <td
+            class="text-truncate"
+            style="max-inline-size: 260px;"
+            :title="row.user_agent ?? ''"
+          >
+            {{ row.user_agent ?? '—' }}
+          </td>
           <td>{{ new Date(row.created_at).toLocaleString('en-IN') }}</td>
         </tr>
         <tr v-if="!rows.length">
           <td
-            colspan="5"
+            colspan="6"
             class="text-center text-medium-emphasis"
           >
             No activity recorded yet.

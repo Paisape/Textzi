@@ -1,7 +1,7 @@
 """Admin-only configuration for the platform's own operational sending -- its SMS sender
 identity, its SMTP config, and its wallet. Deliberately separate from every tenant-facing router:
 this is Textzi's own infrastructure, not something any customer sees or touches."""
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -28,7 +28,7 @@ def get_sms_settings(db: Session = Depends(get_db)):
 
 
 @router.put("/sms-settings", response_model=PlatformSmsSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_sms_settings(payload: PlatformSmsSettingsUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_sms_settings(payload: PlatformSmsSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     row = db.get(PlatformSmsSettings, "platform")
     if not row:
         row = PlatformSmsSettings(id="platform")
@@ -40,7 +40,7 @@ def update_sms_settings(payload: PlatformSmsSettingsUpdate, authorization: str |
     row.dlt_template_id = payload.dlt_template_id
     row.template_body = payload.template_body
     row.route = payload.route
-    log_activity(db, None, "platform_sms_settings_updated", "Platform SMS settings updated.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "platform_sms_settings_updated", "Platform SMS settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformSmsSettingsOut(pe_id=row.pe_id, pe_operator=row.pe_operator, header_id=row.header_id, sender_id=row.sender_id, dlt_template_id=row.dlt_template_id, template_body=row.template_body, route=row.route)
 
@@ -54,7 +54,7 @@ def get_smtp_settings(db: Session = Depends(get_db)):
 
 
 @router.put("/smtp-settings", response_model=PlatformSmtpSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     row = db.get(PlatformSmtpSettings, "platform")
     if not row:
         row = PlatformSmtpSettings(id="platform")
@@ -66,7 +66,7 @@ def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, authorization: str
         row.password_encrypted = encrypt_secret(payload.password)
     row.from_address = payload.from_address
     row.use_tls = payload.use_tls
-    log_activity(db, None, "platform_smtp_settings_updated", "Platform SMTP settings updated.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "platform_smtp_settings_updated", "Platform SMTP settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformSmtpSettingsOut(host=row.host, port=row.port, username=row.username, from_address=row.from_address, use_tls=row.use_tls, configured=bool(row.host))
 
@@ -90,7 +90,7 @@ def get_erpnext_settings_admin(db: Session = Depends(get_db)):
 
 
 @router.put("/erpnext-settings", response_model=PlatformErpNextSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """api_secret is write-only, same convention as the SMTP password -- GET never returns it,
     and a blank value on PUT keeps whatever was already stored."""
     row = db.get(PlatformErpNextSettings, "platform")
@@ -111,7 +111,7 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, authorizatio
     row.item_code_dlt_fee = payload.item_code_dlt_fee
     row.item_code_channel_subscription = payload.item_code_channel_subscription
     row.item_code_admin_credit = payload.item_code_admin_credit
-    log_activity(db, None, "platform_erpnext_settings_updated", "Platform ERPNext settings updated.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "platform_erpnext_settings_updated", "Platform ERPNext settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
@@ -141,7 +141,7 @@ def get_general_settings(db: Session = Depends(get_db)):
 
 
 @router.put("/general-settings", response_model=PlatformGeneralSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_general_settings(payload: PlatformGeneralSettingsUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def update_general_settings(payload: PlatformGeneralSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Every field is optional and blank-clears back to the .env fallback in config.py (see
     get_platform_company_info) -- there's no "leave unchanged" sentinel here because none of
     these values are secrets, unlike the SMTP password."""
@@ -157,7 +157,7 @@ def update_general_settings(payload: PlatformGeneralSettingsUpdate, authorizatio
     row.company_phone = _norm(payload.company_phone)
     row.support_email = _norm(payload.support_email)
     row.public_api_base_url = _norm(payload.public_api_base_url)
-    log_activity(db, None, "platform_general_settings_updated", "Platform general settings updated.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "platform_general_settings_updated", "Platform general settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     info = get_platform_company_info(db)
     return PlatformGeneralSettingsOut(
@@ -179,8 +179,8 @@ def get_wallet(db: Session = Depends(get_db)):
 
 
 @router.post("/wallet/topup", response_model=PlatformWalletOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def topup_wallet(payload: PlatformWalletTopupRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def topup_wallet(payload: PlatformWalletTopupRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     credit_platform_wallet(db, payload.amount, type="admin_topup", reference=payload.notes)
-    log_activity(db, None, "platform_wallet_topup", f"Platform wallet topped up by {payload.amount} credits.", actor_email=_caller_email(authorization, db))
+    log_activity(db, None, "platform_wallet_topup", f"Platform wallet topped up by {payload.amount} credits.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     return get_wallet(db)

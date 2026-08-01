@@ -34,7 +34,7 @@ INVITABLE_ROLES = {UserRole.sub_user, UserRole.finance_user, UserRole.marketing_
 
 
 @router.post("/invite", response_model=TeamInviteResponse)
-def invite_teammate(payload: TeamInviteRequest, user: User = Depends(require_capability("team:invite")), db: Session = Depends(get_db)):
+def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = Depends(require_capability("team:invite")), db: Session = Depends(get_db)):
     if not user.organization_id:
         raise HTTPException(status_code=422, detail="Complete organisation onboarding before inviting teammates")
     if payload.role not in INVITABLE_ROLES:
@@ -49,7 +49,7 @@ def invite_teammate(payload: TeamInviteRequest, user: User = Depends(require_cap
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS),
     )
     db.add(invitation)
-    log_activity(db, user.organization_id, "team_invite_sent", f"Invited {payload.email} as {payload.role.value.replace('_', ' ')}.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "team_invite_sent", f"Invited {payload.email} as {payload.role.value.replace('_', ' ')}.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
 
     accept_url = f"{settings.web_origin}/accept-invite?token={token}"
@@ -103,7 +103,7 @@ def accept_invite(payload: AcceptInviteRequest, request: Request, db: Session = 
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     # Logged only once the User row is actually committed -- user.id is a Python-side default
     # that isn't populated until flush, and this event should never survive a rolled-back invite.
-    log_activity(db, invitation.organization_id, "team_member_joined", f"{invitation.email} joined the team as {invitation.role.replace('_', ' ')}.", user_id=user.id, actor_email=invitation.email)
+    log_activity(db, invitation.organization_id, "team_member_joined", f"{invitation.email} joined the team as {invitation.role.replace('_', ' ')}.", user_id=user.id, actor_email=invitation.email, request=request)
     sid = _create_session(db, user.id, request)
     db.commit()
     return TokenResponse(access_token=create_access_token(subject=user.id, extra_claims={"sid": sid}), mfa_required=False)

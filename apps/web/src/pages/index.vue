@@ -771,51 +771,53 @@ onMounted(() => {
           </h2>
         </div>
 
-        <VRow>
-          <VCol
-            v-for="(testimonial, index) in testimonials"
+      </VContainer>
+
+      <div
+        v-reveal
+        class="testimonial-marquee-wrapper mt-4"
+      >
+        <div
+          class="testimonial-marquee-track"
+          :style="{ '--marquee-duration': `${testimonials.length * 8}s` }"
+        >
+          <VCard
+            v-for="(testimonial, index) in [...testimonials, ...testimonials]"
             :key="`${testimonial.author_name}-${index}`"
-            cols="12"
-            md="4"
-            v-reveal="index"
+            variant="outlined"
+            class="testimonial-card testimonial-marquee-item"
           >
-            <VCard
-              variant="outlined"
-              height="100%"
-              class="testimonial-card"
-            >
-              <VCardText>
-                <VRating
-                  :model-value="5"
-                  color="warning"
-                  density="compact"
-                  readonly
-                  class="mb-3"
-                />
-                <p class="mb-4">
-                  "{{ testimonial.quote }}"
-                </p>
-                <div class="d-flex align-center gap-3">
-                  <VAvatar
-                    color="primary"
-                    variant="tonal"
-                  >
-                    {{ testimonial.author_name.split(' ').map(n => n[0]).join('') }}
-                  </VAvatar>
-                  <div>
-                    <div class="font-weight-medium">
-                      {{ testimonial.author_name }}
-                    </div>
-                    <div class="text-caption text-medium-emphasis">
-                      {{ testimonial.author_role }}
-                    </div>
+            <VCardText>
+              <VRating
+                :model-value="5"
+                color="warning"
+                density="compact"
+                readonly
+                class="mb-3"
+              />
+              <p class="mb-4">
+                "{{ testimonial.quote }}"
+              </p>
+              <div class="d-flex align-center gap-3">
+                <VAvatar
+                  color="primary"
+                  variant="tonal"
+                >
+                  {{ testimonial.author_name.split(' ').map(n => n[0]).join('') }}
+                </VAvatar>
+                <div>
+                  <div class="font-weight-medium">
+                    {{ testimonial.author_name }}
+                  </div>
+                  <div class="text-caption text-medium-emphasis">
+                    {{ testimonial.author_role }}
                   </div>
                 </div>
-              </VCardText>
-            </VCard>
-          </VCol>
-        </VRow>
-      </VContainer>
+              </div>
+            </VCardText>
+          </VCard>
+        </div>
+      </div>
     </section>
 
     <section class="section-py bg-surface">
@@ -1258,13 +1260,49 @@ onMounted(() => {
   box-shadow: 0 8px 20px rgba(var(--v-theme-on-surface), 0.1);
 }
 
+.testimonial-marquee-wrapper {
+  overflow: hidden;
+  inline-size: 100%;
+  mask-image: linear-gradient(to right, transparent, black 6%, black 94%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 6%, black 94%, transparent);
+}
+
+.testimonial-marquee-track {
+  display: flex;
+  gap: 24px;
+  inline-size: max-content;
+  padding-block: 8px;
+  animation: testimonial-marquee-scroll var(--marquee-duration, 40s) linear infinite;
+}
+
+.testimonial-marquee-wrapper:hover .testimonial-marquee-track {
+  animation-play-state: paused;
+}
+
 .testimonial-card {
+  flex: 0 0 auto;
+  inline-size: 340px;
   transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 
 .testimonial-card:hover {
   transform: translateY(-6px);
   box-shadow: 0 12px 28px rgba(var(--v-theme-on-surface), 0.12);
+}
+
+@keyframes testimonial-marquee-scroll {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .testimonial-marquee-track {
+    animation: none;
+  }
 }
 
 .support-panel {

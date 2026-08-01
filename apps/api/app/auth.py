@@ -239,9 +239,9 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
             user.failed_login_attempts += 1
             if user.failed_login_attempts >= LOGIN_MAX_ATTEMPTS:
                 user.login_locked_until = datetime.now(timezone.utc) + timedelta(minutes=LOGIN_LOCKOUT_MINUTES)
-                log_activity(db, user.organization_id, "login_locked", "Account locked after repeated failed login attempts.", user_id=user.id, actor_email=user.email, ip_address=ip)
+                log_activity(db, user.organization_id, "login_locked", "Account locked after repeated failed login attempts.", user_id=user.id, actor_email=user.email, ip_address=ip, request=request)
             else:
-                log_activity(db, user.organization_id, "login_failed", "Failed login attempt (incorrect password).", user_id=user.id, actor_email=user.email, ip_address=ip)
+                log_activity(db, user.organization_id, "login_failed", "Failed login attempt (incorrect password).", user_id=user.id, actor_email=user.email, ip_address=ip, request=request)
             db.commit()
         raise HTTPException(status_code=401, detail="Incorrect email or password")
     user.failed_login_attempts = 0
@@ -258,7 +258,7 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
         db.commit()
         return TokenResponse(mfa_required=True, mfa_token=mfa_token)
     sid = _create_session(db, user.id, request)
-    log_activity(db, user.organization_id, "login_success", "Logged in.", user_id=user.id, actor_email=user.email, ip_address=ip)
+    log_activity(db, user.organization_id, "login_success", "Logged in.", user_id=user.id, actor_email=user.email, ip_address=ip, request=request)
     db.commit()
     return TokenResponse(access_token=create_access_token(subject=user.id, extra_claims={"sid": sid}), mfa_required=False)
 
@@ -279,7 +279,7 @@ def login_verify_2fa(payload: Verify2faRequest, request: Request, db: Session = 
     now = datetime.now(timezone.utc)
     sid = _create_session(db, user.id, request)
     token = create_access_token(subject=user.id, extra_claims={"mfa_verified_at": int(now.timestamp()), "sid": sid})
-    log_activity(db, user.organization_id, "login_success", "Logged in (2FA verified).", user_id=user.id, actor_email=user.email, ip_address=client_ip(request))
+    log_activity(db, user.organization_id, "login_success", "Logged in (2FA verified).", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return TokenResponse(access_token=token, mfa_required=False)
 
@@ -414,20 +414,20 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
     user.failed_login_attempts = 0
     user.login_locked_until = None
     sid = _create_session(db, user.id, request)
-    log_activity(db, user.organization_id, "password_reset", "Password reset via forgot-password.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "password_reset", "Password reset via forgot-password.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return TokenResponse(access_token=create_access_token(subject=user.id, extra_claims={"sid": sid}), mfa_required=False)
 
 
 @router.post("/change-password")
-def change_password(payload: ChangePasswordRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def change_password(payload: ChangePasswordRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Available to every account, staff included -- unlike forgot-password, this requires
     already knowing the current password, so it doesn't carry the same public-attack-surface
     risk. This is the password-change path for platform staff."""
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=422, detail="Current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
-    log_activity(db, user.organization_id, "password_changed", "Password changed.", user_id=user.id, actor_email=user.email)
+    log_activity(db, user.organization_id, "password_changed", "Password changed.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return {"status": "changed"}
 
