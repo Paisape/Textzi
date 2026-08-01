@@ -10,19 +10,53 @@ definePage({
 
 const router = useRouter()
 
+const INDUSTRY_OPTIONS = [
+  'E-commerce & Retail',
+  'Banking & Financial Services',
+  'Insurance',
+  'Healthcare & Pharma',
+  'Education',
+  'Real Estate',
+  'Travel & Hospitality',
+  'Logistics & Transportation',
+  'IT & Software Services',
+  'Telecom',
+  'Media & Entertainment',
+  'Food & Beverage',
+  'Automotive',
+  'Manufacturing',
+  'Government & Public Sector',
+  'NGO & Non-Profit',
+  'Other',
+]
+
 const form = ref({
   organizationName: '',
   entityName: '',
+  industry: '',
   gstin: '',
   pan: '',
-  industry: '',
   address: '',
+  contactPersonName: '',
+  contactEmail: '',
+  contactMobile: '',
 })
 
+const noGstin = ref(false)
+
+const gstinValidator = (v: string) => (!!v && v.length === 15) || 'GSTIN must be 15 characters'
+const panValidator = (v: string) => (!!v && v.length === 10) || 'PAN must be 10 characters'
+const mobileValidator = (v: string) => /^[1-9][0-9]{9,14}$/.test(v) || 'Enter a valid mobile number'
+
+const refForm = ref()
 const errorMessage = ref('')
 const submitting = ref(false)
 
 async function onSubmit() {
+  const { valid } = await refForm.value.validate()
+  if (!valid)
+    return
+
   errorMessage.value = ''
   submitting.value = true
   try {
@@ -31,10 +65,13 @@ async function onSubmit() {
       body: {
         organization_name: form.value.organizationName,
         entity_name: form.value.entityName || null,
-        gstin: form.value.gstin || null,
-        pan: form.value.pan || null,
-        industry: form.value.industry || null,
-        address: form.value.address || null,
+        industry: form.value.industry,
+        gstin: noGstin.value ? null : form.value.gstin,
+        pan: form.value.pan,
+        address: form.value.address,
+        contact_person_name: form.value.contactPersonName,
+        contact_email: form.value.contactEmail,
+        contact_mobile: form.value.contactMobile,
       },
     })
     router.push('/dashboard')
@@ -83,11 +120,15 @@ async function onSubmit() {
         >
           {{ errorMessage }}
         </VAlert>
-        <VForm @submit.prevent="onSubmit">
+        <VForm
+          ref="refForm"
+          @submit.prevent="onSubmit"
+        >
           <VRow>
             <VCol cols="12">
               <AppTextField
                 v-model="form.organizationName"
+                :rules="[requiredValidator]"
                 label="Organisation name"
                 placeholder="Acme Pvt Ltd"
                 autofocus
@@ -107,20 +148,36 @@ async function onSubmit() {
               cols="12"
               md="6"
             >
-              <AppTextField
+              <AppSelect
                 v-model="form.industry"
-                label="Industry (optional)"
-                placeholder="Retail, Finance, ..."
+                :items="INDUSTRY_OPTIONS"
+                :rules="[requiredValidator]"
+                label="Industry"
+                placeholder="Select an industry"
               />
             </VCol>
             <VCol
+              v-if="!noGstin"
               cols="12"
               md="6"
             >
               <AppTextField
                 v-model="form.gstin"
-                label="GSTIN (optional)"
+                :rules="[requiredValidator, gstinValidator]"
+                label="GSTIN"
                 placeholder="15-character GSTIN"
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              :md="noGstin ? 12 : 6"
+              class="d-flex align-center"
+              :class="noGstin ? '' : 'mt-n2'"
+            >
+              <VCheckbox
+                v-model="noGstin"
+                label="I don't have a GSTIN"
+                @update:model-value="form.gstin = ''"
               />
             </VCol>
             <VCol
@@ -129,15 +186,58 @@ async function onSubmit() {
             >
               <AppTextField
                 v-model="form.pan"
-                label="PAN (optional)"
+                :rules="[requiredValidator, panValidator]"
+                label="PAN"
                 placeholder="10-character PAN"
               />
             </VCol>
-            <VCol cols="12">
+            <VCol
+              cols="12"
+              md="6"
+            >
               <AppTextField
                 v-model="form.address"
-                label="Business address (optional)"
+                :rules="[requiredValidator]"
+                label="Business address"
                 placeholder="Registered office address"
+              />
+            </VCol>
+            <VCol cols="12">
+              <h6 class="text-h6 mb-2">
+                Primary contact person
+              </h6>
+            </VCol>
+            <VCol
+              cols="12"
+              md="4"
+            >
+              <AppTextField
+                v-model="form.contactPersonName"
+                :rules="[requiredValidator]"
+                label="Contact person name"
+                placeholder="Full name"
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              md="4"
+            >
+              <AppTextField
+                v-model="form.contactEmail"
+                :rules="[requiredValidator, emailValidator]"
+                label="Contact person email"
+                placeholder="name@company.com"
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              md="4"
+            >
+              <AppTextField
+                v-model="form.contactMobile"
+                :rules="[requiredValidator, mobileValidator]"
+                label="Contact person mobile"
+                placeholder="9876543210"
               />
             </VCol>
             <VCol cols="12">

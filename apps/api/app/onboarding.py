@@ -18,7 +18,10 @@ def onboard_organization(payload: OrganizationOnboardRequest, user: User = Depen
     if user.organization_id:
         raise HTTPException(status_code=409, detail="Account is already onboarded to an organization")
 
-    org = Organization(name=payload.organization_name, gstin=payload.gstin, pan=payload.pan, industry=payload.industry, address=payload.address)
+    org = Organization(
+        name=payload.organization_name, gstin=payload.gstin, pan=payload.pan, industry=payload.industry, address=payload.address,
+        contact_person_name=payload.contact_person_name, contact_email=payload.contact_email, contact_mobile=payload.contact_mobile,
+    )
     db.add(org)
     try:
         db.flush()

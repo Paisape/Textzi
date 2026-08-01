@@ -216,10 +216,17 @@ class UserProfile(BaseModel):
 class OrganizationOnboardRequest(BaseModel):
     organization_name: str = Field(min_length=2, max_length=160)
     entity_name: str | None = Field(default=None, max_length=160)
+    # gstin stays optional -- the onboarding form lets a user declare "I don't have a GSTIN" and
+    # skip it entirely; every other KYC/contact field below is mandatory for self-service
+    # onboarding (unlike AdminCreateCustomerRequest, which keeps all of these optional since an
+    # admin may be provisioning a customer before full KYC details are available).
     gstin: str | None = Field(default=None, min_length=15, max_length=15)
-    pan: str | None = Field(default=None, min_length=10, max_length=10)
-    industry: str | None = Field(default=None, max_length=80)
-    address: str | None = Field(default=None, max_length=300)
+    pan: str = Field(min_length=10, max_length=10)
+    industry: str = Field(min_length=1, max_length=80)
+    address: str = Field(min_length=1, max_length=300)
+    contact_person_name: str = Field(min_length=2, max_length=160)
+    contact_email: EmailStr
+    contact_mobile: str = Field(pattern=r"^[1-9][0-9]{9,14}$")
 
 
 class OrganizationOnboardResponse(BaseModel):

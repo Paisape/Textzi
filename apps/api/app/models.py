@@ -172,6 +172,15 @@ class Organization(Base):
     pan: Mapped[str | None] = mapped_column(String(10), nullable=True)
     industry: Mapped[str | None] = mapped_column(String(80), nullable=True)
     address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Primary business contact for this organization -- distinct from the login account that
+    # completed onboarding (AdminCreateCustomerRequest's admin-provisioning path already has its
+    # own contact_* fields, but those become the User row itself; here the user already exists,
+    # so these are just organization-level fields). Nullable at the DB layer so
+    # AdminCreateCustomerRequest's org-creation path (which doesn't collect these) keeps working
+    # unchanged -- required-ness for self-service onboarding is enforced in OrganizationOnboardRequest.
+    contact_person_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     # ERPNext's Customer doctype name (its own primary key, not a Textzi id) -- set the first time
     # any invoice for this organization is pushed to ERPNext (services.erpnext.ensure_customer);
