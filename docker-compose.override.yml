@@ -1,0 +1,10 @@
+# Loaded automatically by `docker compose` for local development only (Compose's own convention
+# -- this file is not referenced anywhere and Coolify's deploy only reads the exact path configured
+# in its resource settings, so this never applies there). Restores direct host access to the api
+# and web containers so `curl localhost:8000` / `http://localhost:5173` keep working the same way
+# they did before docker-compose.yml switched those services to `expose` instead of `ports`.
+services:
+  api:
+    ports: ["8000:8000"]
+  web:
+    ports: ["5173:80"]

@@ -27,7 +27,12 @@ services:
     build: ./apps/api
     restart: unless-stopped
     env_file: .env
-    ports: ["8000:8000"]
+    # No host port published here -- a reverse proxy in front of this stack (e.g. Coolify's
+    # Traefik) reaches this container directly over the internal Docker network via its exposed
+    # port, so binding it to the host too is unnecessary and risks "port already allocated" on a
+    # shared server. For local development, docker-compose.override.yml re-adds the host mapping
+    # automatically (Compose loads it by convention) so `curl localhost:8000` keeps working.
+    expose: ["8000"]
     volumes: [uploads_data:/app/uploads]
     depends_on:
       postgres: { condition: service_healthy }
@@ -39,7 +44,7 @@ services:
       args:
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
     restart: unless-stopped
-    ports: ["5173:80"]
+    expose: ["80"]
     depends_on: [api]
 volumes:
   postgres_data:
