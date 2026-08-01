@@ -344,6 +344,16 @@ class PaymentOrder(Base):
     # fee-snapshot pattern.
     rate_card_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     price_per_sms: Mapped[float | None] = mapped_column(Numeric(10, 4), nullable=True)
+    # Who initiated this recharge and from where -- captured at order-creation time, surfaced on
+    # the admin wallet top-up reconciliation report (services.wallet_topup_report_rows).
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Snapshotted at verify-time -- the credits actually applied to the wallet for this order.
+    # Compared against amount/price_per_sms (recomputed independently, not just re-read from this
+    # same value) on the reconciliation report and right after crediting in payments.verify_payment,
+    # so a future code change that credits a different amount than what was quoted is caught
+    # immediately rather than silently drifting the ledger.
+    credits_applied: Mapped[float | None] = mapped_column(Numeric(14, 4), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

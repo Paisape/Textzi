@@ -30,10 +30,10 @@ from .schemas import (
     PlatformMessageTelemetryOut, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
-    UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse,
+    UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse, WalletTopupReportRowOut,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, hash_api_key, hash_password
-from .services import GST_RATE, DomainError, credit_wallet, log_activity, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card
+from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -837,6 +837,39 @@ def create_wallet_credit(payload: WalletCreditRequest, request: Request, authori
     if invoice:
         db.refresh(invoice)
     return WalletCreditResponse(entity_id=entity.id, credits_added=round(credits, 2), available_balance=available, invoice=_invoice_out(invoice) if invoice else None)
+
+
+@router.get("/wallet-topup-report", response_model=list[WalletTopupReportRowOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def wallet_topup_report(mismatches_only: bool = False, db: Session = Depends(get_db)):
+    """Every Razorpay wallet top-up (paid orders only), with the credits actually applied
+    alongside what the order's own snapshotted rate says they should be -- see
+    services.enforce_topup_integrity for what a mismatch here means and what already happens
+    automatically the moment one is detected during payment verification. This report exists for
+    visibility across history (including anything that predates that check, or a legacy order
+    with no snapshotted rate to reconcile against)."""
+    orders = db.scalars(select(PaymentOrder).where(PaymentOrder.provider == "razorpay", PaymentOrder.status == "paid").order_by(PaymentOrder.created_at.desc())).all()
+    user_ids = {o.user_id for o in orders if o.user_id}
+    users_by_id = {u.id: u for u in db.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+    rate_card_ids = {o.rate_card_id for o in orders if o.rate_card_id}
+    rate_cards_by_id = {c.id: c for c in db.scalars(select(RateCard).where(RateCard.id.in_(rate_card_ids))).all()} if rate_card_ids else {}
+
+    rows = []
+    for o in orders:
+        expected = expected_topup_credits(o)
+        applied = float(o.credits_applied) if o.credits_applied is not None else None
+        mismatch = expected is not None and applied is not None and abs(expected - applied) > TOPUP_MISMATCH_TOLERANCE
+        if mismatches_only and not mismatch:
+            continue
+        user = users_by_id.get(o.user_id) if o.user_id else None
+        gst_amount = round(float(o.amount) * GST_RATE, 2)
+        rows.append(WalletTopupReportRowOut(
+            order_id=o.id, user_name=user.full_name if user else None, user_email=user.email if user else None,
+            created_at=o.created_at.isoformat(), ip_address=o.ip_address,
+            rate_card_name=rate_cards_by_id[o.rate_card_id].name if o.rate_card_id in rate_cards_by_id else None,
+            amount=float(o.amount), gst_amount=gst_amount, total_received=round(float(o.amount) + gst_amount, 2),
+            credits_applied=applied, expected_credits=expected, mismatch=mismatch,
+        ))
+    return rows
 
 
 def _razorpay_client() -> razorpay.Client:

@@ -266,6 +266,21 @@ class RechargeResponse(BaseModel):
     dev_note: str | None = None
 
 
+class WalletTopupReportRowOut(BaseModel):
+    order_id: str
+    user_name: str | None
+    user_email: str | None
+    created_at: str
+    ip_address: str | None
+    rate_card_name: str | None
+    amount: float
+    gst_amount: float
+    total_received: float
+    credits_applied: float | None
+    expected_credits: float | None
+    mismatch: bool
+
+
 class RazorpayOrderRequest(BaseModel):
     amount: float = Field(gt=0, le=1_000_000)
 
@@ -429,8 +444,8 @@ class PublicRateCardOut(RateCardSummary):
 class ContactRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     email: EmailStr
-    phone: str | None = Field(default=None, max_length=20)
-    company: str | None = Field(default=None, max_length=160)
+    phone: str = Field(min_length=1, max_length=20)
+    company: str = Field(min_length=1, max_length=160)
     message: str = Field(min_length=1, max_length=4000)
 
 

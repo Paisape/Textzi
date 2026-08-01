@@ -8,7 +8,7 @@ order-creation time, never from the client's post-checkout report -- this is wha
 from creating a small order and then claiming a larger amount was paid. The order id is bound to
 the entity that created it, so one entity's order/payment cannot be replayed to credit another."""
 import razorpay
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -18,7 +18,7 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import PaymentOrder, User
 from .schemas import RazorpayOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse
-from .services import GST_RATE, DomainError, credit_wallet, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet/recharge/razorpay", tags=["wallet"])
 
@@ -30,7 +30,7 @@ def _client() -> razorpay.Client:
 
 
 @router.post("/order", response_model=RazorpayOrderResponse)
-def create_order(payload: RazorpayOrderRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def create_order(payload: RazorpayOrderRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
     client = _client()
     try:
         entity = resolve_user_entity(db, user)
@@ -50,7 +50,10 @@ def create_order(payload: RazorpayOrderRequest, user: User = Depends(require_use
 
     # Snapshot the quoted rate now -- if an admin changes the rate card or a slab's
     # price_per_sms before the customer finishes checkout, they still get what they were quoted.
-    db.add(PaymentOrder(entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=payload.amount, status="created", rate_card_id=rate_card.id, price_per_sms=slab.price_per_sms))
+    db.add(PaymentOrder(
+        entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=payload.amount, status="created",
+        rate_card_id=rate_card.id, price_per_sms=slab.price_per_sms, user_id=user.id, ip_address=client_ip(request),
+    ))
     db.commit()
     return RazorpayOrderResponse(order_id=order["id"], key_id=settings.razorpay_key_id, amount_paise=amount_paise)
 
@@ -96,10 +99,20 @@ def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_
 
     wallet = credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay", reference=payload.razorpay_payment_id)
     order.status = "paid"
+    order.credits_applied = credits
     gst_amount = round(float(order.amount) * GST_RATE, 2)
     price_per_sms = float(order.price_per_sms) if order.price_per_sms else (float(order.amount) / credits if credits else None)
     invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id, credits_purchased=round(credits, 2), price_per_sms=price_per_sms)
     issue_invoice(db, invoice)
+
+    # Independently re-verifies the credited amount matches what this order's own snapshotted
+    # rate says it should be -- see enforce_topup_integrity's docstring for what this actually
+    # protects against. A mismatch suspends the account and deactivates its API keys before this
+    # transaction commits, so a bad credit never becomes spendable.
+    if enforce_topup_integrity(db, order, entity, user, credits):
+        db.commit()
+        raise HTTPException(status_code=500, detail="A problem was detected with this transaction. Your account has been placed on hold pending review -- contact support.")
+
     db.commit()
 
     available = float(wallet.prepaid_balance) + max(0, float(wallet.credit_limit) - float(wallet.credit_used))

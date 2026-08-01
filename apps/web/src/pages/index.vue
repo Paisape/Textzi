@@ -60,8 +60,7 @@ async function loadRateCards() {
 }
 
 function slabLabel(slab: RateCardSlab): string {
-  const range = slab.max_amount ? `₹${slab.min_amount.toLocaleString('en-IN')}–₹${slab.max_amount.toLocaleString('en-IN')}` : `₹${slab.min_amount.toLocaleString('en-IN')}+`
-  return `${range} recharged`
+  return slab.max_amount ? `₹${slab.min_amount.toLocaleString('en-IN')}–₹${slab.max_amount.toLocaleString('en-IN')}` : `₹${slab.min_amount.toLocaleString('en-IN')}+`
 }
 
 type PublicTestimonial = { author_name: string, author_role: string, quote: string }
@@ -1020,7 +1019,8 @@ onMounted(() => {
                     >
                       <VTextField
                         v-model="contactForm.phone"
-                        label="Phone (optional)"
+                        label="Phone"
+                        :rules="[v => !!v || 'Required']"
                       />
                     </VCol>
                     <VCol
@@ -1029,7 +1029,8 @@ onMounted(() => {
                     >
                       <VTextField
                         v-model="contactForm.company"
-                        label="Company (optional)"
+                        label="Company"
+                        :rules="[v => !!v || 'Required']"
                       />
                     </VCol>
                     <VCol cols="12">

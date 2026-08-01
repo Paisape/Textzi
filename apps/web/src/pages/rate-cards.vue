@@ -291,7 +291,7 @@ async function onRemoveAssignment(userId: string) {
 
 function slabLabel(slab: RateCardSlab): string {
   const range = slab.max_amount ? `₹${slab.min_amount.toLocaleString('en-IN')}–₹${slab.max_amount.toLocaleString('en-IN')}` : `₹${slab.min_amount.toLocaleString('en-IN')}+`
-  return `${range} recharged @ ₹${slab.price_per_sms.toFixed(2)}/SMS`
+  return `${range} @ ₹${slab.price_per_sms.toFixed(2)}/SMS`
 }
 
 onMounted(load)

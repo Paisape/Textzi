@@ -160,6 +160,11 @@ export const adminNav = [
         icon: { icon: 'tabler-refresh' },
       },
       {
+        title: 'Wallet Top-up Report',
+        to: { name: 'admin-wallet-topup-report' },
+        icon: { icon: 'tabler-shield-check' },
+      },
+      {
         title: 'Usage',
         to: { name: 'admin-usage' },
         icon: { icon: 'tabler-chart-bar' },

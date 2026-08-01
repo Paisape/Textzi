@@ -5,7 +5,8 @@ from fastapi import Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .config import settings
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, WabaWallet, Wallet, WalletTransaction, Status
+from .email_service import render_email, send_email
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction, Status
 from .security import hash_api_key
 
 GST_RATE = 0.18
@@ -311,6 +312,60 @@ def debit_wallet(db: Session, entity_id: str, amount: float, reference: str | No
         wallet.credit_used = wallet.credit_used + remaining
     db.add(WalletTransaction(entity_id=entity_id, channel=channel, type="debit", amount=-amount_dec, balance_after=_wallet_available(wallet), reference=reference))
     return wallet
+
+
+TOPUP_MISMATCH_TOLERANCE = 0.01  # rupee-level float rounding noise, not a real discrepancy
+
+
+def expected_topup_credits(order: PaymentOrder) -> float | None:
+    """Recomputes what a paid order's credits *should* be, independently of whatever was actually
+    applied to the wallet -- from the order's own snapshotted amount/price_per_sms (set server-side
+    at order-creation, see payments.create_order), never from anything client-supplied. Returns
+    None for a legacy order with no snapshotted rate (nothing to reconcile against)."""
+    if not order.price_per_sms:
+        return None
+    return float(order.amount) / float(order.price_per_sms)
+
+
+def enforce_topup_integrity(db: Session, order: PaymentOrder, entity: Entity, user: User, actual_credits: float) -> bool:
+    """Called immediately after a wallet top-up is credited (payments.verify_payment) and again
+    across history by the admin reconciliation report (admin.wallet_topup_report) -- same check,
+    two callers. Compares the credits actually applied against what the order's own snapshotted
+    rate says they should be; under the current design these can only diverge from a future code
+    change that credits a different value than what was quoted (see PaymentOrder.credits_applied),
+    not from anything a client can influence today, but this is the safety net for exactly that
+    "someone edited this code and broke the invariant" case.
+
+    On mismatch: suspends the account, deactivates every API key on the entity, logs it, and
+    emails the platform's support address -- immediately, not just flagged for later review, per
+    explicit instruction that a detected mismatch must block the account and API right away."""
+    expected = expected_topup_credits(order)
+    if expected is None or abs(expected - actual_credits) <= TOPUP_MISMATCH_TOLERANCE:
+        return False
+
+    user.status = UserStatus.suspended
+    for key in db.scalars(select(ApiKey).where(ApiKey.entity_id == entity.id, ApiKey.active == True)).all():  # noqa: E712
+        key.active = False
+    log_activity(
+        db, entity.organization_id, "wallet_topup_mismatch_blocked",
+        f"Wallet top-up credit mismatch on order {order.id}: expected {expected:.2f} credits, {actual_credits:.2f} applied. "
+        f"Account suspended and all API keys deactivated.",
+        user_id=user.id, actor_email=user.email,
+    )
+    info = get_platform_company_info(db)
+    send_email(
+        db, to=info.support_email,
+        subject=f"[Security] Wallet top-up mismatch -- {user.email} blocked",
+        html_body=render_email(
+            "Wallet top-up credit mismatch detected",
+            f"<p>Order <strong>{order.id}</strong> (entity {entity.id}, user {user.email}) credited "
+            f"<strong>{actual_credits:.2f}</strong> credits but the order's own quoted rate expected "
+            f"<strong>{expected:.2f}</strong>.</p>"
+            f"<p>The account has been suspended and every API key on this entity deactivated automatically. "
+            f"Investigate before reinstating.</p>",
+        ),
+    )
+    return True
 
 
 def resolve_rate_card(db: Session, user: User) -> RateCard:
