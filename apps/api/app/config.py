@@ -1,9 +1,23 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
     database_url: str = "sqlite:///./textzi.db"
+
+    @field_validator("database_url")
+    @classmethod
+    def _normalize_postgres_scheme(cls, v: str) -> str:
+        # SQLAlchemy only registers the dialect name "postgresql", not the shorter "postgres" --
+        # many hosts/tools (Heroku-style conventions, some PaaS auto-generated connection strings)
+        # emit "postgres://", which fails at create_engine() with a cryptic NoSuchModuleError
+        # instead of anything mentioning the URL itself. Normalize both that and a bare
+        # "postgresql://" (no driver) to the psycopg v3 driver this project actually installs.
+        for prefix in ("postgres://", "postgresql://"):
+            if v.startswith(prefix):
+                return "postgresql+psycopg://" + v[len(prefix):]
+        return v
     jwt_secret: str = "development-only-change-me"
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_minutes: int = 60
