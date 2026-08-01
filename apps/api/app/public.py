@@ -9,8 +9,8 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .email_service import render_email, send_email
-from .models import ContactMessage, RateCard
-from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, RateCardSlabOut
+from .models import ContactMessage, RateCard, Testimonial
+from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, RateCardSlabOut
 from .services import get_platform_company_info, rate_card_slabs
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
@@ -111,3 +111,13 @@ def list_public_rate_cards(db: Session = Depends(get_db)):
             slabs=[RateCardSlabOut(id=s.id, min_amount=float(s.min_amount), max_amount=float(s.max_amount) if s.max_amount is not None else None, price_per_sms=float(s.price_per_sms)) for s in slabs],
         ))
     return result
+
+
+@router.get("/testimonials", response_model=list[PublicTestimonialOut])
+def list_public_testimonials(db: Session = Depends(get_db)):
+    """Only ever admin-approved testimonials -- a customer's own pending/rejected submission is
+    never visible here, only to themselves (GET /v1/testimonials/mine) and to admins."""
+    rows = db.scalars(
+        select(Testimonial).where(Testimonial.status == "approved").order_by(Testimonial.reviewed_at.desc()).limit(12),
+    ).all()
+    return [PublicTestimonialOut(author_name=r.author_name, author_role=r.author_role, quote=r.quote) for r in rows]

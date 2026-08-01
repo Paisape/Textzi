@@ -19,11 +19,11 @@ from .invoicing import create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    Status as StatusEnum, Template, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction,
+    Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction,
 )
 from .schemas import (
     AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResetPasswordResponse,
-    ContactMessageAdminOut,
+    ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest,
     ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
@@ -1205,6 +1205,98 @@ def list_contact_messages(limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: S
         )
         for r in rows
     ]
+
+
+@router.get("/testimonials", response_model=list[TestimonialAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_testimonials(status_filter: str | None = None, db: Session = Depends(get_db)):
+    """Every testimonial -- customer-submitted (pending review) and admin-authored (already
+    approved) alike. Filter by status_filter=pending to get exactly the moderation queue."""
+    query = select(Testimonial).order_by(Testimonial.created_at.desc())
+    if status_filter:
+        query = query.where(Testimonial.status == status_filter)
+    rows = db.scalars(query).all()
+
+    org_ids = {r.organization_id for r in rows if r.organization_id}
+    org_names = {}
+    if org_ids:
+        for org in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all():
+            org_names[org.id] = org.name
+    user_ids = {r.submitted_by_user_id for r in rows if r.submitted_by_user_id}
+    user_emails = {}
+    if user_ids:
+        for u in db.scalars(select(User).where(User.id.in_(user_ids))).all():
+            user_emails[u.id] = u.email
+
+    return [
+        TestimonialAdminOut(
+            id=r.id, organization_name=org_names.get(r.organization_id) if r.organization_id else None,
+            submitted_by_email=user_emails.get(r.submitted_by_user_id) if r.submitted_by_user_id else None,
+            author_name=r.author_name, author_role=r.author_role, quote=r.quote, status=r.status,
+            created_at=r.created_at.isoformat(), reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
+            reviewed_by=r.reviewed_by,
+        )
+        for r in rows
+    ]
+
+
+@router.post("/testimonials", response_model=TestimonialAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def create_testimonial(payload: TestimonialAdminCreateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Admin-authored testimonial -- e.g. a quote a customer emailed in rather than submitted
+    through the form. Live/public immediately, no separate approval step needed since an admin
+    is the one entering it."""
+    row = Testimonial(
+        author_name=payload.author_name, author_role=payload.author_role, quote=payload.quote,
+        status="approved", reviewed_at=datetime.now(timezone.utc), reviewed_by=_caller_email(authorization, db),
+    )
+    db.add(row)
+    log_activity(db, None, "testimonial_created_by_admin", f"Admin added a testimonial from '{payload.author_name}'.", actor_email=_caller_email(authorization, db))
+    db.commit()
+    db.refresh(row)
+    return TestimonialAdminOut(
+        id=row.id, organization_name=None, submitted_by_email=None, author_name=row.author_name,
+        author_role=row.author_role, quote=row.quote, status=row.status, created_at=row.created_at.isoformat(),
+        reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None, reviewed_by=row.reviewed_by,
+    )
+
+
+@router.patch("/testimonials/{testimonial_id}/status", response_model=TestimonialAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_testimonial_status(testimonial_id: str, payload: TestimonialStatusUpdateRequest, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    row = db.get(Testimonial, testimonial_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Testimonial not found")
+    row.status = payload.status
+    row.reviewed_at = datetime.now(timezone.utc)
+    row.reviewed_by = _caller_email(authorization, db)
+    log_activity(db, row.organization_id, f"testimonial_{payload.status}", f"Testimonial from '{row.author_name}' {payload.status} by admin.", actor_email=row.reviewed_by)
+    db.commit()
+    db.refresh(row)
+
+    org_name = None
+    if row.organization_id:
+        org = db.get(Organization, row.organization_id)
+        org_name = org.name if org else None
+    submitted_by_email = None
+    if row.submitted_by_user_id:
+        u = db.get(User, row.submitted_by_user_id)
+        submitted_by_email = u.email if u else None
+
+    return TestimonialAdminOut(
+        id=row.id, organization_name=org_name, submitted_by_email=submitted_by_email,
+        author_name=row.author_name, author_role=row.author_role, quote=row.quote, status=row.status,
+        created_at=row.created_at.isoformat(), reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+        reviewed_by=row.reviewed_by,
+    )
+
+
+@router.delete("/testimonials/{testimonial_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def delete_testimonial(testimonial_id: str, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    row = db.get(Testimonial, testimonial_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Testimonial not found")
+    log_activity(db, row.organization_id, "testimonial_deleted", f"Testimonial from '{row.author_name}' deleted by admin.", actor_email=_caller_email(authorization, db))
+    db.delete(row)
+    db.commit()
+    return {"id": testimonial_id, "deleted": True}
 
 
 @router.get("/messages/{message_id}/telemetry", response_model=MessageTelemetryOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

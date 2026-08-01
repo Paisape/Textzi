@@ -23,6 +23,7 @@ from .public import router as public_router
 from .reports import router as reports_router
 from .sms import router as sms_router
 from .team import router as team_router
+from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
 from .wallet import router as wallet_router
 from .webhooks import router as webhooks_router
@@ -55,6 +56,7 @@ app.include_router(public_router)
 app.include_router(reports_router)
 app.include_router(sms_router)
 app.include_router(team_router)
+app.include_router(testimonials_router)
 app.include_router(two_factor_router)
 app.include_router(wallet_router)
 app.include_router(webhooks_router)

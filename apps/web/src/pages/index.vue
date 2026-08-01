@@ -64,11 +64,18 @@ function slabLabel(slab: RateCardSlab): string {
   return `${range} recharged`
 }
 
-const testimonials = [
-  { name: 'Ananya Rao', role: 'Founder, UrbanCart', quote: 'Textzi transformed how we talk to customers. Our WhatsApp campaigns now drive a third of our repeat orders.' },
-  { name: 'Vikram Nair', role: 'Growth Lead, FinEdge', quote: 'DLT compliance used to eat days of our time every month. Textzi resolves it in minutes and we never miss a filing window.' },
-  { name: 'Meera Iyer', role: 'Operations Head, Swastik Retail', quote: 'The best return on communication spend we’ve seen. Support is fast, and the automation builder needed zero engineering effort.' },
-]
+type PublicTestimonial = { author_name: string, author_role: string, quote: string }
+
+const testimonials = ref<PublicTestimonial[]>([])
+
+async function loadTestimonials() {
+  try {
+    testimonials.value = await $api<PublicTestimonial[]>('/v1/public/testimonials')
+  }
+  catch {
+    testimonials.value = []
+  }
+}
 
 const supportChannels = [
   { icon: 'tabler-message-circle-2', label: 'Live Chat', to: '/#contact' },
@@ -177,6 +184,7 @@ function animateKpis() {
 
 onMounted(() => {
   loadRateCards()
+  loadTestimonials()
 
   if (kpiSectionEl.value && !prefersReducedMotion) {
     const kpiObserver = new IntersectionObserver(([entry]) => {
@@ -741,6 +749,7 @@ onMounted(() => {
     </section>
 
     <section
+      v-if="testimonials.length"
       id="testimonials"
       class="section-py"
     >
@@ -765,7 +774,7 @@ onMounted(() => {
         <VRow>
           <VCol
             v-for="(testimonial, index) in testimonials"
-            :key="testimonial.name"
+            :key="`${testimonial.author_name}-${index}`"
             cols="12"
             md="4"
             v-reveal="index"
@@ -791,14 +800,14 @@ onMounted(() => {
                     color="primary"
                     variant="tonal"
                   >
-                    {{ testimonial.name.split(' ').map(n => n[0]).join('') }}
+                    {{ testimonial.author_name.split(' ').map(n => n[0]).join('') }}
                   </VAvatar>
                   <div>
                     <div class="font-weight-medium">
-                      {{ testimonial.name }}
+                      {{ testimonial.author_name }}
                     </div>
                     <div class="text-caption text-medium-emphasis">
-                      {{ testimonial.role }}
+                      {{ testimonial.author_role }}
                     </div>
                   </div>
                 </div>

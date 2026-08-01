@@ -33,6 +33,11 @@ export const customerNav = [
         to: { name: 'team' },
         icon: { icon: 'tabler-users-group' },
       },
+      {
+        title: 'Testimonials',
+        to: { name: 'testimonials' },
+        icon: { icon: 'tabler-message-star' },
+      },
     ],
   },
   {
@@ -129,6 +134,11 @@ export const adminNav = [
     title: 'Contact Us Submissions',
     to: { name: 'admin-contact-messages' },
     icon: { icon: 'tabler-mail-question' },
+  },
+  {
+    title: 'Testimonials',
+    to: { name: 'admin-testimonials' },
+    icon: { icon: 'tabler-message-star' },
   },
   {
     title: 'Billing',

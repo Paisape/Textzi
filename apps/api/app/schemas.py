@@ -442,6 +442,50 @@ class ContactMessageAdminOut(BaseModel):
     created_at: str
 
 
+class TestimonialSubmitRequest(BaseModel):
+    author_name: str = Field(min_length=1, max_length=120)
+    author_role: str = Field(min_length=1, max_length=160)
+    quote: str = Field(min_length=1, max_length=600)
+
+
+class TestimonialOut(BaseModel):
+    id: str
+    author_name: str
+    author_role: str
+    quote: str
+    status: str
+    created_at: str
+
+
+class TestimonialAdminOut(BaseModel):
+    id: str
+    organization_name: str | None
+    submitted_by_email: str | None
+    author_name: str
+    author_role: str
+    quote: str
+    status: str
+    created_at: str
+    reviewed_at: str | None
+    reviewed_by: str | None
+
+
+class TestimonialAdminCreateRequest(BaseModel):
+    author_name: str = Field(min_length=1, max_length=120)
+    author_role: str = Field(min_length=1, max_length=160)
+    quote: str = Field(min_length=1, max_length=600)
+
+
+class TestimonialStatusUpdateRequest(BaseModel):
+    status: Literal["approved", "rejected"]
+
+
+class PublicTestimonialOut(BaseModel):
+    author_name: str
+    author_role: str
+    quote: str
+
+
 class MessageOut(BaseModel):
     id: str
     recipient: str

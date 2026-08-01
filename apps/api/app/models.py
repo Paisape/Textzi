@@ -754,3 +754,23 @@ class ContactMessage(Base):
     message: Mapped[str] = mapped_column(Text)
     email_sent: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Testimonial(Base):
+    """A quote shown on the public landing page's Testimonials section. Two ways in: a logged-in
+    customer submits one about their own experience (status starts "pending", organization_id/
+    submitted_by_user_id set, requires admin approval before it's ever public), or an admin
+    authors one directly (status "approved" immediately, both id columns null -- e.g. entering a
+    quote a customer emailed in rather than submitted through the form). Either way, only
+    status == "approved" rows are ever returned by the public endpoint."""
+    __tablename__ = "testimonials"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    organization_id: Mapped[str | None] = mapped_column(ForeignKey("organizations.id"), nullable=True)
+    submitted_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    author_name: Mapped[str] = mapped_column(String(120))
+    author_role: Mapped[str] = mapped_column(String(160))
+    quote: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending | approved | rejected
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
