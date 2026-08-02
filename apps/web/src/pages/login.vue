@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import AuthProvider from '@/views/pages/authentication/AuthProvider.vue'
 import { VNodeRenderer } from '@layouts/components/VNodeRenderer'
+import { useAuthStore } from '@/stores/auth'
 import { themeConfig } from '@themeConfig'
 
 definePage({
@@ -13,6 +14,7 @@ definePage({
 
 const router = useRouter()
 const route = useRoute()
+const authStore = useAuthStore()
 
 const form = ref({
   email: '',
@@ -37,9 +39,17 @@ async function afterLogin(accessToken: string) {
   useCookie('accessToken').value = accessToken
   await nextTick()
 
-  const profile = await $api<{ organization_id: string | null, role: string }>('/v1/auth/me')
+  // Forces the shared auth store to refetch, not just this function's own local variable --
+  // without this, any earlier authStore.load() call this session (e.g. the router guard's dead-
+  // session detection redirecting here) had already set loaded=true with a null/stale profile,
+  // and a plain client-side router.push to /dashboard would never trigger a fresh fetch there
+  // (authStore.load() short-circuits once loaded=true), leaving the dashboard looking logged-out
+  // until a manual page refresh reset the whole store. Every other page reads authStore.profile
+  // directly, so refreshing it here (not just a local variable) is what actually fixes that.
+  await authStore.load(true)
+  const profile = authStore.profile
   const redirectTo = typeof route.query.redirect === 'string' ? route.query.redirect : null
-  const needsOnboarding = profile.role === 'enterprise_customer' && !profile.organization_id
+  const needsOnboarding = profile?.role === 'enterprise_customer' && !profile?.organization_id
   router.push(redirectTo || (needsOnboarding ? '/onboarding' : '/dashboard'))
 }
 
