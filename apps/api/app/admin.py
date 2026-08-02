@@ -618,12 +618,29 @@ def update_user_role(user_id: str, payload: UserRoleUpdateRequest, request: Requ
 
 
 @router.patch("/users/{user_id}/two-factor", response_model=TwoFactorStatusOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def admin_update_two_factor(user_id: str, payload: TwoFactorAdminUpdate, db: Session = Depends(get_db)):
+def admin_update_two_factor(user_id: str, payload: TwoFactorAdminUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Recovery lever for a locked-out user (e.g. lost authenticator device) -- admin-only
     force-disable, no backup codes in this pass. Enabling 2FA for someone else is not supported
-    since only the user can prove possession of the secret via a live code."""
+    since only the user can prove possession of the secret via a live code. Same self-action and
+    privileged-tier protections as update_user_role/update_user_status -- stripping someone's 2FA
+    is at least as capable of enabling privilege abuse as changing their role or status is."""
     if payload.enabled:
         raise HTTPException(status_code=422, detail="2FA can only be enabled by the user themselves")
+    caller = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
+            caller = db.get(User, claims.get("sub"))
+        except jwt.PyJWTError:
+            caller = None
+    if caller and caller.id == user_id:
+        raise HTTPException(status_code=422, detail="You cannot disable your own 2FA this way -- use Account Security instead")
+    target = db.get(User, user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found")
+    privileged_roles = ADMIN_ROLES.union(*STAFF_AREA_ROLES.values())
+    if target.role in privileged_roles and caller and caller.role != UserRole.super_admin.value:
+        raise HTTPException(status_code=403, detail="Only Super Admin can disable a privileged account's 2FA")
     row = db.get(TwoFactorAuth, user_id)
     if row:
         db.delete(row)
@@ -679,8 +696,9 @@ def update_user_status(user_id: str, payload: UserStatusUpdateRequest, request: 
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    if user.role in ADMIN_ROLES and caller and caller.role != UserRole.super_admin.value:
-        raise HTTPException(status_code=403, detail="Only Super Admin can suspend or reactivate an admin-tier account")
+    privileged_roles = ADMIN_ROLES.union(*STAFF_AREA_ROLES.values())
+    if user.role in privileged_roles and caller and caller.role != UserRole.super_admin.value:
+        raise HTTPException(status_code=403, detail="Only Super Admin can suspend or reactivate a privileged account")
     old_status = user.status
     user.status = payload.status
     if payload.status == UserStatus.active:

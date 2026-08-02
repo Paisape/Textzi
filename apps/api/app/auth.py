@@ -30,6 +30,11 @@ from .services import capabilities_for, client_ip, debit_platform_wallet, get_pl
 logger = logging.getLogger("textzi.auth")
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
 
+# Verified against on every login attempt for a non-existent email, so a request for an unknown
+# address costs the same Argon2 verify time as a real one -- otherwise response latency alone
+# reveals which emails are registered accounts.
+_DUMMY_PASSWORD_HASH = hash_password("no-such-user-constant-time-placeholder")
+
 
 def _issue_otp(db: Session, model, user_id: str, channel: str, destination: str, **extra) -> str:
     code = generate_otp()
@@ -234,7 +239,8 @@ def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)
     user = db.scalar(select(User).where(User.email == payload.email))
     if user and user.login_locked_until and user.login_locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many failed login attempts; try again later")
-    if not user or not verify_password(payload.password, user.password_hash):
+    password_ok = verify_password(payload.password, user.password_hash if user else _DUMMY_PASSWORD_HASH)
+    if not user or not password_ok:
         if user:
             user.failed_login_attempts += 1
             if user.failed_login_attempts >= LOGIN_MAX_ATTEMPTS:

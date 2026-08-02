@@ -1,4 +1,5 @@
 import hashlib
+import hmac
 import ipaddress
 import secrets
 import socket
@@ -114,4 +115,9 @@ def generate_otp(length: int = 6) -> str:
 
 
 def hash_otp(code: str) -> str:
-    return hashlib.sha256(code.encode()).hexdigest()
+    # A 6-digit numeric code is only 10^6 possible values -- plain SHA-256 would let anyone who
+    # ever saw a code_hash column (a DB backup, etc.) recover every code instantly via a
+    # precomputed table. Keying with jwt_secret (already a required, unique-per-deployment,
+    # never-exposed secret -- see config.py's production fail-hard check) makes that
+    # precomputation infeasible without also already holding the ability to forge JWTs.
+    return hmac.new(settings.jwt_secret.encode(), code.encode(), hashlib.sha256).hexdigest()

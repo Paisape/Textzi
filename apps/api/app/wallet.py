@@ -18,6 +18,15 @@ from .services import GST_RATE, DomainError, credit_wallet, quote_credits, rate_
 router = APIRouter(prefix="/v1/wallet", tags=["wallet"])
 
 
+def _require_dev_recharge() -> None:
+    """This self-service recharge path skips real payment collection entirely (see module
+    docstring) -- fine in development, but reachable by any customer with wallet:recharge in a
+    real deployment unless explicitly blocked here. The real path is the Razorpay flow in
+    payments.py (/v1/wallet/recharge/razorpay/order + /verify)."""
+    if settings.environment != "development":
+        raise HTTPException(status_code=403, detail="Self-service recharge is a development-only stand-in; use the Razorpay checkout flow instead.")
+
+
 def _get_wallet(db: Session, user: User, wallet_model: type[Wallet] | type[WabaWallet], channel: str):
     entity = resolve_user_entity(db, user)
     wallet = db.get(wallet_model, entity.id)
@@ -47,6 +56,7 @@ def _recharge_wallet(db: Session, user: User, payload: RechargeRequest, wallet_m
     rather than inventing a WABA-specific slab/rate-card system unprompted -- but it must still
     charge GST like every other paid invoice type, and must still require the channel to actually
     be DLT-activated before funding its wallet, matching the SMS path on both counts."""
+    _require_dev_recharge()
     try:
         entity = resolve_user_entity(db, user)
         require_channel_active(db, entity.id, channel)
@@ -122,6 +132,7 @@ def recharge_wallet(payload: RechargeRequest, user: User = Depends(require_capab
     """Development-mode simulated recharge for the SMS wallet -- converts the entered rupee
     amount into SMS credits via the caller's rate card (GST is charged but doesn't buy credits,
     matching how the real Razorpay path works in payments.py)."""
+    _require_dev_recharge()
     try:
         entity = resolve_user_entity(db, user)
         require_channel_active(db, entity.id, "sms")
