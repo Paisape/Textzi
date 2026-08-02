@@ -47,7 +47,8 @@ def _relay_to_customer(webhook_url: str, payload: dict) -> None:
 
 @router.post("/ttbs/dr")
 def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session = Depends(get_db)):
-    if not _resolve_ttbs_route_by_token(db, token):
+    resolved_route = _resolve_ttbs_route_by_token(db, token)
+    if not resolved_route:
         # Same response regardless of *why* the token doesn't match -- no signal for a probing
         # caller either way.
         raise HTTPException(status_code=401, detail="Invalid webhook token")
@@ -56,8 +57,11 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
     # duplicate, or a replay) serialize instead of all reading status=="submitted" and all
     # crediting a refund independently -- without this, N concurrent requests produce N refunds
     # for one actual delivery event even though the "already processed" check below looks correct
-    # in isolation.
-    attempt = db.scalar(select(DeliveryAttempt).where(DeliveryAttempt.provider_message_id == payload.SubmissionID).with_for_update())
+    # in isolation. Also scoped to the route the token resolved to -- with more than one TTBS
+    # route configured, each has its own distinct secret, and without this a caller holding one
+    # route's secret could forge a DR for a SubmissionID that actually belongs to a different
+    # route's traffic.
+    attempt = db.scalar(select(DeliveryAttempt).where(DeliveryAttempt.provider_message_id == payload.SubmissionID, DeliveryAttempt.route == resolved_route.route_name).with_for_update())
     if not attempt:
         # Ack (not 404) -- don't give a caller any signal about which submission ids are real,
         # and don't make TTBS retry forever for something we'll never be able to match.

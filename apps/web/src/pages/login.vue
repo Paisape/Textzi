@@ -48,7 +48,10 @@ async function afterLogin(accessToken: string) {
   // directly, so refreshing it here (not just a local variable) is what actually fixes that.
   await authStore.load(true)
   const profile = authStore.profile
-  const redirectTo = typeof route.query.redirect === 'string' ? route.query.redirect : null
+  const rawRedirect = typeof route.query.redirect === 'string' ? route.query.redirect : null
+  // Must be a same-app relative path -- a bare "/" prefix isn't enough on its own since "//evil.com"
+  // is a protocol-relative URL the browser would treat as off-origin.
+  const redirectTo = rawRedirect && rawRedirect.startsWith('/') && !rawRedirect.startsWith('//') ? rawRedirect : null
   const needsOnboarding = profile?.role === 'enterprise_customer' && !profile?.organization_id
   router.push(redirectTo || (needsOnboarding ? '/onboarding' : '/dashboard'))
 }
