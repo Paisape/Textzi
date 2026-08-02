@@ -863,7 +863,7 @@ def create_wallet_credit(payload: WalletCreditRequest, request: Request, authori
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=0.0, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None)
+    invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=0.0, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None, mark_as_paid=payload.paid)
     if payload.generate_invoice:
         issue_invoice(db, invoice)
     log_activity(db, entity.organization_id, "wallet_credited_by_admin", f"Admin credited Rs.{payload.amount:.2f} ({round(credits, 2)} credits) to entity '{entity.name}'.", actor_email=admin_user.email if admin_user else "admin (bootstrap key)", request=request)

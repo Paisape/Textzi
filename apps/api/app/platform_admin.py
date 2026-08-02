@@ -1,15 +1,16 @@
 """Admin-only configuration for the platform's own operational sending -- its SMS sender
 identity, its SMTP config, and its wallet. Deliberately separate from every tenant-facing router:
 this is Textzi's own infrastructure, not something any customer sees or touches."""
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .database import get_db
+from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts
 from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
 from .schemas import (
-    PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
+    ErpNextAccountOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
     PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
 )
@@ -81,7 +82,7 @@ def get_erpnext_settings_admin(db: Session = Depends(get_db)):
         row = PlatformErpNextSettings(id="platform", customer_group="All Customer Groups", territory="All Territories")
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
-        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, print_format=row.print_format,
+        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, payment_account=row.payment_account, print_format=row.print_format,
         customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
@@ -104,6 +105,7 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     row.company = payload.company
     row.cgst_account_head = payload.cgst_account_head
     row.sgst_account_head = payload.sgst_account_head
+    row.payment_account = payload.payment_account
     row.print_format = payload.print_format
     row.customer_group = payload.customer_group
     row.territory = payload.territory
@@ -116,12 +118,28 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     db.commit(); db.refresh(row)
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
-        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, print_format=row.print_format,
+        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, payment_account=row.payment_account, print_format=row.print_format,
         customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
         configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
     )
+
+
+@router.get("/erpnext-accounts", response_model=list[ErpNextAccountOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_erpnext_accounts(db: Session = Depends(get_db)):
+    """Real leaf accounts from the configured ERPNext company, for the CGST/SGST/payment-account
+    dropdowns -- fetched live rather than free-typed, since (confirmed live, see the API reference
+    doc) a group-node account name looks exactly as plausible as a real one but gets rejected the
+    moment an invoice actually tries to use it."""
+    settings_row = get_erpnext_settings(db)
+    if not settings_row:
+        raise HTTPException(status_code=422, detail="Configure the ERPNext base URL, API key/secret, and company first.")
+    try:
+        accounts = list_accounts(db, settings_row)
+    except ErpNextCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch accounts from ERPNext: {exc}") from exc
+    return [ErpNextAccountOut(name=a["name"], account_name=a["account_name"], account_type=a.get("account_type") or "") for a in accounts]
 
 
 def _norm(value: str | None) -> str | None:

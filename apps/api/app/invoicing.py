@@ -82,7 +82,7 @@ def _amount_in_words(amount: float) -> str:
     return f"{words} Only"
 
 
-def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: float, gst_amount: float, reference: str | None = None, notes: str | None = None, created_by_admin_id: str | None = None, credits_purchased: float | None = None, price_per_sms: float | None = None) -> Invoice:
+def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: float, gst_amount: float, reference: str | None = None, notes: str | None = None, created_by_admin_id: str | None = None, credits_purchased: float | None = None, price_per_sms: float | None = None, mark_as_paid: bool = True) -> Invoice:
     invoice = Invoice(
         entity_id=entity.id,
         type=type,
@@ -95,6 +95,7 @@ def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: fl
         reference=reference,
         notes=notes,
         created_by_admin_id=created_by_admin_id,
+        erpnext_mark_paid=mark_as_paid,
     )
     db.add(invoice)
     db.flush()

@@ -24,6 +24,7 @@ const selectedOrgId = ref<string | null>(null)
 const selectedEntityId = ref<string | null>(null)
 const amount = ref<number | null>(null)
 const generateInvoice = ref(true)
+const paid = ref(true)
 const notes = ref('')
 
 const submitting = ref(false)
@@ -87,7 +88,7 @@ async function onSubmit() {
   try {
     result.value = await $api(`/v1/admin/wallet-credits`, {
       method: 'POST',
-      body: { entity_id: selectedEntityId.value, amount: amount.value, generate_invoice: generateInvoice.value, notes: notes.value || null },
+      body: { entity_id: selectedEntityId.value, amount: amount.value, generate_invoice: generateInvoice.value, paid: paid.value, notes: notes.value || null },
     })
     amount.value = null
     notes.value = ''
@@ -189,6 +190,25 @@ onMounted(loadOrgs)
           color="success"
           class="mb-4"
         />
+        <VBtnToggle
+          v-model="paid"
+          mandatory
+          color="primary"
+          density="comfortable"
+          class="mb-4"
+        >
+          <VBtn :value="true">
+            Paid
+          </VBtn>
+          <VBtn :value="false">
+            Unpaid
+          </VBtn>
+        </VBtnToggle>
+        <p class="text-caption text-medium-emphasis mb-4" style="margin-block-start: -12px;">
+          Paid reconciles this invoice against a Payment Entry in ERPNext (e.g. money already
+          collected outside Razorpay). Unpaid issues the invoice but leaves it outstanding in
+          ERPNext — use this for a free/promotional credit with no real payment.
+        </p>
         <VBtn
           type="submit"
           :loading="submitting"

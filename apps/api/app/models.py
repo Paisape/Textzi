@@ -391,6 +391,15 @@ class Invoice(Base):
     erpnext_invoice_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
     erpnext_sync_status: Mapped[str] = mapped_column(String(20), default="pending")
     erpnext_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Decided once at creation time (not re-derived on every sync/retry, so a retry always
+    # reconciles the same way it originally would have): wallet_recharge/dlt_fee/channel_subscription
+    # are only ever created after a payment is already confirmed one way or another, so they default
+    # True; admin_credit is the one case where the admin themselves picks Paid or Unpaid (see
+    # WalletCreditRequest.paid). True creates a matching ERPNext Payment Entry, reconciled against
+    # the Sales Invoice, right after it's submitted -- erpnext_payment_entry_name tracks it the same
+    # way erpnext_invoice_name tracks the invoice, so a retry never creates a duplicate.
+    erpnext_mark_paid: Mapped[bool] = mapped_column(Boolean, default=True)
+    erpnext_payment_entry_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
 
 class Invitation(Base):
@@ -696,6 +705,11 @@ class PlatformErpNextSettings(Base):
     company: Mapped[str | None] = mapped_column(String(160), nullable=True)
     cgst_account_head: Mapped[str | None] = mapped_column(String(160), nullable=True)
     sgst_account_head: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # The ERPNext Bank/Cash account a reconciling Payment Entry deposits into (its "Paid To") --
+    # required before any invoice marked erpnext_mark_paid=True can actually sync; picked by the
+    # admin from a real fetched list (GET .../erpnext-accounts), not free text, since it must be a
+    # real leaf (non-group) account exactly like customer_group/territory.
+    payment_account: Mapped[str | None] = mapped_column(String(160), nullable=True)
     print_format: Mapped[str | None] = mapped_column(String(140), nullable=True)
     customer_group: Mapped[str] = mapped_column(String(140), default="All Customer Groups")
     territory: Mapped[str] = mapped_column(String(140), default="All Territories")

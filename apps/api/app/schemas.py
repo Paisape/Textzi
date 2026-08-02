@@ -829,6 +829,12 @@ class WalletCreditRequest(BaseModel):
     entity_id: str
     amount: float = Field(gt=0, le=1_000_000)
     generate_invoice: bool = True
+    # Every other invoice type (wallet_recharge, dlt_fee, channel_subscription) is only ever
+    # created after a payment is already confirmed one way or another, so those always reconcile
+    # as paid in ERPNext. An admin manual credit is the one case with no such guarantee -- it
+    # could be a real bank transfer collected outside Razorpay, or a free/promotional credit with
+    # no money changing hands -- so the admin decides explicitly per credit.
+    paid: bool = True
     notes: str | None = Field(default=None, max_length=300)
 
 
@@ -918,6 +924,7 @@ class PlatformErpNextSettingsOut(BaseModel):
     company: str | None
     cgst_account_head: str | None
     sgst_account_head: str | None
+    payment_account: str | None
     print_format: str | None
     customer_group: str
     territory: str
@@ -936,6 +943,7 @@ class PlatformErpNextSettingsUpdate(BaseModel):
     company: str | None = None
     cgst_account_head: str | None = None
     sgst_account_head: str | None = None
+    payment_account: str | None = None
     print_format: str | None = None
     customer_group: str = "All Customer Groups"
     territory: str = "All Territories"
@@ -953,6 +961,12 @@ class ErpNextRetryResponse(BaseModel):
     erpnext_sync_status: str
     erpnext_invoice_name: str | None
     erpnext_sync_error: str | None
+
+
+class ErpNextAccountOut(BaseModel):
+    name: str
+    account_name: str
+    account_type: str
 
 
 class ErpNextCallLogOut(BaseModel):

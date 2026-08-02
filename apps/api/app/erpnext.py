@@ -9,8 +9,9 @@ failure, so an admin can see exactly what happened without digging through serve
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from urllib.error import HTTPError
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
 from sqlalchemy import select, text
@@ -57,10 +58,15 @@ def _log(db: Session, invoice_id: str | None, method: str, path: str, status: st
     db.commit()
 
 
-def _request(db: Session, settings_row: PlatformErpNextSettings, method: str, path: str, invoice_id: str | None, body: dict | None = None) -> dict:
+def _request(db: Session, settings_row: PlatformErpNextSettings, method: str, path: str, invoice_id: str | None, body: dict | None = None, query: dict | None = None) -> dict:
     # Frappe doctype names routinely contain spaces ("Sales Invoice") -- http.client rejects a
     # raw space outright, so the path needs escaping regardless of which resource this is for.
+    # `query` is encoded separately, never folded into `path` before quoting it -- quote() would
+    # otherwise double-encode an already-built query string (its '?'/'&'/'=' and any '%' from a
+    # pre-encoded JSON filter value all get escaped again), producing an opaque, broken URL.
     url = f"{settings_row.base_url.rstrip('/')}{quote(path)}"
+    if query:
+        url += "?" + urlencode({k: (json.dumps(v) if isinstance(v, (list, dict)) else v) for k, v in query.items()})
     # Some self-hosted ERPNext instances sit behind Cloudflare (or similar) with bot-detection
     # rules that reject requests carrying Python's default User-Agent outright -- a real,
     # confirmed failure mode here, not hypothetical. A descriptive UA is enough to clear that
@@ -99,6 +105,19 @@ def _get_resource(db: Session, settings_row: PlatformErpNextSettings, doctype: s
         if "HTTP 404" in str(exc):
             return None
         raise
+
+
+def list_accounts(db: Session, settings_row: PlatformErpNextSettings) -> list[dict]:
+    """Real leaf (non-group) accounts for the given company, for the admin to pick from directly
+    -- CGST/SGST heads and the payment account all have the same "must be a real leaf Account,
+    not a group node" requirement confirmed live for Customer Group/Territory (see the API
+    reference doc's gotchas section), so free-text entry here is exactly as error-prone."""
+    result = _request(db, settings_row, "GET", "/api/resource/Account", None, query={
+        "filters": [["company", "=", settings_row.company], ["is_group", "=", 0]],
+        "fields": ["name", "account_name", "account_type"],
+        "limit_page_length": 500,
+    })
+    return result.get("data", [])
 
 
 def _ensure_customer(db: Session, settings_row: PlatformErpNextSettings, organization: Organization, invoice_id: str) -> str:
@@ -174,6 +193,34 @@ def _submit_if_needed(db: Session, settings_row: PlatformErpNextSettings, curren
     _request(db, settings_row, "PUT", f"/api/resource/Sales Invoice/{invoice_name}", invoice_id, {"docstatus": 1})
 
 
+def _create_payment_entry(db: Session, settings_row: PlatformErpNextSettings, customer_name: str, invoice_name: str, amount: float, reference: str | None, invoice_id: str) -> str:
+    """Creates and submits a Payment Entry reconciled against the given Sales Invoice, so it shows
+    as Paid in ERPNext's own books instead of sitting outstanding forever -- confirmed live that
+    without this, a real customer payment (already verified via Razorpay before the invoice ever
+    existed) left ERPNext's own accounts receivable permanently overstated. paid_from (the
+    customer's receivable account) is left for ERPNext to resolve itself from the Customer/Company
+    defaults, same as debit_to on the Sales Invoice; only paid_to (the Bank/Cash account actually
+    receiving the money) needs to be configured, since ERPNext has no way to infer that on its own."""
+    if not settings_row.payment_account:
+        raise ErpNextCallError("This invoice is marked paid, but no ERPNext payment account is configured to reconcile it against")
+    payload = {
+        "payment_type": "Receive",
+        "party_type": "Customer",
+        "party": customer_name,
+        "company": settings_row.company,
+        "paid_to": settings_row.payment_account,
+        "paid_amount": amount,
+        "received_amount": amount,
+        "reference_no": reference or invoice_name,
+        "reference_date": datetime.now(timezone.utc).date().isoformat(),
+        "references": [{"reference_doctype": "Sales Invoice", "reference_name": invoice_name, "allocated_amount": amount}],
+    }
+    result = _request(db, settings_row, "POST", "/api/resource/Payment Entry", invoice_id, payload)
+    pe_name = result["data"]["name"]
+    _request(db, settings_row, "PUT", f"/api/resource/Payment Entry/{pe_name}", invoice_id, {"docstatus": 1})
+    return pe_name
+
+
 def _advisory_lock_key(invoice_id: str) -> int:
     """Deterministically maps an invoice id to a signed 64-bit int for pg_advisory_lock, so
     concurrent calls for the SAME invoice serialize on the SAME key."""
@@ -230,6 +277,12 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
                     f"-- fix the Sales Invoice in ERPNext directly (its tax template/amount) before retrying.",
                 )
             _submit_if_needed(db, settings_row, int(existing_data.get("docstatus", 0)), invoice.erpnext_invoice_name, invoice.id)
+            if invoice.erpnext_mark_paid and not invoice.erpnext_payment_entry_name:
+                invoice.erpnext_payment_entry_name = _create_payment_entry(
+                    db, settings_row, existing_data.get("customer", ""), invoice.erpnext_invoice_name,
+                    expected_total, invoice.reference, invoice.id,
+                )
+                db.commit()
             pdf_bytes = _fetch_invoice_pdf(db, settings_row, invoice.erpnext_invoice_name, invoice.id)
             invoice.erpnext_sync_status = "synced"
             invoice.erpnext_sync_error = None
@@ -301,6 +354,11 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
             )
 
         _submit_if_needed(db, settings_row, int(result["data"].get("docstatus", 0)), erpnext_name, invoice.id)
+        if invoice.erpnext_mark_paid and not invoice.erpnext_payment_entry_name:
+            invoice.erpnext_payment_entry_name = _create_payment_entry(
+                db, settings_row, customer_name, erpnext_name, expected_total, invoice.reference, invoice.id,
+            )
+            db.commit()
         pdf_bytes = _fetch_invoice_pdf(db, settings_row, erpnext_name, invoice.id)
         invoice.erpnext_sync_status = "synced"
         invoice.erpnext_sync_error = None

@@ -17,6 +17,7 @@ type ErpNextSettings = {
   company: string | null
   cgst_account_head: string | null
   sgst_account_head: string | null
+  payment_account: string | null
   print_format: string | null
   customer_group: string
   territory: string
@@ -28,13 +29,20 @@ type ErpNextSettings = {
   configured: boolean
 }
 
+type ErpNextAccount = { name: string, account_name: string, account_type: string }
+
 const baseUrl = ref('')
 const apiKey = ref('')
 const apiSecret = ref('')
 const company = ref('')
 const cgstAccountHead = ref('')
 const sgstAccountHead = ref('')
+const paymentAccount = ref('')
 const printFormat = ref('')
+const accounts = ref<ErpNextAccount[]>([])
+const accountsError = ref('')
+const accountsLoading = ref(false)
+const accountOptions = computed(() => accounts.value.map(a => ({ title: `${a.account_name} (${a.account_type || 'other'})`, value: a.name })))
 const customerGroup = ref('Commercial')
 const territory = ref('India')
 const salesInvoiceNamingSeries = ref('')
@@ -61,6 +69,7 @@ async function loadSettings() {
     company.value = result.company ?? ''
     cgstAccountHead.value = result.cgst_account_head ?? ''
     sgstAccountHead.value = result.sgst_account_head ?? ''
+    paymentAccount.value = result.payment_account ?? ''
     printFormat.value = result.print_format ?? ''
     customerGroup.value = result.customer_group
     territory.value = result.territory
@@ -70,9 +79,25 @@ async function loadSettings() {
     itemCodeChannelSubscription.value = result.item_code_channel_subscription ?? ''
     itemCodeAdminCredit.value = result.item_code_admin_credit ?? ''
     configured.value = result.configured
+    if (configured.value)
+      await loadAccounts()
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load ERPNext settings.')
+  }
+}
+
+async function loadAccounts() {
+  accountsError.value = ''
+  accountsLoading.value = true
+  try {
+    accounts.value = await $api<ErpNextAccount[]>('/v1/admin/platform/erpnext-accounts')
+  }
+  catch (error: any) {
+    accountsError.value = extractErrorMessage(error, 'Could not fetch the account list from ERPNext.')
+  }
+  finally {
+    accountsLoading.value = false
   }
 }
 
@@ -90,6 +115,7 @@ async function onSave() {
         company: company.value || null,
         cgst_account_head: cgstAccountHead.value || null,
         sgst_account_head: sgstAccountHead.value || null,
+        payment_account: paymentAccount.value || null,
         print_format: printFormat.value || null,
         customer_group: customerGroup.value,
         territory: territory.value,
@@ -103,6 +129,8 @@ async function onSave() {
     configured.value = result.configured
     apiSecret.value = ''
     saveSuccess.value = 'Saved.'
+    if (configured.value)
+      await loadAccounts()
   }
   catch (error: any) {
     saveError.value = extractErrorMessage(error, 'Could not save ERPNext settings.')
@@ -226,19 +254,37 @@ onMounted(loadSettings)
             />
           </VCol>
           <VCol cols="12" sm="6">
-            <AppTextField
+            <VAutocomplete
               v-model="cgstAccountHead"
+              :items="accountOptions"
+              :loading="accountsLoading"
               label="CGST account head"
               placeholder="Output Tax CGST - COMPANY"
+              clearable
             />
           </VCol>
           <VCol cols="12" sm="6">
-            <AppTextField
+            <VAutocomplete
               v-model="sgstAccountHead"
+              :items="accountOptions"
+              :loading="accountsLoading"
               label="SGST account head"
               placeholder="Output Tax SGST - COMPANY"
-              hint="Textzi's own already-computed GST amount is split in half and posted to these two accounts as an exact amount — never a percentage template, which could silently drift from what was actually charged. Both leave blank only if every invoice type you sync has zero GST."
+              hint="GST_RATE/2 is posted to each of these as a percentage rate (On Net Total), not a fixed amount — india_compliance rejects a fixed-amount tax line outright. Both leave blank only if every invoice type you sync has zero GST."
               persistent-hint
+              clearable
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <VAutocomplete
+              v-model="paymentAccount"
+              :items="accountOptions"
+              :loading="accountsLoading"
+              label="Payment account (Bank / Cash)"
+              placeholder="Cash - COMPANY"
+              hint="Where a reconciling Payment Entry deposits to, for any invoice marked paid (wallet recharge, DLT fee, channel subscription always are; an admin manual credit is the admin's own choice). Required before any 'paid' invoice can sync."
+              persistent-hint
+              clearable
             />
           </VCol>
           <VCol cols="12" sm="6">
@@ -249,6 +295,14 @@ onMounted(loadSettings)
               hint="If your default Sales Invoice print format fails to render (e.g. a broken image reference), name a working one here."
               persistent-hint
             />
+          </VCol>
+          <VCol
+            v-if="accountsError"
+            cols="12"
+          >
+            <VAlert type="warning" variant="tonal" density="compact">
+              {{ accountsError }} — the three account fields above will show as plain text until this is fixed; type the exact ERPNext account name manually in the meantime.
+            </VAlert>
           </VCol>
         </VRow>
 
