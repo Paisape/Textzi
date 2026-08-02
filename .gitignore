@@ -23,6 +23,7 @@ uploads/
 # Business/product docs -- kept locally, left out of the repo by default (unclear if this repo
 # will end up public); ask to include them if you want them versioned too.
 /*.docx
+*.md
 
 # Stray local logs / OS / editor cruft
 *.log
