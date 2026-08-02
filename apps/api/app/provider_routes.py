@@ -44,6 +44,31 @@ class TtbsProviderRouteCreate(BaseModel):
         return value
 
 
+class HttpsProviderRouteUpdate(BaseModel):
+    """route_name is deliberately not editable here -- it's referenced by RoutePolicy.routes, and
+    letting it change would silently break whatever policy points at it. Delete and recreate
+    under a new name instead if it truly needs to move."""
+    endpoint: str
+    method: str = Field(default="POST", pattern="^(GET|POST)$")
+    auth_style: str = Field(default="none", pattern="^(none|header|query|bearer)$")
+    auth_key_name: str | None = None
+    auth_value: str | None = Field(default=None, description="Leave blank to keep the currently stored value; only set this to change it.")
+    param_mapping: dict[str, str] = Field(default_factory=dict)
+
+
+class TtbsProviderRouteUpdate(BaseModel):
+    endpoint: str = Field(default="https://ttbssmsgw.tatatel.co.in/campaignService/campaigns/qs")
+    user: str
+    pswd: str | None = Field(default=None, description="Leave blank to keep the currently stored password; only set this to change it.")
+
+    @field_validator("endpoint")
+    @classmethod
+    def _require_https(cls, value: str) -> str:
+        if not value.lower().startswith("https://"):
+            raise ValueError("TTBS endpoint must use https:// -- credentials travel in the query string on every send")
+        return value
+
+
 def _public_config(config: dict) -> dict:
     return {k: v for k, v in config.items() if not k.endswith("_encrypted")}
 
@@ -133,6 +158,45 @@ def regenerate_ttbs_webhook_secret(route_name: str, db: Session = Depends(get_db
     db.commit()
     webhook_url = _ttbs_webhook_url(db, webhook_secret)
     return TtbsWebhookInfoOut(webhook_url=webhook_url, configured=webhook_url is not None)
+
+
+@router.put("/{route_name}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_provider_route(route_name: str, payload: HttpsProviderRouteUpdate, db: Session = Depends(get_db)):
+    row = db.scalar(select(ProviderRoute).where(ProviderRoute.route_name == route_name, ProviderRoute.provider_type == "https"))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"HTTPS route_name '{route_name}' not found")
+    config = {
+        "endpoint": payload.endpoint,
+        "method": payload.method,
+        "auth_style": payload.auth_style,
+        "auth_key_name": payload.auth_key_name,
+        "param_mapping": payload.param_mapping,
+    }
+    if payload.auth_value:
+        config["auth_value_encrypted"] = encrypt_secret(payload.auth_value)
+    elif "auth_value_encrypted" in row.config:
+        config["auth_value_encrypted"] = row.config["auth_value_encrypted"]
+    row.config = config
+    db.commit()
+    return {"route_name": row.route_name, "provider_type": row.provider_type, "config": _public_config(config)}
+
+
+@router.put("/ttbs/{route_name}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_ttbs_provider_route(route_name: str, payload: TtbsProviderRouteUpdate, db: Session = Depends(get_db)):
+    row = db.scalar(select(ProviderRoute).where(ProviderRoute.route_name == route_name, ProviderRoute.provider_type == "ttbs"))
+    if not row:
+        raise HTTPException(status_code=404, detail=f"TTBS route_name '{route_name}' not found")
+    config = {
+        "endpoint": payload.endpoint,
+        "user": payload.user,
+        "pswd_encrypted": encrypt_secret(payload.pswd) if payload.pswd else row.config.get("pswd_encrypted"),
+    }
+    # Preserve the webhook secret -- only regenerate-webhook-secret should ever change it.
+    if "webhook_secret_encrypted" in row.config:
+        config["webhook_secret_encrypted"] = row.config["webhook_secret_encrypted"]
+    row.config = config
+    db.commit()
+    return {"route_name": row.route_name, "provider_type": row.provider_type, "config": _public_config(config)}
 
 
 @router.delete("/{route_name}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

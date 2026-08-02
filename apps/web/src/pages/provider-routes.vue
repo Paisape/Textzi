@@ -204,6 +204,107 @@ async function onGenerateWebhookSecret(routeName: string) {
   }
 }
 
+// Edit an existing route (both https and ttbs types, in one dialog whose fields switch based on
+// the route being edited) -- previously the only way to change a route's settings was to delete
+// it and recreate it under a new name, which also meant re-registering any RoutePolicy pointing
+// at the old name.
+const editingRoute = ref<ProviderRoute | null>(null)
+const editEndpoint = ref('')
+const editMethod = ref('POST')
+const editAuthStyle = ref('none')
+const editAuthKeyName = ref('')
+const editAuthValue = ref('')
+const editMapTo = ref('to')
+const editMapFrom = ref('from')
+const editMapContent = ref('text')
+const editTtbsUser = ref('')
+const editTtbsPswd = ref('')
+const editSubmitting = ref(false)
+const editError = ref('')
+
+function openEdit(route: ProviderRoute) {
+  editingRoute.value = route
+  editError.value = ''
+  editEndpoint.value = route.config.endpoint
+  if (route.provider_type === 'ttbs') {
+    editTtbsUser.value = route.config.user || ''
+    editTtbsPswd.value = ''
+  }
+  else {
+    editMethod.value = route.config.method || 'POST'
+    editAuthStyle.value = route.config.auth_style || 'none'
+    editAuthKeyName.value = route.config.auth_key_name || ''
+    editAuthValue.value = ''
+    const mapping = route.config.param_mapping || {}
+    editMapTo.value = mapping.to || 'to'
+    editMapFrom.value = mapping.from || 'from'
+    editMapContent.value = mapping.content || 'text'
+  }
+}
+
+function closeEdit() {
+  editingRoute.value = null
+  editError.value = ''
+}
+
+async function onSaveEdit() {
+  if (!editingRoute.value)
+    return
+  editError.value = ''
+  if (!editEndpoint.value.trim()) {
+    editError.value = 'Enter the provider endpoint URL.'
+    return
+  }
+  editSubmitting.value = true
+  try {
+    if (editingRoute.value.provider_type === 'ttbs') {
+      if (!editTtbsUser.value.trim()) {
+        editError.value = 'Enter the TTBS username.'
+        editSubmitting.value = false
+        return
+      }
+      await stepUp.withStepUp(() => $api(`/v1/admin/provider-routes/ttbs/${encodeURIComponent(editingRoute.value!.route_name)}`, {
+        method: 'PUT',
+        body: {
+          endpoint: editEndpoint.value.trim(),
+          user: editTtbsUser.value.trim(),
+          pswd: editTtbsPswd.value.trim() || null,
+        },
+      }))
+    }
+    else {
+      if (editAuthStyle.value !== 'none' && editAuthStyle.value !== 'bearer' && !editAuthKeyName.value.trim()) {
+        editError.value = 'Enter the auth parameter/header name for this auth style.'
+        editSubmitting.value = false
+        return
+      }
+      await stepUp.withStepUp(() => $api(`/v1/admin/provider-routes/${encodeURIComponent(editingRoute.value!.route_name)}`, {
+        method: 'PUT',
+        body: {
+          endpoint: editEndpoint.value.trim(),
+          method: editMethod.value,
+          auth_style: editAuthStyle.value,
+          auth_key_name: editAuthKeyName.value.trim() || null,
+          auth_value: editAuthValue.value.trim() || null,
+          param_mapping: {
+            to: editMapTo.value.trim() || 'to',
+            from: editMapFrom.value.trim() || 'from',
+            content: editMapContent.value.trim() || 'text',
+          },
+        },
+      }))
+    }
+    closeEdit()
+    await loadRoutes()
+  }
+  catch (error: any) {
+    editError.value = extractErrorMessage(error, 'Could not save these changes.')
+  }
+  finally {
+    editSubmitting.value = false
+  }
+}
+
 const deletingRoute = ref<string | null>(null)
 async function onDeleteRoute(routeName: string) {
   deletingRoute.value = routeName
@@ -490,6 +591,13 @@ onMounted(load)
                 </VBtn>
                 <VBtn
                   size="small"
+                  variant="outlined"
+                  @click="openEdit(route)"
+                >
+                  Edit
+                </VBtn>
+                <VBtn
+                  size="small"
                   variant="text"
                   color="error"
                   :loading="deletingRoute === route.route_name"
@@ -710,6 +818,122 @@ onMounted(load)
       </VCardText>
     </VCard>
   </template>
+
+  <VDialog
+    :model-value="!!editingRoute"
+    max-width="600"
+    @update:model-value="(v: boolean) => !v && closeEdit()"
+  >
+    <VCard v-if="editingRoute">
+      <VCardTitle>
+        Edit route "{{ editingRoute.route_name }}"
+      </VCardTitle>
+      <VCardText>
+        <VAlert
+          v-if="editError"
+          type="error"
+          variant="tonal"
+          density="compact"
+          class="mb-4"
+        >
+          {{ editError }}
+        </VAlert>
+        <VForm @submit.prevent="onSaveEdit">
+          <VRow>
+            <VCol cols="12">
+              <AppTextField
+                v-model="editEndpoint"
+                label="Endpoint URL"
+              />
+            </VCol>
+
+            <template v-if="editingRoute.provider_type === 'ttbs'">
+              <VCol cols="12">
+                <AppTextField
+                  v-model="editTtbsUser"
+                  label="TTBS username"
+                />
+              </VCol>
+              <VCol cols="12">
+                <AppTextField
+                  v-model="editTtbsPswd"
+                  label="TTBS password (leave blank to keep current)"
+                  type="password"
+                />
+              </VCol>
+            </template>
+
+            <template v-else>
+              <VCol cols="12" sm="6">
+                <VSelect
+                  v-model="editMethod"
+                  :items="METHOD_OPTIONS"
+                  label="HTTP method"
+                />
+              </VCol>
+              <VCol cols="12" sm="6">
+                <VSelect
+                  v-model="editAuthStyle"
+                  :items="AUTH_STYLE_OPTIONS"
+                  label="Auth style"
+                />
+              </VCol>
+              <VCol
+                v-if="editAuthStyle !== 'none' && editAuthStyle !== 'bearer'"
+                cols="12"
+                sm="6"
+              >
+                <AppTextField
+                  v-model="editAuthKeyName"
+                  label="Auth header/query name"
+                />
+              </VCol>
+              <VCol cols="12" sm="6">
+                <AppTextField
+                  v-model="editAuthValue"
+                  label="Auth value (leave blank to keep current)"
+                  type="password"
+                />
+              </VCol>
+              <VCol cols="12" sm="4">
+                <AppTextField
+                  v-model="editMapTo"
+                  label="Field name: to"
+                />
+              </VCol>
+              <VCol cols="12" sm="4">
+                <AppTextField
+                  v-model="editMapFrom"
+                  label="Field name: from"
+                />
+              </VCol>
+              <VCol cols="12" sm="4">
+                <AppTextField
+                  v-model="editMapContent"
+                  label="Field name: content"
+                />
+              </VCol>
+            </template>
+
+            <VCol cols="12" class="d-flex gap-3">
+              <VBtn
+                type="submit"
+                :loading="editSubmitting"
+              >
+                Save changes
+              </VBtn>
+              <VBtn
+                variant="outlined"
+                @click="closeEdit"
+              >
+                Cancel
+              </VBtn>
+            </VCol>
+          </VRow>
+        </VForm>
+      </VCardText>
+    </VCard>
+  </VDialog>
 
   <StepUpDialog
     v-model="stepUp.dialogOpen.value"
