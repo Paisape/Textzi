@@ -585,11 +585,15 @@ def update_user_role(user_id: str, payload: UserRoleUpdateRequest, request: Requ
     """No self-role-change (even a legitimate admin acting on their own account here is
     indistinguishable from a stolen-token attacker granting themself more privilege -- a peer
     admin must make this change instead), and only an existing Super Admin can grant OR REVOKE
-    an admin-tier role -- checking only the requested new role (not the target's current one)
+    a privileged role -- checking only the requested new role (not the target's current one)
     would let an operator_admin freely de-admin a super_admin by "promoting" them to an ordinary
-    role, since that new role itself isn't admin-tier. The bootstrap X-Admin-Key path (caller is
-    None here) is already maximally trusted and skips both checks, same as require_admin's own
-    bypass."""
+    role, since that new role itself isn't privileged. "Privileged" here is ADMIN_ROLES plus
+    every STAFF_AREA_ROLES value (finance_team/sales_team/support_team), not just ADMIN_ROLES --
+    those three now carry real access (see require_staff) to invoices, wallet credits, the wallet
+    top-up reconciliation report, cross-org organization overviews, and the audit log, so an
+    operator_admin granting one is just as much a privilege escalation as granting admin-tier
+    itself. The bootstrap X-Admin-Key path (caller is None here) is already maximally trusted and
+    skips both checks, same as require_admin's own bypass."""
     caller = None
     if authorization and authorization.startswith("Bearer "):
         try:
@@ -602,9 +606,10 @@ def update_user_role(user_id: str, payload: UserRoleUpdateRequest, request: Requ
     user = db.get(User, user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    touches_admin_tier = payload.role.value in ADMIN_ROLES or user.role in ADMIN_ROLES
-    if touches_admin_tier and caller and caller.role != UserRole.super_admin.value:
-        raise HTTPException(status_code=403, detail="Only Super Admin can grant or revoke an admin-tier role")
+    privileged_roles = ADMIN_ROLES.union(*STAFF_AREA_ROLES.values())
+    touches_privileged_tier = payload.role.value in privileged_roles or user.role in privileged_roles
+    if touches_privileged_tier and caller and caller.role != UserRole.super_admin.value:
+        raise HTTPException(status_code=403, detail="Only Super Admin can grant or revoke a privileged role")
     old_role = user.role
     user.role = payload.role.value
     log_activity(db, user.organization_id, "role_changed", f"{user.email}'s role changed from {old_role.replace('_', ' ')} to {payload.role.value.replace('_', ' ')}.", user_id=user.id, actor_email=caller.email if caller else "admin (bootstrap key)", request=request)
