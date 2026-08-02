@@ -899,6 +899,7 @@ def wallet_topup_report(mismatches_only: bool = False, db: Session = Depends(get
             rate_card_name=rate_cards_by_id[o.rate_card_id].name if o.rate_card_id in rate_cards_by_id else None,
             amount=float(o.amount), gst_amount=gst_amount, total_received=round(float(o.amount) + gst_amount, 2),
             credits_applied=applied, expected_credits=expected, mismatch=mismatch,
+            account_status=user.status.value if user else None,
         ))
     return rows
 

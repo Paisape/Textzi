@@ -26,6 +26,7 @@ type ReportRow = {
   credits_applied: number | null
   expected_credits: number | null
   mismatch: boolean
+  account_status: string | null
 }
 
 const rows = ref<ReportRow[]>([])
@@ -116,6 +117,7 @@ onMounted(load)
             <th>Amount Received (incl. GST)</th>
             <th>Credits Applied</th>
             <th>Expected Credits</th>
+            <th>Account Status</th>
             <th>Status</th>
           </tr>
         </thead>
@@ -142,6 +144,16 @@ onMounted(load)
             <td>{{ row.expected_credits?.toFixed(2) ?? '—' }}</td>
             <td>
               <VChip
+                v-if="row.account_status"
+                size="small"
+                :color="row.account_status === 'suspended' ? 'error' : 'default'"
+              >
+                {{ row.account_status.replaceAll('_', ' ') }}
+              </VChip>
+              <span v-else>—</span>
+            </td>
+            <td>
+              <VChip
                 size="small"
                 :color="row.mismatch ? 'error' : 'success'"
               >
@@ -151,7 +163,7 @@ onMounted(load)
           </tr>
           <tr v-if="!loading && !rows.length">
             <td
-              colspan="9"
+              colspan="10"
               class="text-center text-medium-emphasis"
             >
               No wallet top-ups recorded yet.

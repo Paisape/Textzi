@@ -858,6 +858,22 @@ class PaymentOrderReconcileResponse(BaseModel):
     action_taken: str
 
 
+class WalletTopupReportRowOut(BaseModel):
+    order_id: str
+    user_name: str | None
+    user_email: str | None
+    created_at: str
+    ip_address: str | None
+    rate_card_name: str | None
+    amount: float
+    gst_amount: float
+    total_received: float
+    expected_credits: float | None
+    credits_applied: float | None
+    mismatch: bool
+    account_status: str | None
+
+
 class PlatformSmsSettingsOut(BaseModel):
     pe_id: str | None
     pe_operator: str | None
