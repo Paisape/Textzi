@@ -36,6 +36,15 @@ async function load() {
     dltServiceFee.value = result.dlt_service_fee
   }
   catch (error: any) {
+    // No row yet is a legitimate first-time-setup state (the PUT below creates it), not an error
+    // to block on -- show the form pre-filled with zeros so the admin can actually save one.
+    if (error?.statusCode === 404 || error?.response?.status === 404) {
+      fees.value = { channel: 'sms', subscription_price: 0, dlt_platform_fee: 0, dlt_service_fee: 0 }
+      subscriptionPrice.value = 0
+      dltPlatformFee.value = 0
+      dltServiceFee.value = 0
+      return
+    }
     loadError.value = extractErrorMessage(error, 'Could not load channel fee configuration.')
   }
 }
