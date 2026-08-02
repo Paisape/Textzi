@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from .models import ErpNextApiCallLog, Invoice, Organization, PlatformErpNextSettings
 from .security import decrypt_secret
-from .services import GST_SAC_CODE
+from .services import GST_RATE, GST_SAC_CODE
 
 logger = logging.getLogger("textzi.erpnext")
 
@@ -163,6 +163,17 @@ def _fetch_invoice_pdf(db: Session, settings_row: PlatformErpNextSettings, invoi
         raise ErpNextCallError(str(exc)) from exc
 
 
+def _submit_if_needed(db: Session, settings_row: PlatformErpNextSettings, current_docstatus: int, invoice_name: str, invoice_id: str) -> None:
+    """A freshly-created Sales Invoice sits at docstatus=0 (Draft), which is not a legally final
+    GST document -- it must be submitted (docstatus=1) to actually count. This was previously
+    missing entirely (create, then straight to PDF fetch), which live testing caught: every
+    invoice was being left in Draft forever. No-op if already submitted, so this is safe to call
+    from both the fresh-create path and a retry against an already-existing invoice."""
+    if current_docstatus == 1:
+        return
+    _request(db, settings_row, "PUT", f"/api/resource/Sales Invoice/{invoice_name}", invoice_id, {"docstatus": 1})
+
+
 def _advisory_lock_key(invoice_id: str) -> int:
     """Deterministically maps an invoice id to a signed 64-bit int for pg_advisory_lock, so
     concurrent calls for the SAME invoice serialize on the SAME key."""
@@ -209,7 +220,8 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
                     f"ERPNext Sales Invoice {invoice.erpnext_invoice_name} no longer exists there -- "
                     f"was it deleted or cancelled? This needs manual investigation before retrying.",
                 )
-            erpnext_total = float(existing.get("data", {}).get("grand_total", 0))
+            existing_data = existing.get("data", {})
+            erpnext_total = float(existing_data.get("grand_total", 0))
             expected_total = float(invoice.total_amount)
             if abs(erpnext_total - expected_total) > 0.005:
                 raise ErpNextCallError(
@@ -217,6 +229,7 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
                     f"actually charged (Rs {expected_total:.2f}) for invoice {invoice.erpnext_invoice_name} "
                     f"-- fix the Sales Invoice in ERPNext directly (its tax template/amount) before retrying.",
                 )
+            _submit_if_needed(db, settings_row, int(existing_data.get("docstatus", 0)), invoice.erpnext_invoice_name, invoice.id)
             pdf_bytes = _fetch_invoice_pdf(db, settings_row, invoice.erpnext_invoice_name, invoice.id)
             invoice.erpnext_sync_status = "synced"
             invoice.erpnext_sync_error = None
@@ -235,21 +248,19 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
         if float(invoice.gst_amount) > 0:
             if not settings_row.cgst_account_head or not settings_row.sgst_account_head:
                 raise ErpNextCallError("GST amount is non-zero but CGST/SGST account heads are not configured")
-            # Rounded to 2 decimals *before* being sent, and computed so the two lines sum to
-            # gst_amount exactly (sgst = total - cgst, not total/2 rounded independently) -- an
-            # unrounded half like 5.005 sent as a raw float lets ERPNext's own Currency-field
-            # rounding land wherever it wants on each line independently, which is exactly the
-            # odd-paisa drift that let a wrong total slip through the mismatch check below at its
-            # old +/-0.01 tolerance (confirmed: base=55.61, gst=10.01 produced a real Rs 0.01
-            # discrepancy that tolerance was wide enough to hide).
-            cgst_amount = round(float(invoice.gst_amount) / 2, 2)
-            sgst_amount = round(float(invoice.gst_amount) - cgst_amount, 2)
+            # "Actual" (a fixed rupee amount, not a rate) was tried first and confirmed live to be
+            # rejected outright on a real india_compliance-enabled site: "Charge Type is set to
+            # Actual. However, this would not compute item taxes, and your further reporting will
+            # be affected" -- india_compliance requires a per-item computed tax detail (rate-based)
+            # for its own GST reporting (GSTR-1 etc.), which "Actual" skips entirely. "On Net Total"
+            # with a percentage rate is what actually works, confirmed live: on Textzi's single-line
+            # invoice (always exactly one item), this computes identically to Textzi's own flat
+            # GST_RATE split in half per side -- the total-mismatch check right after creation is
+            # what actually guards against any drift, not the tax line's own construction here.
+            half_rate_percent = round(GST_RATE / 2 * 100, 4)
             taxes = [
-                # "Actual" posts the exact rupee amount Textzi already computed and charged,
-                # split across the two accounts matching the intra-state CGST+SGST structure --
-                # never a percentage template, which could drift from what was actually charged.
-                {"charge_type": "Actual", "account_head": settings_row.cgst_account_head, "tax_amount": cgst_amount, "description": "CGST"},
-                {"charge_type": "Actual", "account_head": settings_row.sgst_account_head, "tax_amount": sgst_amount, "description": "SGST"},
+                {"charge_type": "On Net Total", "account_head": settings_row.cgst_account_head, "rate": half_rate_percent, "description": "CGST"},
+                {"charge_type": "On Net Total", "account_head": settings_row.sgst_account_head, "rate": half_rate_percent, "description": "SGST"},
             ]
         payload = {
             "customer": customer_name,
@@ -263,6 +274,8 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
             "taxes_and_charges": "",
             "remarks": f"Textzi invoice {invoice.invoice_number}" if invoice.invoice_number else f"Textzi invoice {invoice.id}",
         }
+        if settings_row.sales_invoice_naming_series:
+            payload["naming_series"] = settings_row.sales_invoice_naming_series
         result = _request(db, settings_row, "POST", "/api/resource/Sales Invoice", invoice.id, payload)
         erpnext_name = result["data"]["name"]
         # Committed immediately -- before the total-mismatch check and the PDF fetch, both of
@@ -287,6 +300,7 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
                 f"Taxes and Charges Template for this customer/company.",
             )
 
+        _submit_if_needed(db, settings_row, int(result["data"].get("docstatus", 0)), erpnext_name, invoice.id)
         pdf_bytes = _fetch_invoice_pdf(db, settings_row, erpnext_name, invoice.id)
         invoice.erpnext_sync_status = "synced"
         invoice.erpnext_sync_error = None

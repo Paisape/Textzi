@@ -921,6 +921,7 @@ class PlatformErpNextSettingsOut(BaseModel):
     print_format: str | None
     customer_group: str
     territory: str
+    sales_invoice_naming_series: str | None
     item_code_wallet_recharge: str | None
     item_code_dlt_fee: str | None
     item_code_channel_subscription: str | None
@@ -938,6 +939,9 @@ class PlatformErpNextSettingsUpdate(BaseModel):
     print_format: str | None = None
     customer_group: str = "All Customer Groups"
     territory: str = "All Territories"
+    # None/blank = use ERPNext's own default Sales Invoice naming series -- only set this if that
+    # default produces a name over 16 characters, which india_compliance (GST) rejects outright.
+    sales_invoice_naming_series: str | None = None
     item_code_wallet_recharge: str | None = None
     item_code_dlt_fee: str | None = None
     item_code_channel_subscription: str | None = None

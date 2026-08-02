@@ -699,6 +699,12 @@ class PlatformErpNextSettings(Base):
     print_format: Mapped[str | None] = mapped_column(String(140), nullable=True)
     customer_group: Mapped[str] = mapped_column(String(140), default="All Customer Groups")
     territory: Mapped[str] = mapped_column(String(140), default="All Territories")
+    # None = let ERPNext use its own configured default Sales Invoice naming series. Only needs
+    # setting when that default produces a name longer than 16 characters -- confirmed live that
+    # india_compliance (GST) rejects invoice creation outright above that length ("Transaction Name
+    # must be 16 characters or fewer to meet GST requirements"), which a verbose default series
+    # like "ACC-SINV-.YYYY.-" (well over 16 once the running number is appended) will always hit.
+    sales_invoice_naming_series: Mapped[str | None] = mapped_column(String(40), nullable=True)
     item_code_wallet_recharge: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_dlt_fee: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_channel_subscription: Mapped[str | None] = mapped_column(String(140), nullable=True)

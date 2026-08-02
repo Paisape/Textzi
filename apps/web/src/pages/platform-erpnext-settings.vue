@@ -20,6 +20,7 @@ type ErpNextSettings = {
   print_format: string | null
   customer_group: string
   territory: string
+  sales_invoice_naming_series: string | null
   item_code_wallet_recharge: string | null
   item_code_dlt_fee: string | null
   item_code_channel_subscription: string | null
@@ -36,6 +37,7 @@ const sgstAccountHead = ref('')
 const printFormat = ref('')
 const customerGroup = ref('Commercial')
 const territory = ref('India')
+const salesInvoiceNamingSeries = ref('')
 const itemCodeWalletRecharge = ref('')
 const itemCodeDltFee = ref('')
 const itemCodeChannelSubscription = ref('')
@@ -62,6 +64,7 @@ async function loadSettings() {
     printFormat.value = result.print_format ?? ''
     customerGroup.value = result.customer_group
     territory.value = result.territory
+    salesInvoiceNamingSeries.value = result.sales_invoice_naming_series ?? ''
     itemCodeWalletRecharge.value = result.item_code_wallet_recharge ?? ''
     itemCodeDltFee.value = result.item_code_dlt_fee ?? ''
     itemCodeChannelSubscription.value = result.item_code_channel_subscription ?? ''
@@ -90,6 +93,7 @@ async function onSave() {
         print_format: printFormat.value || null,
         customer_group: customerGroup.value,
         territory: territory.value,
+        sales_invoice_naming_series: salesInvoiceNamingSeries.value || null,
         item_code_wallet_recharge: itemCodeWalletRecharge.value || null,
         item_code_dlt_fee: itemCodeDltFee.value || null,
         item_code_channel_subscription: itemCodeChannelSubscription.value || null,
@@ -209,6 +213,15 @@ onMounted(loadSettings)
               label="Territory"
               placeholder="India"
               hint="Same rule as Customer Group — 'All Territories' is a parent node, not a valid value."
+              persistent-hint
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model="salesInvoiceNamingSeries"
+              label="Sales Invoice naming series (optional)"
+              placeholder="SI-.####."
+              hint="Leave blank to use ERPNext's own default series. Only needs setting if that default produces an invoice number over 16 characters — GST (india_compliance) rejects creation outright above that length."
               persistent-hint
             />
           </VCol>

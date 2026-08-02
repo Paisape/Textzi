@@ -82,7 +82,7 @@ def get_erpnext_settings_admin(db: Session = Depends(get_db)):
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
         cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, print_format=row.print_format,
-        customer_group=row.customer_group, territory=row.territory,
+        customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
         configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
@@ -107,6 +107,7 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     row.print_format = payload.print_format
     row.customer_group = payload.customer_group
     row.territory = payload.territory
+    row.sales_invoice_naming_series = payload.sales_invoice_naming_series
     row.item_code_wallet_recharge = payload.item_code_wallet_recharge
     row.item_code_dlt_fee = payload.item_code_dlt_fee
     row.item_code_channel_subscription = payload.item_code_channel_subscription
@@ -116,7 +117,7 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
         cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, print_format=row.print_format,
-        customer_group=row.customer_group, territory=row.territory,
+        customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
         configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
