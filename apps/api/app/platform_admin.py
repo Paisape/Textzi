@@ -7,10 +7,10 @@ from sqlalchemy.orm import Session
 
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .database import get_db
-from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts
+from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts, list_tax_templates
 from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
 from .schemas import (
-    ErpNextAccountOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
+    ErpNextAccountOut, ErpNextTaxTemplateOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
     PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
 )
@@ -76,14 +76,11 @@ def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, request: Request, 
 def get_erpnext_settings_admin(db: Session = Depends(get_db)):
     row = db.get(PlatformErpNextSettings, "platform")
     if not row:
-        # A transient (never-flushed) instance doesn't get its column-level `default=` applied --
-        # that only happens at insert time -- so the two non-nullable fields need an explicit
-        # value here or PlatformErpNextSettingsOut's own validation rejects the None.
-        row = PlatformErpNextSettings(id="platform", customer_group="All Customer Groups", territory="All Territories")
+        row = PlatformErpNextSettings(id="platform")
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
-        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, payment_account=row.payment_account, print_format=row.print_format,
-        customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
+        gst_tax_template=row.gst_tax_template, payment_account=row.payment_account, print_format=row.print_format,
+        customer_group=row.customer_group, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
         configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
@@ -103,12 +100,10 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     if payload.api_secret:
         row.api_secret_encrypted = encrypt_secret(payload.api_secret)
     row.company = payload.company
-    row.cgst_account_head = payload.cgst_account_head
-    row.sgst_account_head = payload.sgst_account_head
+    row.gst_tax_template = payload.gst_tax_template
     row.payment_account = payload.payment_account
     row.print_format = payload.print_format
     row.customer_group = payload.customer_group
-    row.territory = payload.territory
     row.sales_invoice_naming_series = payload.sales_invoice_naming_series
     row.item_code_wallet_recharge = payload.item_code_wallet_recharge
     row.item_code_dlt_fee = payload.item_code_dlt_fee
@@ -118,8 +113,8 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
     db.commit(); db.refresh(row)
     return PlatformErpNextSettingsOut(
         base_url=row.base_url, api_key=row.api_key, company=row.company,
-        cgst_account_head=row.cgst_account_head, sgst_account_head=row.sgst_account_head, payment_account=row.payment_account, print_format=row.print_format,
-        customer_group=row.customer_group, territory=row.territory, sales_invoice_naming_series=row.sales_invoice_naming_series,
+        gst_tax_template=row.gst_tax_template, payment_account=row.payment_account, print_format=row.print_format,
+        customer_group=row.customer_group, sales_invoice_naming_series=row.sales_invoice_naming_series,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
         configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
@@ -128,10 +123,10 @@ def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Req
 
 @router.get("/erpnext-accounts", response_model=list[ErpNextAccountOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_erpnext_accounts(db: Session = Depends(get_db)):
-    """Real leaf accounts from the configured ERPNext company, for the CGST/SGST/payment-account
-    dropdowns -- fetched live rather than free-typed, since (confirmed live, see the API reference
-    doc) a group-node account name looks exactly as plausible as a real one but gets rejected the
-    moment an invoice actually tries to use it."""
+    """Real leaf accounts from the configured ERPNext company, for the payment-account dropdown --
+    fetched live rather than free-typed, since (confirmed live, see the API reference doc) a
+    group-node account name looks exactly as plausible as a real one but gets rejected the moment
+    an invoice actually tries to use it."""
     settings_row = get_erpnext_settings(db)
     if not settings_row:
         raise HTTPException(status_code=422, detail="Configure the ERPNext base URL, API key/secret, and company first.")
@@ -140,6 +135,21 @@ def list_erpnext_accounts(db: Session = Depends(get_db)):
     except ErpNextCallError as exc:
         raise HTTPException(status_code=502, detail=f"Could not fetch accounts from ERPNext: {exc}") from exc
     return [ErpNextAccountOut(name=a["name"], account_name=a["account_name"], account_type=a.get("account_type") or "") for a in accounts]
+
+
+@router.get("/erpnext-tax-templates", response_model=list[ErpNextTaxTemplateOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_erpnext_tax_templates_admin(db: Session = Depends(get_db)):
+    """Real Sales Taxes and Charges Templates from the configured ERPNext company, for the GST
+    tax template dropdown -- referencing one by name is all Textzi needs to send; ERPNext computes
+    and posts the correct CGST/SGST lines from the template's own setup."""
+    settings_row = get_erpnext_settings(db)
+    if not settings_row:
+        raise HTTPException(status_code=422, detail="Configure the ERPNext base URL, API key/secret, and company first.")
+    try:
+        templates = list_tax_templates(db, settings_row)
+    except ErpNextCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch tax templates from ERPNext: {exc}") from exc
+    return [ErpNextTaxTemplateOut(name=t["name"], is_default=bool(t.get("is_default"))) for t in templates]
 
 
 def _norm(value: str | None) -> str | None:

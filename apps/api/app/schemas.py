@@ -922,12 +922,10 @@ class PlatformErpNextSettingsOut(BaseModel):
     base_url: str | None
     api_key: str | None
     company: str | None
-    cgst_account_head: str | None
-    sgst_account_head: str | None
+    gst_tax_template: str | None
     payment_account: str | None
     print_format: str | None
-    customer_group: str
-    territory: str
+    customer_group: str | None
     sales_invoice_naming_series: str | None
     item_code_wallet_recharge: str | None
     item_code_dlt_fee: str | None
@@ -941,12 +939,10 @@ class PlatformErpNextSettingsUpdate(BaseModel):
     api_key: str | None = None
     api_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password
     company: str | None = None
-    cgst_account_head: str | None = None
-    sgst_account_head: str | None = None
+    gst_tax_template: str | None = None
     payment_account: str | None = None
     print_format: str | None = None
-    customer_group: str = "All Customer Groups"
-    territory: str = "All Territories"
+    customer_group: str | None = None
     # None/blank = use ERPNext's own default Sales Invoice naming series -- only set this if that
     # default produces a name over 16 characters, which india_compliance (GST) rejects outright.
     sales_invoice_naming_series: str | None = None
@@ -967,6 +963,11 @@ class ErpNextAccountOut(BaseModel):
     name: str
     account_name: str
     account_type: str
+
+
+class ErpNextTaxTemplateOut(BaseModel):
+    name: str
+    is_default: bool
 
 
 class ErpNextCallLogOut(BaseModel):

@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from .models import ErpNextApiCallLog, Invoice, Organization, PlatformErpNextSettings
 from .security import decrypt_secret
-from .services import GST_RATE, GST_SAC_CODE
+from .services import GST_SAC_CODE
 
 logger = logging.getLogger("textzi.erpnext")
 
@@ -109,9 +109,9 @@ def _get_resource(db: Session, settings_row: PlatformErpNextSettings, doctype: s
 
 def list_accounts(db: Session, settings_row: PlatformErpNextSettings) -> list[dict]:
     """Real leaf (non-group) accounts for the given company, for the admin to pick from directly
-    -- CGST/SGST heads and the payment account all have the same "must be a real leaf Account,
-    not a group node" requirement confirmed live for Customer Group/Territory (see the API
-    reference doc's gotchas section), so free-text entry here is exactly as error-prone."""
+    -- the payment account has the same "must be a real leaf Account, not a group node"
+    requirement confirmed live for other tree-structured doctypes, so free-text entry here is
+    exactly as error-prone."""
     result = _request(db, settings_row, "GET", "/api/resource/Account", None, query={
         "filters": [["company", "=", settings_row.company], ["is_group", "=", 0]],
         "fields": ["name", "account_name", "account_type"],
@@ -120,17 +120,35 @@ def list_accounts(db: Session, settings_row: PlatformErpNextSettings) -> list[di
     return result.get("data", [])
 
 
+def list_tax_templates(db: Session, settings_row: PlatformErpNextSettings) -> list[dict]:
+    """Real Sales Taxes and Charges Templates configured for the company -- referencing one of
+    these by name is all a Sales Invoice needs for ERPNext to compute and post the correct
+    CGST/SGST (or IGST) lines itself, confirmed live. The admin picks the applicable one (e.g. the
+    in-state template) rather than Textzi trying to know individual account heads."""
+    result = _request(db, settings_row, "GET", "/api/resource/Sales Taxes and Charges Template", None, query={
+        "filters": [["company", "=", settings_row.company], ["disabled", "=", 0]],
+        "fields": ["name", "is_default"],
+        "limit_page_length": 100,
+    })
+    return result.get("data", [])
+
+
 def _ensure_customer(db: Session, settings_row: PlatformErpNextSettings, organization: Organization, invoice_id: str) -> str:
     """Returns the ERPNext Customer doctype name for this organization, creating one the first
-    time and remembering it on the Organization row so every later invoice reuses it."""
+    time and remembering it on the Organization row so every later invoice reuses it. Neither
+    customer_group nor a territory is required by ERPNext (confirmed live: DocType metadata
+    reqd=0 for both, and a real Customer create succeeded with neither set) -- customer_group is
+    only ever included when the admin has actually configured one, purely for their own reporting
+    inside ERPNext."""
     if organization.erpnext_customer_name:
         return organization.erpnext_customer_name
-    result = _request(db, settings_row, "POST", "/api/resource/Customer", invoice_id, {
+    payload = {
         "customer_name": organization.name,
         "tax_id": organization.gstin or None,
-        "customer_group": settings_row.customer_group,
-        "territory": settings_row.territory,
-    })
+    }
+    if settings_row.customer_group:
+        payload["customer_group"] = settings_row.customer_group
+    result = _request(db, settings_row, "POST", "/api/resource/Customer", invoice_id, payload)
     customer_name = result["data"]["name"]
     organization.erpnext_customer_name = customer_name
     db.commit()
@@ -297,34 +315,26 @@ def sync_invoice_to_erpnext(db: Session, invoice: Invoice, organization: Organiz
         customer_name = _ensure_customer(db, settings_row, organization, invoice.id)
         _ensure_item(db, settings_row, item_code, invoice.type, invoice.id)
 
-        taxes = []
+        taxes_and_charges = ""
         if float(invoice.gst_amount) > 0:
-            if not settings_row.cgst_account_head or not settings_row.sgst_account_head:
-                raise ErpNextCallError("GST amount is non-zero but CGST/SGST account heads are not configured")
-            # "Actual" (a fixed rupee amount, not a rate) was tried first and confirmed live to be
-            # rejected outright on a real india_compliance-enabled site: "Charge Type is set to
-            # Actual. However, this would not compute item taxes, and your further reporting will
-            # be affected" -- india_compliance requires a per-item computed tax detail (rate-based)
-            # for its own GST reporting (GSTR-1 etc.), which "Actual" skips entirely. "On Net Total"
-            # with a percentage rate is what actually works, confirmed live: on Textzi's single-line
-            # invoice (always exactly one item), this computes identically to Textzi's own flat
-            # GST_RATE split in half per side -- the total-mismatch check right after creation is
-            # what actually guards against any drift, not the tax line's own construction here.
-            half_rate_percent = round(GST_RATE / 2 * 100, 4)
-            taxes = [
-                {"charge_type": "On Net Total", "account_head": settings_row.cgst_account_head, "rate": half_rate_percent, "description": "CGST"},
-                {"charge_type": "On Net Total", "account_head": settings_row.sgst_account_head, "rate": half_rate_percent, "description": "SGST"},
-            ]
+            if not settings_row.gst_tax_template:
+                raise ErpNextCallError("GST amount is non-zero but no GST tax template is configured")
+            # Referencing a real, pre-configured Sales Taxes and Charges Template by name is all
+            # ERPNext needs -- confirmed live it then computes and posts the correct CGST/SGST
+            # lines (with the right account heads) itself, from the template's own setup, not
+            # anything Textzi has to construct. The total-mismatch check right after creation is
+            # what actually guards against the template producing a different amount than what was
+            # charged, not the tax line's own construction here.
+            taxes_and_charges = settings_row.gst_tax_template
         payload = {
             "customer": customer_name,
             "company": settings_row.company,
             "items": [{"item_code": item_code, "qty": 1, "rate": float(invoice.base_amount)}],
-            "taxes": taxes,
-            # Explicitly empty -- otherwise ERPNext/india_compliance can silently auto-apply a
-            # default tax template (confirmed live: a customer with no taxes sent still came back
-            # with 18% GST added). The verification right after this call is the real safeguard;
-            # this is just the first line of defense.
-            "taxes_and_charges": "",
+            # Left explicitly empty when no GST applies -- otherwise ERPNext/india_compliance can
+            # silently auto-apply a default tax template (confirmed live: a customer with no taxes
+            # sent still came back with 18% GST added). The verification right after this call is
+            # the real safeguard; this is just the first line of defense.
+            "taxes_and_charges": taxes_and_charges,
             "remarks": f"Textzi invoice {invoice.invoice_number}" if invoice.invoice_number else f"Textzi invoice {invoice.id}",
         }
         if settings_row.sales_invoice_naming_series:

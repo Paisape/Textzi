@@ -692,27 +692,30 @@ class PlatformErpNextSettings(Base):
     rendering (invoicing.py) only ever runs as a fallback when ERPNext is unconfigured or a call
     fails, so a customer is never left with literally no invoice while a failure is retried. The
     item_code_* fields map each of Textzi's own Invoice.type values to an ERPNext Item code --
-    auto-created there the first time it's needed if it doesn't already exist. cgst_account_head/
-    sgst_account_head split Textzi's own already-computed gst_amount in half and post each half
-    as an exact ("Actual") tax line -- matching the intra-state CGST+SGST structure Textzi's own
-    invoice already assumes -- rather than letting ERPNext recompute GST from a percentage
-    template, which could drift from what the customer was actually charged."""
+    auto-created there the first time it's needed if it doesn't already exist. gst_tax_template
+    names a real, pre-configured ERPNext "Sales Taxes and Charges Template" (e.g. "Output GST
+    In-state - PTPL") -- confirmed live that referencing one by name is all a Sales Invoice needs
+    for ERPNext to compute and post the correct CGST/SGST lines itself, so Textzi never needs to
+    know the underlying account heads at all."""
     __tablename__ = "platform_erpnext_settings"
     id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
     base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
     api_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
     api_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
     company: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    cgst_account_head: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    sgst_account_head: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    gst_tax_template: Mapped[str | None] = mapped_column(String(160), nullable=True)
     # The ERPNext Bank/Cash account a reconciling Payment Entry deposits into (its "Paid To") --
     # required before any invoice marked erpnext_mark_paid=True can actually sync; picked by the
     # admin from a real fetched list (GET .../erpnext-accounts), not free text, since it must be a
-    # real leaf (non-group) account exactly like customer_group/territory.
+    # real leaf (non-group) account.
     payment_account: Mapped[str | None] = mapped_column(String(160), nullable=True)
     print_format: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    customer_group: Mapped[str] = mapped_column(String(140), default="All Customer Groups")
-    territory: Mapped[str] = mapped_column(String(140), default="All Territories")
+    # Optional -- confirmed live (DocType metadata: reqd=0, and a real Customer create succeeded
+    # with neither field set at all) that ERPNext doesn't require this. Kept as an admin choice
+    # purely for ERPNext-side reporting/segmentation; blank means every Customer Textzi creates
+    # just has no group set, which ERPNext is fine with. Territory was the same story but with no
+    # actual reporting upside identified, so it was dropped entirely rather than kept blank-by-default.
+    customer_group: Mapped[str | None] = mapped_column(String(140), nullable=True)
     # None = let ERPNext use its own configured default Sales Invoice naming series. Only needs
     # setting when that default produces a name longer than 16 characters -- confirmed live that
     # india_compliance (GST) rejects invoice creation outright above that length ("Transaction Name

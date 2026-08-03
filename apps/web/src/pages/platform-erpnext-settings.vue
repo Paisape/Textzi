@@ -15,12 +15,10 @@ type ErpNextSettings = {
   base_url: string | null
   api_key: string | null
   company: string | null
-  cgst_account_head: string | null
-  sgst_account_head: string | null
+  gst_tax_template: string | null
   payment_account: string | null
   print_format: string | null
-  customer_group: string
-  territory: string
+  customer_group: string | null
   sales_invoice_naming_series: string | null
   item_code_wallet_recharge: string | null
   item_code_dlt_fee: string | null
@@ -30,21 +28,24 @@ type ErpNextSettings = {
 }
 
 type ErpNextAccount = { name: string, account_name: string, account_type: string }
+type ErpNextTaxTemplate = { name: string, is_default: boolean }
 
 const baseUrl = ref('')
 const apiKey = ref('')
 const apiSecret = ref('')
 const company = ref('')
-const cgstAccountHead = ref('')
-const sgstAccountHead = ref('')
+const gstTaxTemplate = ref('')
 const paymentAccount = ref('')
 const printFormat = ref('')
 const accounts = ref<ErpNextAccount[]>([])
 const accountsError = ref('')
 const accountsLoading = ref(false)
 const accountOptions = computed(() => accounts.value.map(a => ({ title: `${a.account_name} (${a.account_type || 'other'})`, value: a.name })))
-const customerGroup = ref('Commercial')
-const territory = ref('India')
+const taxTemplates = ref<ErpNextTaxTemplate[]>([])
+const taxTemplatesError = ref('')
+const taxTemplatesLoading = ref(false)
+const taxTemplateOptions = computed(() => taxTemplates.value.map(t => ({ title: t.is_default ? `${t.name} (default)` : t.name, value: t.name })))
+const customerGroup = ref('')
 const salesInvoiceNamingSeries = ref('')
 const itemCodeWalletRecharge = ref('')
 const itemCodeDltFee = ref('')
@@ -67,20 +68,19 @@ async function loadSettings() {
     baseUrl.value = result.base_url ?? ''
     apiKey.value = result.api_key ?? ''
     company.value = result.company ?? ''
-    cgstAccountHead.value = result.cgst_account_head ?? ''
-    sgstAccountHead.value = result.sgst_account_head ?? ''
+    gstTaxTemplate.value = result.gst_tax_template ?? ''
     paymentAccount.value = result.payment_account ?? ''
     printFormat.value = result.print_format ?? ''
-    customerGroup.value = result.customer_group
-    territory.value = result.territory
+    customerGroup.value = result.customer_group ?? ''
     salesInvoiceNamingSeries.value = result.sales_invoice_naming_series ?? ''
     itemCodeWalletRecharge.value = result.item_code_wallet_recharge ?? ''
     itemCodeDltFee.value = result.item_code_dlt_fee ?? ''
     itemCodeChannelSubscription.value = result.item_code_channel_subscription ?? ''
     itemCodeAdminCredit.value = result.item_code_admin_credit ?? ''
     configured.value = result.configured
-    if (configured.value)
-      await loadAccounts()
+    if (configured.value) {
+      await Promise.all([loadAccounts(), loadTaxTemplates()])
+    }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load ERPNext settings.')
@@ -101,6 +101,20 @@ async function loadAccounts() {
   }
 }
 
+async function loadTaxTemplates() {
+  taxTemplatesError.value = ''
+  taxTemplatesLoading.value = true
+  try {
+    taxTemplates.value = await $api<ErpNextTaxTemplate[]>('/v1/admin/platform/erpnext-tax-templates')
+  }
+  catch (error: any) {
+    taxTemplatesError.value = extractErrorMessage(error, 'Could not fetch tax templates from ERPNext.')
+  }
+  finally {
+    taxTemplatesLoading.value = false
+  }
+}
+
 async function onSave() {
   saveError.value = ''
   saveSuccess.value = ''
@@ -113,12 +127,10 @@ async function onSave() {
         api_key: apiKey.value || null,
         api_secret: apiSecret.value || null,
         company: company.value || null,
-        cgst_account_head: cgstAccountHead.value || null,
-        sgst_account_head: sgstAccountHead.value || null,
+        gst_tax_template: gstTaxTemplate.value || null,
         payment_account: paymentAccount.value || null,
         print_format: printFormat.value || null,
-        customer_group: customerGroup.value,
-        territory: territory.value,
+        customer_group: customerGroup.value || null,
         sales_invoice_naming_series: salesInvoiceNamingSeries.value || null,
         item_code_wallet_recharge: itemCodeWalletRecharge.value || null,
         item_code_dlt_fee: itemCodeDltFee.value || null,
@@ -130,7 +142,7 @@ async function onSave() {
     apiSecret.value = ''
     saveSuccess.value = 'Saved.'
     if (configured.value)
-      await loadAccounts()
+      await Promise.all([loadAccounts(), loadTaxTemplates()])
   }
   catch (error: any) {
     saveError.value = extractErrorMessage(error, 'Could not save ERPNext settings.')
@@ -229,18 +241,9 @@ onMounted(loadSettings)
           <VCol cols="12" sm="6">
             <AppTextField
               v-model="customerGroup"
-              label="Customer group"
+              label="Customer group (optional)"
               placeholder="Commercial"
-              hint="Must be a real (non-group/leaf) Customer Group in ERPNext — 'All Customer Groups' itself is a parent node and will be rejected."
-              persistent-hint
-            />
-          </VCol>
-          <VCol cols="12" sm="6">
-            <AppTextField
-              v-model="territory"
-              label="Territory"
-              placeholder="India"
-              hint="Same rule as Customer Group — 'All Territories' is a parent node, not a valid value."
+              hint="Purely for your own reporting inside ERPNext — not required. Leave blank to have ERPNext leave every Customer Textzi creates with no group set."
               persistent-hint
             />
           </VCol>
@@ -255,22 +258,12 @@ onMounted(loadSettings)
           </VCol>
           <VCol cols="12" sm="6">
             <VAutocomplete
-              v-model="cgstAccountHead"
-              :items="accountOptions"
-              :loading="accountsLoading"
-              label="CGST account head"
-              placeholder="Output Tax CGST - COMPANY"
-              clearable
-            />
-          </VCol>
-          <VCol cols="12" sm="6">
-            <VAutocomplete
-              v-model="sgstAccountHead"
-              :items="accountOptions"
-              :loading="accountsLoading"
-              label="SGST account head"
-              placeholder="Output Tax SGST - COMPANY"
-              hint="GST_RATE/2 is posted to each of these as a percentage rate (On Net Total), not a fixed amount — india_compliance rejects a fixed-amount tax line outright. Both leave blank only if every invoice type you sync has zero GST."
+              v-model="gstTaxTemplate"
+              :items="taxTemplateOptions"
+              :loading="taxTemplatesLoading"
+              label="GST tax template"
+              placeholder="Output GST In-state - COMPANY"
+              hint="A Sales Taxes and Charges Template already configured in ERPNext — referencing it by name is all that's needed for ERPNext to compute and post the correct CGST/SGST lines itself. Required before any invoice with GST can sync."
               persistent-hint
               clearable
             />
@@ -301,7 +294,15 @@ onMounted(loadSettings)
             cols="12"
           >
             <VAlert type="warning" variant="tonal" density="compact">
-              {{ accountsError }} — the three account fields above will show as plain text until this is fixed; type the exact ERPNext account name manually in the meantime.
+              {{ accountsError }} — the payment account field above will show as plain text until this is fixed; type the exact ERPNext account name manually in the meantime.
+            </VAlert>
+          </VCol>
+          <VCol
+            v-if="taxTemplatesError"
+            cols="12"
+          >
+            <VAlert type="warning" variant="tonal" density="compact">
+              {{ taxTemplatesError }} — the GST tax template field above will show as plain text until this is fixed; type the exact ERPNext template name manually in the meantime.
             </VAlert>
           </VCol>
         </VRow>
