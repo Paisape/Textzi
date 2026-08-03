@@ -37,6 +37,14 @@
       gap: 1rem;
     }
   }
+
+  // Vuetify's default VStepper adds a margin to the window/content pane meant to align it under
+  // a step's label rather than its numbered icon -- with our short, single-line step labels this
+  // just shifts the pane out from under the header, clipping its own text against the card's
+  // overflow-hidden edge (confirmed live: "Email verified" rendering as "mail verified").
+  .v-stepper-window {
+    margin-inline-start: 0 !important;
+  }
 }
 
 @media (min-width: 960px) {
