@@ -304,7 +304,23 @@ def render_template(body: str, variables: dict[str, str]) -> str:
         if key not in variables:
             raise DomainError(f"Missing template variable '{key}'")
         return variables[key]
-    return re.sub(r"\{\{\s*(\w+)\s*\}\}", substitute, body)
+    result = re.sub(r"\{\{\s*(\w+)\s*\}\}", substitute, body)
+
+    # DLT-registered templates use {#var#}-style placeholders (the TRAI/DLT platform's own
+    # convention -- every operator-approved template uses this, not Textzi's {{var}}), which was
+    # never matched here at all -- confirmed live, a real template shipped the literal text
+    # "{#num#}" to the recipient's phone instead of the actual code. DLT itself treats these
+    # purely positionally (the registry doesn't care what name is written inside the braces, only
+    # how many slots exist and in what order), so each {#...#} is filled in sequence from the same
+    # variables dict, by value order rather than by matching the name inside the braces to a key.
+    dlt_values = iter(variables.values())
+
+    def substitute_dlt(_match: re.Match) -> str:
+        try:
+            return next(dlt_values)
+        except StopIteration:
+            raise DomainError("Template has more {#...#} placeholders than variables provided")
+    return re.sub(r"\{#[^{}]*#\}", substitute_dlt, result)
 
 
 def _wallet_available_decimal(wallet: Wallet | WabaWallet) -> Decimal:
