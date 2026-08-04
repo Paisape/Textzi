@@ -533,6 +533,42 @@ class PublicTestimonialOut(BaseModel):
     quote: str
 
 
+class TrackVisitRequest(BaseModel):
+    session_id: str | None = None
+    path: str
+    referrer: str | None = None
+    viewport_width: int | None = None
+    viewport_height: int | None = None
+
+
+class TrackVisitResponse(BaseModel):
+    session_id: str
+
+
+class VisitorSessionAdminOut(BaseModel):
+    id: str
+    user_id: str | None
+    user_email: str | None
+    country: str | None
+    browser: str | None
+    os: str | None
+    device_type: str | None
+    first_referrer: str | None
+    first_seen: str
+    last_seen: str
+    page_view_count: int
+
+
+class AnalyticsSummaryOut(BaseModel):
+    total_sessions: int
+    total_page_views: int
+    sessions_last_7_days: int
+    top_pages: list[dict]
+    top_countries: list[dict]
+    top_referrers: list[dict]
+    device_breakdown: list[dict]
+
+
 class MessageOut(BaseModel):
     id: str
     recipient: str

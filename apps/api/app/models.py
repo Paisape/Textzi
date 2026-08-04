@@ -817,3 +817,39 @@ class Testimonial(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class VisitorSession(Base):
+    """One browser (identified by a first-party cookie, not a person) across however many pages
+    it views on the public site. user_id is only ever filled in retroactively -- if that same
+    browser later registers or logs in, request_visitor_beacon links this session forward, so an
+    anonymous visit can be connected to the account it eventually became without ever having
+    tracked identity before that point. country is Cloudflare's own CF-IPCountry header (already
+    in front of this deployment) -- deliberately not a paid GeoIP database, since country-level is
+    already what that header gives for free and city-level precision isn't something this needs
+    or should be collecting from anonymous visitors. See privacy-policy.vue Section 1/7 for the
+    public disclosure this is built to match."""
+    __tablename__ = "visitor_sessions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    browser: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    os: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    device_type: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    first_referrer: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    first_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PageView(Base):
+    """One page load within a VisitorSession -- path/referrer/viewport only, no click-level or
+    cross-site tracking."""
+    __tablename__ = "page_views"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    session_id: Mapped[str] = mapped_column(ForeignKey("visitor_sessions.id"), index=True)
+    path: Mapped[str] = mapped_column(String(500))
+    referrer: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    viewport_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    viewport_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

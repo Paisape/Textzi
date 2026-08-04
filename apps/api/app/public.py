@@ -1,17 +1,20 @@
 """Unauthenticated endpoints backing the public marketing site (src/pages/index.vue) --
 Contact form submission and the admin-curated public Pricing section. No require_user
 anywhere in this file; that's intentional, not an oversight."""
+from datetime import datetime, timezone
 from html import escape
 
-from fastapi import APIRouter, Depends
+import jwt
+from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import get_db
 from .email_service import render_email, send_email
-from .models import ContactMessage, RateCard, Testimonial
-from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, RateCardSlabOut
-from .services import get_platform_company_info, rate_card_slabs
+from .models import ContactMessage, PageView, RateCard, Testimonial, VisitorSession
+from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
+from .security import decode_access_token
+from .services import client_ip, get_platform_company_info, parse_user_agent, rate_card_slabs
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
 
@@ -121,3 +124,49 @@ def list_public_testimonials(db: Session = Depends(get_db)):
         select(Testimonial).where(Testimonial.status == "approved").order_by(Testimonial.reviewed_at.desc()).limit(12),
     ).all()
     return [PublicTestimonialOut(author_name=r.author_name, author_role=r.author_role, quote=r.quote) for r in rows]
+
+
+@router.post("/track", response_model=TrackVisitResponse)
+def track_visit(payload: TrackVisitRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """One row per page view, grouped into a VisitorSession the frontend identifies by an opaque
+    id it generates and stores itself (localStorage, first-party to the frontend's own origin) --
+    not a cookie, since the API and frontend sit on different subdomains (api.textzi.in vs
+    textzi.in) and this app's CORS policy deliberately runs with allow_credentials=False, which a
+    cross-origin cookie wouldn't reliably round-trip through anyway. No name/email/mobile/
+    cross-site history captured here, matching Privacy Policy Section 1/7. country comes from
+    Cloudflare's own CF-IPCountry header (already in front of this deployment), not a GeoIP
+    database. If the caller happens to already be logged in (Authorization header present and
+    valid), the session is linked to that user_id -- best-effort, a missing/invalid/expired token
+    here is never an error, since most visits to this endpoint are genuinely anonymous."""
+    session = db.get(VisitorSession, payload.session_id) if payload.session_id else None
+    if not session:
+        browser, os_name, device_type = parse_user_agent(request.headers.get("User-Agent"))
+        session = VisitorSession(
+            ip_address=client_ip(request),
+            country=request.headers.get("CF-IPCountry"),
+            browser=browser,
+            os=os_name,
+            device_type=device_type,
+            first_referrer=(payload.referrer or request.headers.get("Referer") or "")[:500] or None,
+        )
+        db.add(session)
+        db.flush()
+    else:
+        session.last_seen = datetime.now(timezone.utc)
+
+    if not session.user_id and authorization and authorization.startswith("Bearer "):
+        try:
+            claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
+            session.user_id = claims.get("sub")
+        except jwt.PyJWTError:
+            pass
+
+    db.add(PageView(
+        session_id=session.id,
+        path=payload.path[:500],
+        referrer=(payload.referrer or "")[:500] or None,
+        viewport_width=payload.viewport_width,
+        viewport_height=payload.viewport_height,
+    ))
+    db.commit()
+    return TrackVisitResponse(session_id=session.id)

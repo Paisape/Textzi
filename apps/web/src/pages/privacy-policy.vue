@@ -63,6 +63,16 @@ definePage({
             information, API request logs, and delivery reports from telecom operators, collected
             to operate, secure, and troubleshoot the platform.
           </p>
+          <p class="text-body-1 mb-2">
+            <strong>Website visit data:</strong> when you browse our public marketing site
+            (whether or not you have an account), we record which pages you view, how you got
+            there (referring page), your approximate country (from your IP address — never a
+            precise location), and your browser/operating system/device type. This is grouped
+            into an anonymous browsing session using an identifier stored in your browser — we do
+            not know who you are unless you separately register or log in. We never collect your
+            name, email, or mobile number this way, and we never access your browsing activity on
+            any other website.
+          </p>
           <p class="text-body-1 mb-6">
             <strong>Contact form and support data:</strong> anything you submit via our Contact
             form or to our support team (name, email, phone, company, message).
@@ -148,8 +158,10 @@ definePage({
           </h2>
           <p class="text-body-1 mb-6">
             Our website and dashboard use essential cookies/local storage to keep you signed in
-            and remember your preferences (such as theme). We do not use third-party advertising
-            or tracking cookies.
+            and remember your preferences (such as theme), and a first-party identifier (also
+            local storage, not a cookie) to group your page views on our marketing site into one
+            anonymous session, as described in Section 1. We do not use third-party advertising or
+            tracking cookies, and this identifier is never shared with anyone outside Textzi.
           </p>
 
           <h2 class="text-h5 font-weight-bold mb-3">

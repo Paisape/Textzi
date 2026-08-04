@@ -19,11 +19,11 @@ from .invoicing import create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction,
+    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction,
 )
 from .schemas import (
     AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
-    ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest,
+    AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
@@ -1331,6 +1331,67 @@ def get_usage_summary(db: Session = Depends(get_db)):
         total_organizations=len(orgs), total_entities=total_entities, total_messages_sent=total_messages,
         total_wallet_credits_issued=float(total_credits_issued), total_revenue=float(total_revenue), breakdown=breakdown,
     )
+
+
+ANALYTICS_TOP_N = 10
+
+
+@router.get("/analytics/summary", response_model=AnalyticsSummaryOut, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
+def get_analytics_summary(db: Session = Depends(get_db)):
+    """Aggregate visitor-analytics numbers for the public marketing site -- backs the Analytics
+    admin page. Sourced entirely from VisitorSession/PageView (see public.py's track_visit),
+    which only ever captures path/referrer/viewport/coarse device+country, never name/email/
+    mobile/cross-site history."""
+    total_sessions = db.scalar(select(func.count()).select_from(VisitorSession)) or 0
+    total_page_views = db.scalar(select(func.count()).select_from(PageView)) or 0
+    seven_days_ago = datetime.now(timezone.utc) - timedelta(days=7)
+    sessions_last_7_days = db.scalar(select(func.count()).select_from(VisitorSession).where(VisitorSession.first_seen >= seven_days_ago)) or 0
+
+    top_pages = db.execute(
+        select(PageView.path, func.count().label("views")).group_by(PageView.path).order_by(func.count().desc()).limit(ANALYTICS_TOP_N),
+    ).all()
+    top_countries = db.execute(
+        select(VisitorSession.country, func.count().label("sessions")).where(VisitorSession.country.is_not(None))
+        .group_by(VisitorSession.country).order_by(func.count().desc()).limit(ANALYTICS_TOP_N),
+    ).all()
+    top_referrers = db.execute(
+        select(VisitorSession.first_referrer, func.count().label("sessions")).where(VisitorSession.first_referrer.is_not(None))
+        .group_by(VisitorSession.first_referrer).order_by(func.count().desc()).limit(ANALYTICS_TOP_N),
+    ).all()
+    device_breakdown = db.execute(
+        select(VisitorSession.device_type, func.count().label("sessions")).where(VisitorSession.device_type.is_not(None))
+        .group_by(VisitorSession.device_type).order_by(func.count().desc()),
+    ).all()
+
+    return AnalyticsSummaryOut(
+        total_sessions=total_sessions, total_page_views=total_page_views, sessions_last_7_days=sessions_last_7_days,
+        top_pages=[{"path": r.path, "views": r.views} for r in top_pages],
+        top_countries=[{"country": r.country, "sessions": r.sessions} for r in top_countries],
+        top_referrers=[{"referrer": r.first_referrer, "sessions": r.sessions} for r in top_referrers],
+        device_breakdown=[{"device_type": r.device_type, "sessions": r.sessions} for r in device_breakdown],
+    )
+
+
+@router.get("/analytics/sessions", response_model=list[VisitorSessionAdminOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
+def list_analytics_sessions(db: Session = Depends(get_db)):
+    """Most recent visitor sessions, each with its page-view count -- the detail table below the
+    summary cards on the Analytics admin page."""
+    sessions = db.scalars(select(VisitorSession).order_by(VisitorSession.last_seen.desc()).limit(200)).all()
+    view_counts = dict(db.execute(
+        select(PageView.session_id, func.count().label("n")).where(PageView.session_id.in_([s.id for s in sessions])).group_by(PageView.session_id),
+    ).all()) if sessions else {}
+    user_emails = {
+        u.id: u.email for u in db.scalars(select(User).where(User.id.in_([s.user_id for s in sessions if s.user_id]))).all()
+    } if any(s.user_id for s in sessions) else {}
+
+    return [
+        VisitorSessionAdminOut(
+            id=s.id, user_id=s.user_id, user_email=user_emails.get(s.user_id) if s.user_id else None,
+            country=s.country, browser=s.browser, os=s.os, device_type=s.device_type, first_referrer=s.first_referrer,
+            first_seen=s.first_seen.isoformat(), last_seen=s.last_seen.isoformat(), page_view_count=view_counts.get(s.id, 0),
+        )
+        for s in sessions
+    ]
 
 
 AUDIT_LOG_LIMIT = 300

@@ -70,6 +70,52 @@ def client_ip(request: Request) -> str | None:
     return request.client.host if request.client else None
 
 
+def parse_user_agent(user_agent: str | None) -> tuple[str | None, str | None, str | None]:
+    """Coarse (browser, os, device_type) from a User-Agent string -- deliberately simple regex
+    matching rather than a full UA-parsing library/database, since visitor analytics only ever
+    needs "Chrome / Windows / desktop"-level detail, not exact version/build numbers."""
+    if not user_agent:
+        return None, None, None
+    ua = user_agent
+
+    if "Edg/" in ua or "Edge/" in ua:
+        browser = "Edge"
+    elif "OPR/" in ua or "Opera" in ua:
+        browser = "Opera"
+    elif "Firefox/" in ua:
+        browser = "Firefox"
+    elif "CriOS" in ua:
+        browser = "Chrome (iOS)"
+    elif "Chrome/" in ua:
+        browser = "Chrome"
+    elif "Safari/" in ua and "Version/" in ua:
+        browser = "Safari"
+    else:
+        browser = "Other"
+
+    if "Windows" in ua:
+        os_name = "Windows"
+    elif "Mac OS X" in ua and "Mobile" not in ua:
+        os_name = "macOS"
+    elif "Android" in ua:
+        os_name = "Android"
+    elif "iPhone" in ua or "iPad" in ua or "iOS" in ua:
+        os_name = "iOS"
+    elif "Linux" in ua:
+        os_name = "Linux"
+    else:
+        os_name = "Other"
+
+    if "iPad" in ua or "Tablet" in ua:
+        device_type = "tablet"
+    elif "Mobile" in ua or "Android" in ua or "iPhone" in ua:
+        device_type = "mobile"
+    else:
+        device_type = "desktop"
+
+    return browser, os_name, device_type
+
+
 class DomainError(Exception):
     pass
 

@@ -121,6 +121,11 @@ export const adminNav = [
     icon: { icon: 'tabler-building-store' },
   },
   {
+    title: 'Analytics',
+    to: { name: 'admin-analytics' },
+    icon: { icon: 'tabler-chart-line' },
+  },
+  {
     title: 'Audit Log',
     to: { name: 'admin-audit-log' },
     icon: { icon: 'tabler-history' },
@@ -256,6 +261,11 @@ export const salesNav = [
     title: 'Customers',
     to: { name: 'customers' },
     icon: { icon: 'tabler-building-store' },
+  },
+  {
+    title: 'Analytics',
+    to: { name: 'admin-analytics' },
+    icon: { icon: 'tabler-chart-line' },
   },
   {
     title: 'Rate Cards',

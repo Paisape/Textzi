@@ -5,6 +5,31 @@ import type { RouteRecordRaw } from 'vue-router/auto'
 
 import { createRouter, createWebHistory } from 'vue-router/auto'
 import { useAuthStore } from '@/stores/auth'
+import { $api } from '@/utils/api'
+
+const VISITOR_SESSION_STORAGE_KEY = 'textzi_visitor_session_id'
+
+// Passive visitor analytics only -- path, referrer, viewport, coarse device/location (see
+// Privacy Policy Section 1/7). session_id lives in localStorage (first-party to this frontend's
+// own origin), not a cookie, since the API sits on a different subdomain (api.textzi.in) and
+// this app's CORS policy runs with allow_credentials=False, which a cross-origin cookie
+// wouldn't reliably round-trip through anyway. Never blocks/delays navigation -- fire-and-forget,
+// swallow any failure.
+function trackPageView(path: string, internalReferrer?: string) {
+  const sessionId = localStorage.getItem(VISITOR_SESSION_STORAGE_KEY) || undefined
+  $api<{ session_id: string }>('/v1/public/track', {
+    method: 'POST',
+    body: {
+      session_id: sessionId,
+      path,
+      referrer: internalReferrer || document.referrer || undefined,
+      viewport_width: window.innerWidth,
+      viewport_height: window.innerHeight,
+    },
+  })
+    .then(result => localStorage.setItem(VISITOR_SESSION_STORAGE_KEY, result.session_id))
+    .catch(() => {})
+}
 
 function recursiveLayouts(route: RouteRecordRaw): RouteRecordRaw {
   if (route.children) {
@@ -74,6 +99,10 @@ router.beforeEach(async to => {
     if (to.meta.staffArea && !authStore.isAdmin && authStore.staffArea !== to.meta.staffArea)
       return '/dashboard'
   }
+})
+
+router.afterEach((to, from) => {
+  trackPageView(to.fullPath, from.name ? from.fullPath : undefined)
 })
 
 export { router }
