@@ -136,7 +136,7 @@ async function submitMobileCode() {
     class="auth-wrapper bg-surface"
   >
     <VCol
-      md="8"
+      md="6"
       class="d-none d-md-flex"
     >
       <div class="position-relative bg-background w-100 h-100 me-0 d-flex align-center justify-center">
@@ -146,12 +146,12 @@ async function submitMobileCode() {
 
     <VCol
       cols="12"
-      md="4"
+      md="6"
       class="auth-card-v2 d-flex align-center justify-center"
     >
       <VCard
         flat
-        max-width="480"
+        max-width="640"
         class="mt-12 mt-sm-0 pa-6 w-100"
       >
         <VCardText>
