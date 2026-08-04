@@ -45,14 +45,17 @@
   .v-stepper-window {
     margin-inline-start: 0 !important;
 
-    // Separately from the margin above: VWindow's own slide-transition mechanic (used for the
-    // animated move between steps) leaves this element's scrollLeft at a small non-zero value
-    // right after a step change -- confirmed live (scrollLeft: 13 immediately after transitioning
-    // to step 2, before any user interaction) -- which clips the same text from the left edge all
-    // over again independently of the margin fix above. `overflow: hidden` still permits a
-    // scrollLeft drift like this; `overflow: clip` structurally forbids any scroll position other
-    // than 0, so this can't recur regardless of what the transition leaves behind.
+    // overflow-x: clip alone (tried first) didn't fully stop this -- confirmed live that scrollLeft
+    // still drifted (13, then 18, then 35 across separate tests) and even survived a forcibly
+    // re-injected `overflow-x: clip !important` rule at the very end of <head>, which rules out a
+    // plain CSS cascade/specificity fight. The actual mechanism looks like the browser's own
+    // scroll-anchoring heuristic: Vuetify's slide-transition resizes content during the animated
+    // move between steps, and the browser "helpfully" nudges scrollLeft to compensate.
+    // overflow-anchor is a wholly separate property from overflow-x/-y that specifically toggles
+    // that heuristic -- kept alongside overflow-x: clip as defense in depth since neither one
+    // alone was conclusively proven sufficient.
     overflow-x: clip !important;
+    overflow-anchor: none !important;
   }
 }
 
