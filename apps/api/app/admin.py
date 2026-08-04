@@ -1052,8 +1052,14 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     self-registered account. The generated password and an email-verification code go out in one
     welcome email; from there the customer verifies email then mobile through the same
     /v1/auth/verify-email and /v1/auth/request-mobile-otp -> /v1/auth/verify-mobile steps
-    self-registration uses, which is what flips status to active."""
-    if db.scalar(select(User).where(User.email == payload.contact_email)):
+    self-registration uses, which is what flips status to active.
+
+    Same "resume an abandoned signup" exception as the public register() endpoint: an existing
+    row that never got past its own email verification (no organization yet either) isn't a real
+    account to protect -- it's just adopted into the new organization being created here instead
+    of permanently blocking that email."""
+    existing = db.scalar(select(User).where(User.email == payload.contact_email))
+    if existing and (existing.email_verified or existing.organization_id):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
     org = Organization(name=payload.organization_name, gstin=payload.gstin, pan=payload.pan, industry=payload.industry, address=payload.address)
@@ -1072,17 +1078,30 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     db.add(WabaWallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
 
     generated_password = secrets.token_urlsafe(9)
-    user = User(
-        email=payload.contact_email, password_hash=hash_password(generated_password), full_name=payload.contact_full_name,
-        mobile=payload.contact_mobile, organization_id=org.id, role=UserRole.enterprise_customer.value,
-        status=UserStatus.pending_verification, email_verified=False,
-    )
-    db.add(user)
-    try:
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        raise HTTPException(status_code=409, detail="An account with this email already exists")
+    if existing:
+        user = existing
+        user.password_hash = hash_password(generated_password)
+        user.full_name = payload.contact_full_name
+        user.mobile = payload.contact_mobile
+        user.organization_id = org.id
+        user.role = UserRole.enterprise_customer.value
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
+    else:
+        user = User(
+            email=payload.contact_email, password_hash=hash_password(generated_password), full_name=payload.contact_full_name,
+            mobile=payload.contact_mobile, organization_id=org.id, role=UserRole.enterprise_customer.value,
+            status=UserStatus.pending_verification, email_verified=False,
+        )
+        db.add(user)
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
     db.refresh(user)
 
     email_code = _issue_otp(db, EmailVerification, user.id, channel="email", destination=user.email)
