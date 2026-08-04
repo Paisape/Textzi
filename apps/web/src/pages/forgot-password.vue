@@ -16,6 +16,20 @@ const step = ref(1)
 const submitting = ref(false)
 const errorMessage = ref('')
 
+// See verify-account.vue for why this is needed: Vuetify's VStepper transition leaves
+// .v-stepper-window's scrollLeft drifted to a small non-zero value on some (not all) step
+// changes, clipping the first character(s) of every line -- confirmed live via repeated
+// production testing that overflow-anchor: none (page-auth.scss) reduces but doesn't eliminate
+// it, a genuine race against the browser's own scroll heuristics during the .3s slide animation.
+function resetStepperScroll() {
+  document.querySelectorAll<HTMLElement>('.v-stepper-header, .v-stepper-window').forEach(el => { el.scrollLeft = 0 })
+}
+watch(step, async () => {
+  await nextTick()
+  resetStepperScroll()
+  setTimeout(resetStepperScroll, 350)
+})
+
 const email = ref('')
 const userId = ref('')
 const devCode = ref('')

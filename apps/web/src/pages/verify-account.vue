@@ -18,6 +18,22 @@ const step = ref(1)
 const submitting = ref(false)
 const errorMessage = ref('')
 
+// Vuetify's VStepper transition leaves .v-stepper-window's scrollLeft drifted to a small non-zero
+// value on some (not all) step changes -- overflow-anchor: none (page-auth.scss) helps but doesn't
+// eliminate it, confirmed live via repeated production testing (scrollLeft ends up at 0 some runs,
+// 12+ on others, same deploy, same code -- a genuine race against the browser's own scroll
+// heuristics during the .3s slide animation). Forcing it back to 0 here, once right after Vue
+// patches the DOM and once again after the transition's own duration, is deterministic where the
+// CSS property alone wasn't.
+function resetStepperScroll() {
+  document.querySelectorAll<HTMLElement>('.v-stepper-header, .v-stepper-window').forEach(el => { el.scrollLeft = 0 })
+}
+watch(step, async () => {
+  await nextTick()
+  resetStepperScroll()
+  setTimeout(resetStepperScroll, 350)
+})
+
 const emailCode = ref('')
 
 const mobile = ref('')
