@@ -113,7 +113,10 @@ def require_admin_recent_2fa(x_admin_key: str | None = Header(default=None), aut
     X-Admin-Key already fully authenticates independent of any single user's identity, so it
     skips this check entirely -- same bypass require_admin itself grants it. A real admin-user
     JWT session additionally needs the same step-up freshness as require_recent_2fa (auth.py),
-    but only if that admin has 2FA enabled -- opt-in, no behavior change otherwise."""
+    but only if that admin has 2FA enabled -- opt-in, no behavior change otherwise. 403, not 401
+    -- see require_recent_2fa's docstring in auth.py: a 401 here collides with $api's global
+    session-expiry interceptor and force-logs-out the admin instead of showing the step-up
+    dialog."""
     if x_admin_key and hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
         return
     if not authorization or not authorization.startswith("Bearer "):
@@ -131,7 +134,7 @@ def require_admin_recent_2fa(x_admin_key: str | None = Header(default=None), aut
     verified_at = claims.get("mfa_verified_at")
     enabled_at_ts = two_factor.enabled_at.timestamp() if two_factor.enabled_at else 0
     if not verified_at or verified_at < enabled_at_ts or datetime.now(timezone.utc).timestamp() - verified_at > STEP_UP_WINDOW_MINUTES * 60:
-        raise HTTPException(status_code=401, detail="step_up_required")
+        raise HTTPException(status_code=403, detail="step_up_required")
 
 
 @router.get("/organizations", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

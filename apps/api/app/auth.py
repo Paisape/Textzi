@@ -361,7 +361,11 @@ def require_recent_2fa(user: User = Depends(require_user), authorization: str = 
     STEP_UP_WINDOW_MINUTES *and* from at or after the current TwoFactorAuth.enabled_at --
     otherwise a token stepped-up against a since-disabled-and-re-enrolled secret would still
     pass here without ever proving possession of the new one. The frontend is expected to
-    prompt for a fresh code and retry via POST /v1/auth/step-up-2fa."""
+    prompt for a fresh code and retry via POST /v1/auth/step-up-2fa. 403, not 401 -- the token
+    itself is still valid (require_user above already accepted it), just not fresh enough for
+    this specific action, and $api's global interceptor (api.ts) treats any 401 on an
+    authenticated request as a dead session and force-logs-out before the frontend's own
+    step-up-dialog handler ever gets to inspect the error body."""
     two_factor = db.get(TwoFactorAuth, user.id)
     if not two_factor or not two_factor.enabled:
         return user
@@ -369,7 +373,7 @@ def require_recent_2fa(user: User = Depends(require_user), authorization: str = 
     verified_at = claims.get("mfa_verified_at")
     enabled_at_ts = two_factor.enabled_at.timestamp() if two_factor.enabled_at else 0
     if not verified_at or verified_at < enabled_at_ts or datetime.now(timezone.utc).timestamp() - verified_at > STEP_UP_WINDOW_MINUTES * 60:
-        raise HTTPException(status_code=401, detail="step_up_required")
+        raise HTTPException(status_code=403, detail="step_up_required")
     return user
 
 
