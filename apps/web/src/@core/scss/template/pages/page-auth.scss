@@ -44,6 +44,15 @@
   // overflow-hidden edge (confirmed live: "Email verified" rendering as "mail verified").
   .v-stepper-window {
     margin-inline-start: 0 !important;
+
+    // Separately from the margin above: VWindow's own slide-transition mechanic (used for the
+    // animated move between steps) leaves this element's scrollLeft at a small non-zero value
+    // right after a step change -- confirmed live (scrollLeft: 13 immediately after transitioning
+    // to step 2, before any user interaction) -- which clips the same text from the left edge all
+    // over again independently of the margin fix above. `overflow: hidden` still permits a
+    // scrollLeft drift like this; `overflow: clip` structurally forbids any scroll position other
+    // than 0, so this can't recur regardless of what the transition leaves behind.
+    overflow-x: clip !important;
   }
 }
 
