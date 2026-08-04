@@ -7,6 +7,22 @@ from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 
+def _ttbs_recipient(mobile: str) -> str:
+    """TTBS's own docs are explicit: "Mobile number given should include the national calling
+    code. Example: 919823456789" -- no '+', just '91' directly prefixed. Textzi stores/collects
+    mobile numbers as a bare 10-digit number throughout (every mobile input in this app, e.g.
+    verify-account.vue's "9876543210" placeholder, collects it exactly this way), and nothing
+    upstream of this provider ever added the prefix -- confirmed live, a real send to a real
+    handset was accepted and even DR'd back as "delivered" by Tata's own system, yet the SMS
+    never arrived, root-caused to this exact gap via Tata's HTTP Push API documentation. Only
+    normalizes a bare 10-digit Indian mobile number (leaves anything else -- already-prefixed,
+    a different length/format -- untouched, so this can't mangle a number it doesn't recognize)."""
+    digits = mobile.strip()
+    if len(digits) == 10 and digits[0] in "6789":
+        return "91" + digits
+    return digits
+
+
 def _extract_ttbs_message_id(body: str) -> str | None:
     """TTBS's campaignService/campaigns/qs endpoint was originally a plain short ID in the
     response body -- confirmed live it now returns a JSON object instead (e.g. {"campaignId":
@@ -162,7 +178,7 @@ class TtbsSmsProvider:
         params = {
             "user": self.user,
             "pswd": self.pswd,
-            "recipient": message.recipient,
+            "recipient": _ttbs_recipient(message.recipient),
             "sender": message.sender,
             "msg": message.body,
             "channel": "2.1",
