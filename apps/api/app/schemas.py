@@ -852,6 +852,9 @@ class PlatformMessageTelemetryOut(BaseModel):
     route: str | None
     request_payload: dict[str, Any] | None
     response_body: str | None
+    delivery_status_code: int | None
+    delivered_at: str | None
+    webhook_payload: dict[str, Any] | None
     created_at: str
 
 

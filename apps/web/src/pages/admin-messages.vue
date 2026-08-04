@@ -72,6 +72,9 @@ type PlatformMessageTelemetry = {
   route: string | null
   request_payload: Record<string, any> | null
   response_body: string | null
+  delivery_status_code: number | null
+  delivered_at: string | null
+  webhook_payload: Record<string, any> | null
   created_at: string
 }
 
@@ -489,8 +492,16 @@ onMounted(loadMessages)
           </h6>
           <pre class="telemetry-block">{{ platformTelemetry.response_body ?? '(none)' }}</pre>
 
-          <p class="text-body-2 text-medium-emphasis mt-4">
-            Platform sends have no webhook drill-down yet — see route {{ platformTelemetry.route ?? '(simulated)' }}.
+          <h6 class="text-subtitle-1 font-weight-bold mt-4 mb-1">
+            Delivery report webhook
+          </h6>
+          <pre v-if="platformTelemetry.webhook_payload" class="telemetry-block">{{ formatJson(platformTelemetry.webhook_payload) }}</pre>
+          <p v-else class="text-body-2 text-medium-emphasis">
+            Not received yet (or route {{ platformTelemetry.route ?? '(simulated)' }} never requests delivery reports).
+          </p>
+          <p v-if="platformTelemetry.delivery_status_code !== null" class="text-caption text-medium-emphasis mt-1">
+            DeliveryStatusCode: {{ platformTelemetry.delivery_status_code }}
+            <span v-if="platformTelemetry.delivered_at">· {{ new Date(platformTelemetry.delivered_at).toLocaleString('en-IN') }}</span>
           </p>
         </template>
       </VCardText>

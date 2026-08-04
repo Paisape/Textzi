@@ -78,6 +78,9 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
         if platform_message.status in {"delivered", "delivery_failed"}:
             return {"status": "already_processed"}
         rule = db.get(DeliveryStatusCodeRule, payload.DeliveryStatusCode)
+        platform_message.delivery_status_code = payload.DeliveryStatusCode
+        platform_message.delivered_at = datetime.now(timezone.utc)
+        platform_message.webhook_payload = payload.model_dump()
         platform_message.status = "delivery_failed" if rule else "delivered"
         db.commit()
         return {"status": "processed"}

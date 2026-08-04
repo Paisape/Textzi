@@ -1641,6 +1641,9 @@ def get_platform_message_telemetry(message_id: str, db: Session = Depends(get_db
         message_id=message.id, purpose=message.purpose, recipient=mask_mobile(message.recipient),
         rendered_body=redact_otp(message.rendered_body), status=message.status, route=message.route,
         request_payload=message.request_payload, response_body=message.response_body,
+        delivery_status_code=message.delivery_status_code,
+        delivered_at=message.delivered_at.isoformat() if message.delivered_at else None,
+        webhook_payload=message.webhook_payload,
         created_at=message.created_at.isoformat(),
     )
 

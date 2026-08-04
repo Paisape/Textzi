@@ -776,10 +776,16 @@ class PlatformMessage(Base):
     provider_message_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
     # Same telemetry pair as DeliveryAttempt.request_payload/response_body -- platform sends are
     # one-shot (no failover route list, no separate attempt table), so they're stored directly
-    # here instead. No webhook_payload column: platform OTP sends have no DeliveryAttempt row for
-    # an inbound DR callback to match against, so there's nothing to attach one to yet.
+    # here instead.
     request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Same DR fields as DeliveryAttempt -- added after the webhook's PlatformMessage fallback
+    # branch was found to set status="delivered" without ever recording what TTBS actually sent,
+    # making it impossible to tell a genuine delivery from an unmapped DeliveryStatusCode
+    # defaulting to "delivered" (see DeliveryStatusCodeRule).
+    delivery_status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    webhook_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
