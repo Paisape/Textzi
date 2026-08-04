@@ -1090,6 +1090,12 @@ class CustomerAdminOut(BaseModel):
     last_activity: str | None
 
 
+class CustomerDeleteResponse(BaseModel):
+    deleted: bool
+    organization_id: str
+    organization_name: str
+
+
 class HeaderAdminOut(BaseModel):
     id: str
     header_id: str

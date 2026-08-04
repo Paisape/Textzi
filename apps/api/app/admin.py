@@ -6,7 +6,7 @@ import jwt
 import razorpay
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from fastapi.responses import FileResponse
-from sqlalchemy import func, or_, select
+from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .auth import _issue_otp, STEP_UP_WINDOW_MINUTES
@@ -24,7 +24,7 @@ from .models import (
 from .schemas import (
     AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResetPasswordResponse,
     ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest,
-    ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
     PlatformMessageTelemetryOut, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
@@ -1154,6 +1154,86 @@ def list_customers(search: str | None = None, db: Session = Depends(get_db)):
             last_activity=last_dt.isoformat() if last_dt else None,
         ))
     return out
+
+
+def _delete_where_in(db: Session, table: str, column: str, values: list[str]) -> None:
+    if not values:
+        return
+    stmt = text(f"DELETE FROM {table} WHERE {column} IN :ids").bindparams(bindparam("ids", expanding=True))
+    db.execute(stmt, {"ids": values})
+
+
+@router.delete("/customers/{organization_id}", response_model=CustomerDeleteResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def delete_customer(organization_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Permanently deletes a customer organization and every row under it -- every Entity,
+    Wallet, Message, Invoice, DLT record, Template/Header/PE ID, and every User tied to this
+    org. Restricted to Super Admin/Operator Admin (require_admin, not just require_staff) given
+    the blast radius -- this is irreversible, there is no undo. Staff/admin accounts never have
+    an organization_id (see list_customers' own docstring on this invariant), so this can never
+    touch a platform account regardless of which organization_id is passed in.
+
+    Raw SQL DELETEs in explicit dependency order rather than loading+deleting ORM objects one at
+    a time -- there are ~20 tables involved (confirmed against the live FK graph, not guessed),
+    and getting the order wrong would fail loudly with a FK violation rather than silently
+    corrupting anything, but doing it via SQLAlchemy relationships would need every one of those
+    relationships declared first, which they aren't."""
+    org = db.get(Organization, organization_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+
+    entity_ids = [row[0] for row in db.execute(text("SELECT id FROM entities WHERE organization_id = :oid"), {"oid": organization_id}).all()]
+    user_ids = [row[0] for row in db.execute(text("SELECT id FROM users WHERE organization_id = :oid"), {"oid": organization_id}).all()]
+
+    if entity_ids:
+        _delete_where_in(db, "delivery_attempts", "entity_id", entity_ids)
+        invoice_ids = [row[0] for row in db.execute(
+            text("SELECT id FROM invoices WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
+        ).all()]
+        _delete_where_in(db, "erpnext_api_call_logs", "invoice_id", invoice_ids)
+        request_ids = [row[0] for row in db.execute(
+            text("SELECT id FROM dlt_onboarding_requests WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
+        ).all()]
+        _delete_where_in(db, "dlt_onboarding_request_documents", "request_id", request_ids)
+        _delete_where_in(db, "messages", "entity_id", entity_ids)
+        _delete_where_in(db, "templates", "entity_id", entity_ids)
+        pe_id_ids = [row[0] for row in db.execute(
+            text("SELECT id FROM pe_ids WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
+        ).all()]
+        _delete_where_in(db, "headers", "pe_id", pe_id_ids)
+        _delete_where_in(db, "pe_ids", "entity_id", entity_ids)
+        _delete_where_in(db, "dlt_onboarding_requests", "entity_id", entity_ids)
+        _delete_where_in(db, "invoices", "entity_id", entity_ids)
+        _delete_where_in(db, "api_keys", "entity_id", entity_ids)
+        _delete_where_in(db, "channel_settings", "entity_id", entity_ids)
+        _delete_where_in(db, "channel_subscriptions", "entity_id", entity_ids)
+        _delete_where_in(db, "opt_out_entries", "entity_id", entity_ids)
+        _delete_where_in(db, "wallet_transactions", "entity_id", entity_ids)
+        _delete_where_in(db, "wallets", "entity_id", entity_ids)
+        _delete_where_in(db, "waba_wallets", "entity_id", entity_ids)
+        _delete_where_in(db, "payment_orders", "entity_id", entity_ids)
+
+    _delete_where_in(db, "account_activity", "organization_id", [organization_id])
+    _delete_where_in(db, "invitations", "organization_id", [organization_id])
+    _delete_where_in(db, "testimonials", "organization_id", [organization_id])
+
+    _delete_where_in(db, "entities", "organization_id", [organization_id])
+
+    if user_ids:
+        _delete_where_in(db, "email_verifications", "user_id", user_ids)
+        _delete_where_in(db, "mobile_verifications", "user_id", user_ids)
+        _delete_where_in(db, "password_resets", "user_id", user_ids)
+        _delete_where_in(db, "two_factor_auth", "user_id", user_ids)
+        _delete_where_in(db, "user_sessions", "user_id", user_ids)
+        _delete_where_in(db, "api_key_action_otps", "user_id", user_ids)
+        _delete_where_in(db, "user_rate_cards", "user_id", user_ids)
+
+    _delete_where_in(db, "users", "organization_id", [organization_id])
+
+    org_name = org.name
+    db.delete(org)
+    log_activity(db, None, "customer_deleted", f"Customer organization '{org_name}' ({organization_id}) and all its data were permanently deleted.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return CustomerDeleteResponse(deleted=True, organization_id=organization_id, organization_name=org_name)
 
 
 @router.get("/usage/summary", response_model=UsageSummaryResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])

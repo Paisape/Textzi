@@ -105,6 +105,41 @@ function closeCreateDialog() {
   createForm.value = { organizationName: '', contactFullName: '', contactEmail: '', contactMobile: '' }
 }
 
+const deleteTarget = ref<CustomerRow | null>(null)
+const deleteConfirmText = ref('')
+const deleting = ref(false)
+const deleteError = ref('')
+
+function openDeleteDialog(customer: CustomerRow) {
+  deleteTarget.value = customer
+  deleteConfirmText.value = ''
+  deleteError.value = ''
+}
+
+function closeDeleteDialog() {
+  deleteTarget.value = null
+  deleteConfirmText.value = ''
+  deleteError.value = ''
+}
+
+async function onConfirmDelete() {
+  if (!deleteTarget.value)
+    return
+  deleteError.value = ''
+  deleting.value = true
+  try {
+    await $api(`/v1/admin/customers/${deleteTarget.value.organization_id}`, { method: 'DELETE' })
+    closeDeleteDialog()
+    await loadCustomers()
+  }
+  catch (error: any) {
+    deleteError.value = extractErrorMessage(error, 'Could not delete this customer.')
+  }
+  finally {
+    deleting.value = false
+  }
+}
+
 onMounted(loadCustomers)
 </script>
 
@@ -193,9 +228,18 @@ onMounted(loadCustomers)
             <td>{{ customer.messages_sent.toLocaleString('en-IN') }}</td>
             <td>{{ customer.last_activity ? new Date(customer.last_activity).toLocaleString('en-IN') : '—' }}</td>
             <td>
-              <RouterLink :to="`/customers/${customer.organization_id}`">
-                View
-              </RouterLink>
+              <div class="d-flex align-center gap-3">
+                <RouterLink :to="`/customers/${customer.organization_id}`">
+                  View
+                </RouterLink>
+                <a
+                  href="#"
+                  class="text-error"
+                  @click.prevent="openDeleteDialog(customer)"
+                >
+                  Delete
+                </a>
+              </div>
             </td>
           </tr>
           <tr v-if="!customers.length">
@@ -308,6 +352,52 @@ onMounted(loadCustomers)
         <VSpacer />
         <VBtn @click="closeCreateDialog">
           Close
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog
+    :model-value="!!deleteTarget"
+    max-width="520"
+    @update:model-value="value => { if (!value) closeDeleteDialog() }"
+  >
+    <VCard v-if="deleteTarget">
+      <VCardTitle class="text-error">
+        Delete this customer permanently
+      </VCardTitle>
+      <VCardText>
+        <VAlert type="error" variant="tonal" density="compact" class="mb-4">
+          This permanently deletes <strong>{{ deleteTarget.organization_name }}</strong> and every
+          entity, wallet, message, invoice, and DLT record under it, along with all its users.
+          There is no undo.
+        </VAlert>
+
+        <VAlert v-if="deleteError" type="error" variant="tonal" density="compact" class="mb-4">
+          {{ deleteError }}
+        </VAlert>
+
+        <p class="text-body-2 mb-4">
+          Type the organization name (<strong>{{ deleteTarget.organization_name }}</strong>) to confirm.
+        </p>
+        <AppTextField
+          v-model="deleteConfirmText"
+          :placeholder="deleteTarget.organization_name"
+          autofocus
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="tonal" @click="closeDeleteDialog">
+          Cancel
+        </VBtn>
+        <VBtn
+          color="error"
+          :loading="deleting"
+          :disabled="deleteConfirmText !== deleteTarget.organization_name"
+          @click="onConfirmDelete"
+        >
+          Delete Permanently
         </VBtn>
       </VCardActions>
     </VCard>
