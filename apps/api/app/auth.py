@@ -22,7 +22,7 @@ from .providers import ProviderMessage
 from .schemas import (
     ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, PermissionsResponse, RegisterRequest, RegisterResponse,
     RequestMobileOtpRequest, RequestMobileOtpResponse, ResetPasswordRequest, SessionOut,
-    TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
+    RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, verify_password, verify_totp
 from .services import capabilities_for, client_ip, debit_platform_wallet, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
@@ -60,6 +60,25 @@ def _consume_otp(db: Session, model, user_id: str, code: str):
     record.consumed_at = datetime.now(timezone.utc)
     db.commit()
     return record
+
+
+@router.get("/registration-status/{user_id}", response_model=RegistrationStatusResponse)
+def registration_status(user_id: str, db: Session = Depends(get_db)):
+    """Public and unauthenticated, same trust model as verify-email/verify-mobile/
+    request-mobile-otp themselves (this runs before any session exists) -- safe because user_id
+    is an unguessable UUID (this project's own established convention: UUIDs don't need
+    validation against enumeration) and this only ever reveals three booleans/a status string
+    for a caller who already holds one, never anything else about the account.
+
+    Lets /verify-account jump straight to whichever step the account is actually on, instead of
+    always starting at "verify email" regardless of backend state -- confirmed live this left an
+    already-email-verified account with no way to reach the mobile step at all, since submitting
+    any code there now correctly refuses (see verify_email's own fix) rather than silently
+    letting a stale step 1 pretend to succeed."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return RegistrationStatusResponse(email_verified=user.email_verified, mobile_verified=user.mobile_verified, status=user.status.value)
 
 
 @router.post("/register", response_model=RegisterResponse)

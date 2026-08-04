@@ -116,6 +116,12 @@ class RegisterResponse(BaseModel):
     dev_email_code: str | None = None
 
 
+class RegistrationStatusResponse(BaseModel):
+    email_verified: bool
+    mobile_verified: bool
+    status: str
+
+
 class VerifyEmailRequest(BaseModel):
     user_id: str
     code: str = Field(min_length=4, max_length=8)

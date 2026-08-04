@@ -41,6 +41,27 @@ watch(step, async () => {
   tick()
 })
 
+// Otherwise this always starts at "verify email" regardless of actual backend state -- confirmed
+// live this left an already-email-verified account with no way to reach the mobile step at all,
+// since submitting any code there now correctly refuses (see the auth.py fix) instead of the
+// previous bug where it silently pretended to succeed. Errors here are swallowed on purpose: a
+// missing/bad user_id is already surfaced by the existing per-step submit handlers.
+async function checkExistingProgress() {
+  if (!userId.value)
+    return
+  try {
+    const result = await $api<{ email_verified: boolean, mobile_verified: boolean, status: string }>(`/v1/auth/registration-status/${userId.value}`)
+    if (result.status === 'active' || (result.email_verified && result.mobile_verified))
+      step.value = 3
+    else if (result.email_verified)
+      step.value = 2
+  }
+  catch {
+    // fall through -- stay on step 1, the normal starting point
+  }
+}
+onMounted(checkExistingProgress)
+
 const emailCode = ref('')
 
 const mobile = ref('')
