@@ -98,10 +98,20 @@ def render_email(heading: str, body_html: str, cta_label: str | None = None, cta
     especially) strip <style> tags and don't support modern CSS layout."""
     cta_html = ""
     if cta_label and cta_url:
+        # target="_blank"/rel="noopener" plus a visible plain-text fallback URL -- confirmed live
+        # that at least one email client renders the button's click target inside its own
+        # sandboxed preview iframe (no allow-scripts), which silently blocks every script on a
+        # JS-rendered page like this one from ever running. Neither fix is something Textzi can
+        # force from the server side (that's the email client's own rendering choice), but both
+        # are the standard mitigations and cost nothing when the button works normally.
         cta_html = f"""
         <tr>
           <td style="padding:8px 40px 32px 40px;">
-            <a href="{cta_url}" style="display:inline-block; background:{_BRAND_ORANGE}; color:#ffffff; text-decoration:none; font-family:Arial,Helvetica,sans-serif; font-size:15px; font-weight:bold; padding:12px 28px; border-radius:6px;">{cta_label}</a>
+            <a href="{cta_url}" target="_blank" rel="noopener noreferrer" style="display:inline-block; background:{_BRAND_ORANGE}; color:#ffffff; text-decoration:none; font-family:Arial,Helvetica,sans-serif; font-size:15px; font-weight:bold; padding:12px 28px; border-radius:6px;">{cta_label}</a>
+            <p style="margin:16px 0 0 0; font-size:12px; color:#8a8a8a;">
+              Button not working? Copy and paste this link into your browser:<br>
+              <a href="{cta_url}" target="_blank" rel="noopener noreferrer" style="color:#8a8a8a;">{cta_url}</a>
+            </p>
           </td>
         </tr>"""
     return f"""<!DOCTYPE html>
