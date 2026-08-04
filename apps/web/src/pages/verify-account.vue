@@ -92,7 +92,7 @@ async function submitMobileCode() {
   <div class="verify-account-wrapper d-flex align-center justify-center bg-surface">
     <VCard
       flat
-      max-width="480"
+      max-width="640"
       class="ma-4 pa-6 w-100"
     >
       <VCardText>
