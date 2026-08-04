@@ -1,9 +1,31 @@
 """Provider boundary: public Textzi APIs never depend on provider-specific payloads."""
+import json
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+def _extract_ttbs_message_id(body: str) -> str | None:
+    """TTBS's campaignService/campaigns/qs endpoint was originally a plain short ID in the
+    response body -- confirmed live it now returns a JSON object instead (e.g. {"campaignId":
+    "...", "jobId": "...", "requireApproval": false}), and storing the raw (truncated-at-120-char)
+    response text as provider_message_id meant it could never match the SubmissionID a later
+    delivery-report webhook call references, since it was a cut-off JSON fragment, not an ID.
+    Falls back to the original raw-body behavior if the response isn't JSON, for any TTBS
+    integration that genuinely still returns a plain string."""
+    try:
+        parsed = json.loads(body)
+    except (ValueError, TypeError):
+        return body[:120] or None
+    if not isinstance(parsed, dict):
+        return body[:120] or None
+    for key in ("jobId", "campaignId", "SubmissionID", "submissionId", "id"):
+        value = parsed.get(key)
+        if value:
+            return str(value)[:120]
+    return body[:120] or None
 
 
 @dataclass(frozen=True)
@@ -170,7 +192,7 @@ class TtbsSmsProvider:
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode(errors="replace").strip()
                 accepted = 200 <= response.status < 300
-                return ProviderResult(accepted=accepted, provider_message_id=(body[:120] or None) if accepted else None, error=None if accepted else body[:200], request_payload=redacted_params, response_body=body[:2000])
+                return ProviderResult(accepted=accepted, provider_message_id=_extract_ttbs_message_id(body) if accepted else None, error=None if accepted else body[:200], request_payload=redacted_params, response_body=body[:2000])
         except HTTPError as exc:
             # TTBS reports real failures (401 unauthorized, 402 insufficient balance, 400
             # missing fields, ...) as non-2xx HTTP responses, which urlopen raises rather than

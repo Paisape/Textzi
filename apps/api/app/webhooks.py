@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .database import get_db
-from .models import ChannelSettings, DeliveryAttempt, DeliveryStatusCodeRule, Message, ProviderRoute
+from .models import ChannelSettings, DeliveryAttempt, DeliveryStatusCodeRule, Message, PlatformMessage, ProviderRoute
 from .schemas import TtbsDrWebhookPayload
 from .security import assert_safe_webhook_url, decrypt_secret
 from .services import DomainError, credit_wallet, mask_mobile, redact_payload_values
@@ -63,9 +63,24 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
     # route's traffic.
     attempt = db.scalar(select(DeliveryAttempt).where(DeliveryAttempt.provider_message_id == payload.SubmissionID, DeliveryAttempt.route == resolved_route.route_name).with_for_update())
     if not attempt:
-        # Ack (not 404) -- don't give a caller any signal about which submission ids are real,
-        # and don't make TTBS retry forever for something we'll never be able to match.
-        return {"status": "ignored", "reason": "unknown_submission_id"}
+        # Not a tenant message -- check the platform's own sends (login/verification OTPs, see
+        # auth.py's _send_platform_otp_sms) before giving up. These never had a code path here at
+        # all previously, confirmed live: every Platform Message stayed "submitted" forever
+        # regardless of what TTBS actually reported, since this function only ever looked at
+        # DeliveryAttempt.
+        platform_message = db.scalar(
+            select(PlatformMessage).where(PlatformMessage.provider_message_id == payload.SubmissionID, PlatformMessage.route == resolved_route.route_name).with_for_update(),
+        )
+        if not platform_message:
+            # Ack (not 404) -- don't give a caller any signal about which submission ids are real,
+            # and don't make TTBS retry forever for something we'll never be able to match.
+            return {"status": "ignored", "reason": "unknown_submission_id"}
+        if platform_message.status in {"delivered", "delivery_failed"}:
+            return {"status": "already_processed"}
+        rule = db.get(DeliveryStatusCodeRule, payload.DeliveryStatusCode)
+        platform_message.status = "delivery_failed" if rule else "delivered"
+        db.commit()
+        return {"status": "processed"}
 
     if attempt.status in {"delivered", "delivery_failed"}:
         # Already processed (TTBS retry / duplicate callback) -- idempotent no-op. Most
