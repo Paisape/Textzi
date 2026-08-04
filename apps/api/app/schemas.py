@@ -315,6 +315,12 @@ class AdminResetPasswordResponse(BaseModel):
     dev_generated_password: str | None = None
 
 
+class AdminResendVerificationResponse(BaseModel):
+    message: str
+    channel: str
+    dev_code: str | None = None
+
+
 class UserStatusUpdateRequest(BaseModel):
     status: UserStatus
 

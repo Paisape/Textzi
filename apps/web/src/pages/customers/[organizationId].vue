@@ -60,8 +60,10 @@ const overview = ref<OrgOverview | null>(null)
 const loadError = ref('')
 const activeTab = ref('overview')
 const actionError = ref('')
+const actionSuccess = ref('')
 const togglingMemberId = ref<string | null>(null)
 const togglingEntityId = ref<string | null>(null)
+const resendingMemberId = ref<string | null>(null)
 
 async function loadOverview() {
   loadError.value = ''
@@ -89,6 +91,22 @@ async function onToggleMemberStatus(member: TeamMemberRow) {
   }
   finally {
     togglingMemberId.value = null
+  }
+}
+
+async function onResendVerification(member: TeamMemberRow) {
+  actionError.value = ''
+  actionSuccess.value = ''
+  resendingMemberId.value = member.id
+  try {
+    const result = await $api<{ message: string, channel: string, dev_code?: string | null }>(`/v1/admin/users/${member.id}/resend-verification`, { method: 'POST' })
+    actionSuccess.value = result.dev_code ? `${result.message} Code: ${result.dev_code}` : result.message
+  }
+  catch (error: any) {
+    actionError.value = extractErrorMessage(error, 'Could not resend the verification code.')
+  }
+  finally {
+    resendingMemberId.value = null
   }
 }
 
@@ -562,13 +580,23 @@ onMounted(loadOverview)
 
         <VWindowItem value="team">
           <VCard>
-            <VCardText v-if="actionError">
+            <VCardText v-if="actionError || actionSuccess">
               <VAlert
+                v-if="actionError"
                 type="error"
                 variant="tonal"
                 density="compact"
+                class="mb-2"
               >
                 {{ actionError }}
+              </VAlert>
+              <VAlert
+                v-if="actionSuccess"
+                type="success"
+                variant="tonal"
+                density="compact"
+              >
+                {{ actionSuccess }}
               </VAlert>
             </VCardText>
             <VTable>
@@ -601,15 +629,26 @@ onMounted(loadOverview)
                     </VChip>
                   </td>
                   <td>
-                    <VBtn
-                      size="small"
-                      variant="text"
-                      :color="member.status === 'suspended' ? 'success' : 'error'"
-                      :loading="togglingMemberId === member.id"
-                      @click="onToggleMemberStatus(member)"
-                    >
-                      {{ member.status === 'suspended' ? 'Reactivate' : 'Suspend' }}
-                    </VBtn>
+                    <div class="d-flex gap-2">
+                      <VBtn
+                        v-if="member.status === 'pending_verification'"
+                        size="small"
+                        variant="text"
+                        :loading="resendingMemberId === member.id"
+                        @click="onResendVerification(member)"
+                      >
+                        Resend Verification
+                      </VBtn>
+                      <VBtn
+                        size="small"
+                        variant="text"
+                        :color="member.status === 'suspended' ? 'success' : 'error'"
+                        :loading="togglingMemberId === member.id"
+                        @click="onToggleMemberStatus(member)"
+                      >
+                        {{ member.status === 'suspended' ? 'Reactivate' : 'Suspend' }}
+                      </VBtn>
+                    </div>
                   </td>
                 </tr>
               </tbody>

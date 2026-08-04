@@ -102,7 +102,11 @@ def verify_email(payload: VerifyEmailRequest, db: Session = Depends(get_db)):
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     if user.email_verified:
-        return {"status": "already_verified", "next_step": "verify_mobile"}
+        # Was previously an unconditional early-return -- meaning ANY code (wrong, blank,
+        # expired) "succeeded" and advanced the wizard once email_verified was already true,
+        # since _consume_otp was never even reached. Matches verify_mobile's own stricter
+        # pattern now: refuse outright rather than silently accept an unvalidated code.
+        raise HTTPException(status_code=422, detail="This email is already verified")
     _consume_otp(db, EmailVerification, user.id, payload.code)
     user.email_verified = True
     db.commit()

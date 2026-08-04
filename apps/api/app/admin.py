@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .auth import _issue_otp, STEP_UP_WINDOW_MINUTES
+from .auth import _issue_otp, _send_platform_otp_sms, STEP_UP_WINDOW_MINUTES
 from .channels import _mark_dlt_request_paid
 from .config import settings
 from .database import get_db
@@ -18,11 +18,11 @@ from .erpnext import sync_invoice_to_erpnext
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
-    ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
+    ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
     Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction,
 )
 from .schemas import (
-    AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResetPasswordResponse,
+    AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest,
     ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
@@ -675,6 +675,55 @@ def admin_reset_password(user_id: str, request: Request, db: Session = Depends(g
     return AdminResetPasswordResponse(
         message=f"Password reset. A new temporary password has been emailed to {user.email}.",
         dev_generated_password=generated_password if settings.environment == "development" else None,
+    )
+
+
+@router.post("/users/{user_id}/resend-verification", response_model=AdminResendVerificationResponse, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
+def admin_resend_verification(user_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Re-issues a fresh code for whichever verification step a stuck signup is actually on --
+    email (10-minute expiry, otp_ttl_minutes) or mobile -- and resends it. Both self-registration
+    and admin-created customers land in the exact same pending_verification/email_verified state
+    machine, so this one endpoint covers either origin. There was previously no way to recover a
+    signup whose code had simply expired short of an admin deleting and recreating the row."""
+    user = db.get(User, user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if user.status != UserStatus.pending_verification:
+        raise HTTPException(status_code=422, detail="This account has already completed verification")
+
+    if not user.email_verified:
+        code = _issue_otp(db, EmailVerification, user.id, channel="email", destination=user.email)
+        verify_url = f"{settings.web_origin}/verify-account?user_id={user.id}"
+        send_email(
+            db,
+            to=user.email,
+            subject="Your Textzi verification code",
+            html_body=render_email(
+                "Verify your email address",
+                f"<p>Hi {user.full_name},</p><p>Here's a fresh code to verify your email and continue setting up your Textzi account.</p>"
+                f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:28px; font-weight:bold; letter-spacing:6px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{code}</span></p>"
+                f"<p>This code expires in {settings.otp_ttl_minutes} minutes.</p>",
+                cta_label="Activate Your Account",
+                cta_url=verify_url,
+            ),
+        )
+        log_activity(db, user.organization_id, "verification_resent", f"Email verification code resent to {user.email}.", user_id=user.id, actor_email=_caller_email(authorization, db), request=request)
+        return AdminResendVerificationResponse(
+            message=f"A fresh email verification code has been sent to {user.email}.",
+            channel="email",
+            dev_code=code if settings.environment == "development" else None,
+        )
+
+    if not user.mobile:
+        raise HTTPException(status_code=422, detail="This account hasn't submitted a mobile number yet -- nothing to resend for that step")
+
+    code = _issue_otp(db, MobileVerification, user.id, channel="sms", destination=user.mobile, mobile=user.mobile)
+    _send_platform_otp_sms(db, user.mobile, code)
+    log_activity(db, user.organization_id, "verification_resent", f"Mobile verification code resent to {user.mobile}.", user_id=user.id, actor_email=_caller_email(authorization, db), request=request)
+    return AdminResendVerificationResponse(
+        message=f"A fresh mobile verification code has been sent to {user.mobile}.",
+        channel="mobile",
+        dev_code=code if settings.environment == "development" else None,
     )
 
 
