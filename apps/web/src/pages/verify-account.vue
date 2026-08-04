@@ -20,18 +20,25 @@ const errorMessage = ref('')
 
 // Vuetify's VStepper transition leaves .v-stepper-window's scrollLeft drifted to a small non-zero
 // value on some (not all) step changes -- overflow-anchor: none (page-auth.scss) helps but doesn't
-// eliminate it, confirmed live via repeated production testing (scrollLeft ends up at 0 some runs,
-// 12+ on others, same deploy, same code -- a genuine race against the browser's own scroll
-// heuristics during the .3s slide animation). Forcing it back to 0 here, once right after Vue
-// patches the DOM and once again after the transition's own duration, is deterministic where the
-// CSS property alone wasn't.
+// eliminate it, confirmed live via repeated production testing across 5 independent runs: 3 came
+// back clean, one drifted 21px after 500ms, one drifted 520px -- i.e. the drift isn't tied to the
+// .3s transition window at all (a fixed one-shot + delayed reset both proved insufficient in that
+// same test), so this polls for a few seconds after every step change instead of guessing a delay.
 function resetStepperScroll() {
-  document.querySelectorAll<HTMLElement>('.v-stepper-header, .v-stepper-window').forEach(el => { el.scrollLeft = 0 })
+  document.querySelectorAll<HTMLElement>('.v-stepper-header, .v-stepper-window').forEach(el => {
+    if (el.scrollLeft !== 0)
+      el.scrollLeft = 0
+  })
 }
 watch(step, async () => {
   await nextTick()
-  resetStepperScroll()
-  setTimeout(resetStepperScroll, 350)
+  const stopAt = Date.now() + 3000
+  const tick = () => {
+    resetStepperScroll()
+    if (Date.now() < stopAt)
+      requestAnimationFrame(tick)
+  }
+  tick()
 })
 
 const emailCode = ref('')
