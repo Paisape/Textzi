@@ -1081,6 +1081,16 @@ class PlatformWalletTopupRequest(BaseModel):
     notes: str | None = None
 
 
+class PlatformTestSmsRequest(BaseModel):
+    recipient: str = Field(min_length=6, max_length=20)
+
+
+class PlatformTestSmsResponse(BaseModel):
+    message_id: str
+    status: str
+    recipient: str
+
+
 class TeamInviteRequest(BaseModel):
     email: EmailStr
     role: UserRole = UserRole.sub_user

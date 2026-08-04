@@ -38,6 +38,11 @@ const topupNotes = ref('')
 const toppingUp = ref(false)
 const topupError = ref('')
 
+const testRecipient = ref('')
+const testSending = ref(false)
+const testError = ref('')
+const testResult = ref<{ message_id: string, status: string, recipient: string } | null>(null)
+
 async function loadSettings() {
   loadError.value = ''
   try {
@@ -107,6 +112,29 @@ async function onTopup() {
   }
   finally {
     toppingUp.value = false
+  }
+}
+
+async function onTestSend() {
+  testError.value = ''
+  testResult.value = null
+  if (!testRecipient.value) {
+    testError.value = 'Enter a recipient number.'
+    return
+  }
+  testSending.value = true
+  try {
+    testResult.value = await $api<{ message_id: string, status: string, recipient: string }>('/v1/admin/platform/test-sms', {
+      method: 'POST',
+      body: { recipient: testRecipient.value },
+    })
+    await loadWallet()
+  }
+  catch (error: any) {
+    testError.value = extractErrorMessage(error, 'Could not send the test SMS.')
+  }
+  finally {
+    testSending.value = false
   }
 }
 
@@ -305,6 +333,58 @@ onMounted(async () => {
               </tr>
             </tbody>
           </VTable>
+        </VCardText>
+      </VCard>
+
+      <VCard class="mt-6">
+        <VCardText>
+          <h6 class="text-h6 mb-2">
+            Send Test SMS
+          </h6>
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            Fires a real send through this exact configuration (PE ID, template, route) to any
+            number, so a delivery issue can be reproduced without a full registration or login
+            flow. Costs 1 platform wallet credit. Check
+            <RouterLink to="/admin-messages">
+              Platform Messages
+            </RouterLink>
+            afterward for the full request/response/DR telemetry.
+          </p>
+
+          <VAlert
+            v-if="testError"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            {{ testError }}
+          </VAlert>
+          <VAlert
+            v-if="testResult"
+            type="success"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            Sent to {{ testResult.recipient }} — status: {{ testResult.status }}.
+          </VAlert>
+
+          <VForm @submit.prevent="onTestSend">
+            <AppTextField
+              v-model="testRecipient"
+              label="Recipient mobile number"
+              placeholder="9876543210"
+              class="mb-4"
+            />
+            <VBtn
+              type="submit"
+              color="secondary"
+              :loading="testSending"
+            >
+              Send Test SMS
+            </VBtn>
+          </VForm>
         </VCardText>
       </VCard>
     </VCol>

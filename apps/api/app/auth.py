@@ -25,7 +25,7 @@ from .schemas import (
     RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, verify_password, verify_totp
-from .services import capabilities_for, client_ip, debit_platform_wallet, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
+from .services import DomainError, capabilities_for, client_ip, debit_platform_wallet, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
 
 logger = logging.getLogger("textzi.auth")
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -164,6 +164,41 @@ def _send_platform_otp_sms(db: Session, mobile: str, code: str) -> bool:
     ))
     db.commit()
     return result.accepted
+
+
+def send_platform_test_sms(db: Session, recipient: str) -> PlatformMessage:
+    """Admin-triggered end-to-end test of the exact same platform SMS pipeline (PE_ID, template,
+    route, TTBS recipient-prefixing) _send_platform_otp_sms uses for real login/verification
+    OTPs -- built so a delivery issue (e.g. the missing "91" prefix bug) can be reproduced and
+    checked against a real handset without a full registration/login round trip. Unlike
+    _send_platform_otp_sms, this never fails open: a missing config, empty wallet, or provider
+    rejection must surface as a real error to the admin who explicitly asked for this send, not
+    be swallowed."""
+    settings_row = get_platform_sms_settings(db)
+    if not settings_row:
+        raise DomainError("Platform SMS is not configured yet -- set it up under Platform Settings > SMS Setting first.")
+    code = generate_otp()
+    rendered_body = render_template(settings_row.template_body, {"code": code})
+    if not debit_platform_wallet(db, sms_segment_credits(rendered_body), type="test_sms", reference=recipient):
+        raise DomainError("Platform wallet balance is too low to send a test SMS -- top it up under Platform Settings.")
+    route = settings_row.route or "default-simulated-route"
+    provider = provider_for_route(db, route)
+    result = provider.send(ProviderMessage(
+        message_id=uid(), recipient=recipient, sender=settings_row.sender_id, body=rendered_body,
+        pe_id=settings_row.pe_id, template_id=settings_row.dlt_template_id,
+    ))
+    request_payload = redact_payload_values(result.request_payload, {rendered_body: redact_otp(rendered_body), recipient: mask_mobile(recipient)})
+    message = PlatformMessage(
+        purpose="test", recipient=recipient, rendered_body=rendered_body, status="submitted" if result.accepted else "failed",
+        route=route, provider_message_id=result.provider_message_id,
+        request_payload=request_payload, response_body=result.response_body,
+    )
+    db.add(message)
+    db.commit()
+    db.refresh(message)
+    if not result.accepted:
+        raise DomainError(result.error or "The SMS provider rejected the send.")
+    return message
 
 
 OTP_ISSUE_COOLDOWN_SECONDS = 30

@@ -6,16 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
+from .auth import send_platform_test_sms
 from .database import get_db
 from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts, list_tax_templates
 from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
 from .schemas import (
     ErpNextAccountOut, ErpNextTaxTemplateOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
-    PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
+    PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate, PlatformTestSmsRequest, PlatformTestSmsResponse,
     PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
 )
 from .security import encrypt_secret
-from .services import credit_platform_wallet, get_platform_company_info, log_activity
+from .services import DomainError, credit_platform_wallet, get_platform_company_info, log_activity, mask_mobile
 
 router = APIRouter(prefix="/v1/admin/platform", tags=["platform-admin"])
 
@@ -213,3 +214,18 @@ def topup_wallet(payload: PlatformWalletTopupRequest, request: Request, authoriz
     log_activity(db, None, "platform_wallet_topup", f"Platform wallet topped up by {payload.amount} credits.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     return get_wallet(db)
+
+
+@router.post("/test-sms", response_model=PlatformTestSmsResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def send_test_sms(payload: PlatformTestSmsRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Fires a real send through the exact platform SMS pipeline (same PE_ID/template/route/
+    TTBS recipient-prefixing as a real login OTP) to any number an admin types in -- built to
+    debug delivery issues without a full registration/login round trip. Logged to the audit
+    trail since, unlike a real OTP, this is a deliberate admin action with a real cost."""
+    try:
+        message = send_platform_test_sms(db, payload.recipient)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    log_activity(db, None, "platform_test_sms", f"Sent a test SMS to {mask_mobile(payload.recipient)} (route {message.route}).", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return PlatformTestSmsResponse(message_id=message.id, status=message.status, recipient=mask_mobile(message.recipient))
