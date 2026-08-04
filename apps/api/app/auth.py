@@ -64,10 +64,23 @@ def _consume_otp(db: Session, model, user_id: str, code: str):
 
 @router.post("/register", response_model=RegisterResponse)
 def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    if db.scalar(select(User).where(User.email == payload.email)):
-        raise HTTPException(status_code=409, detail="An account with this email already exists")
-    user = User(email=payload.email, password_hash=hash_password(payload.password), full_name=payload.full_name, status=UserStatus.pending_verification)
-    db.add(user); db.commit(); db.refresh(user)
+    existing = db.scalar(select(User).where(User.email == payload.email))
+    if existing:
+        # A genuinely registered account (email verified, or already past onboarding) must still
+        # block a repeat registration -- otherwise this becomes an account-takeover vector (an
+        # attacker "registering" a real, active email just to get a fresh password set on it).
+        # But an account that never got past its own email-verification step is just an abandoned
+        # signup -- nothing to protect there, and permanently locking that email out because
+        # someone closed the tab before checking their inbox is a real, avoidable dead end.
+        if existing.email_verified or existing.organization_id:
+            raise HTTPException(status_code=409, detail="An account with this email already exists")
+        user = existing
+        user.password_hash = hash_password(payload.password)
+        user.full_name = payload.full_name
+        db.commit()
+    else:
+        user = User(email=payload.email, password_hash=hash_password(payload.password), full_name=payload.full_name, status=UserStatus.pending_verification)
+        db.add(user); db.commit(); db.refresh(user)
     code = _issue_otp(db, EmailVerification, user.id, channel="email", destination=user.email)
     send_email(
         db,
