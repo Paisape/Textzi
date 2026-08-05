@@ -1,4 +1,5 @@
 import hmac
+import html
 import io
 import os
 import secrets
@@ -780,7 +781,7 @@ def admin_reset_password(user_id: str, request: Request, db: Session = Depends(g
         subject="Your Textzi password has been reset",
         html_body=render_email(
             "Your password has been reset",
-            f"<p>Hi {user.full_name},</p><p>An admin reset your Textzi account password. Your new temporary password is below -- sign in and consider changing it from Account Security.</p>"
+            f"<p>Hi {html.escape(user.full_name)},</p><p>An admin reset your Textzi account password. Your new temporary password is below -- sign in and consider changing it from Account Security.</p>"
             f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:20px; font-weight:bold; letter-spacing:1px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{generated_password}</span></p>",
         ),
     )
@@ -812,7 +813,7 @@ def admin_resend_verification(user_id: str, request: Request, authorization: str
             subject="Your Textzi verification code",
             html_body=render_email(
                 "Verify your email address",
-                f"<p>Hi {user.full_name},</p><p>Here's a fresh code to verify your email and continue setting up your Textzi account.</p>"
+                f"<p>Hi {html.escape(user.full_name)},</p><p>Here's a fresh code to verify your email and continue setting up your Textzi account.</p>"
                 f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:28px; font-weight:bold; letter-spacing:6px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{code}</span></p>"
                 f"<p>This code expires in {settings.otp_ttl_minutes} minutes.</p>",
                 cta_label="Activate Your Account",
@@ -1219,7 +1220,8 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     row that never got past its own email verification (no organization yet either) isn't a real
     account to protect -- it's just adopted into the new organization being created here instead
     of permanently blocking that email."""
-    existing = db.scalar(select(User).where(User.email == payload.contact_email))
+    contact_email = payload.contact_email.strip().lower()
+    existing = db.scalar(select(User).where(func.lower(User.email) == contact_email))
     if existing and (existing.email_verified or existing.organization_id):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
@@ -1246,6 +1248,10 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
         user.mobile = payload.contact_mobile
         user.organization_id = org.id
         user.role = UserRole.enterprise_customer.value
+        # Same fix as the public register() endpoint: a previously-suspended abandoned signup
+        # must resume as pending_verification, not stay suspended and hit a dead end at
+        # request_mobile_otp's own status check.
+        user.status = UserStatus.pending_verification
         try:
             db.commit()
         except IntegrityError:
@@ -1253,7 +1259,7 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
             raise HTTPException(status_code=409, detail="An account with this email already exists")
     else:
         user = User(
-            email=payload.contact_email, password_hash=hash_password(generated_password), full_name=payload.contact_full_name,
+            email=contact_email, password_hash=hash_password(generated_password), full_name=payload.contact_full_name,
             mobile=payload.contact_mobile, organization_id=org.id, role=UserRole.enterprise_customer.value,
             status=UserStatus.pending_verification, email_verified=False,
         )
@@ -1273,7 +1279,7 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
         subject="Your Textzi account has been created",
         html_body=render_email(
             "Your Textzi account is ready",
-            f"<p>Hi {user.full_name},</p><p>An admin created a Textzi account for you. Here's what you need to activate it:</p>"
+            f"<p>Hi {html.escape(user.full_name)},</p><p>An admin created a Textzi account for you. Here's what you need to activate it:</p>"
             f"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:16px 0; width:100%;\">"
             f"<tr><td style=\"padding:6px 0; color:#6a6a6a;\">Temporary password</td><td style=\"padding:6px 0; text-align:right;\"><b style=\"font-size:16px; letter-spacing:1px;\">{generated_password}</b></td></tr>"
             f"<tr><td style=\"padding:6px 0; color:#6a6a6a;\">Email verification code</td><td style=\"padding:6px 0; text-align:right;\"><b style=\"font-size:16px; letter-spacing:2px;\">{email_code}</b></td></tr>"

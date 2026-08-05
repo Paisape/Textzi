@@ -4,6 +4,7 @@ on the customer's behalf, which goes into an admin review queue since real DLT r
 a manual submission to the telecom registry) and channel subscription payment. Mirrors the
 Razorpay dev/real dual-path pattern already used in wallet.py/payments.py."""
 import hmac
+import html
 import io
 import os
 import re
@@ -62,7 +63,7 @@ def _issue_api_key_otp(db: Session, user: User, action: str) -> ApiKeyOtpRespons
         db, to=user.email, subject="Your Textzi verification code",
         html_body=render_email(
             "Verify this action",
-            f"<p>Hi {user.full_name},</p><p>Use the code below to confirm {ACTION_LABELS.get(action, 'this action')} on your Textzi account.</p>"
+            f"<p>Hi {html.escape(user.full_name)},</p><p>Use the code below to confirm {ACTION_LABELS.get(action, 'this action')} on your Textzi account.</p>"
             f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:28px; font-weight:bold; letter-spacing:6px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{code}</span></p>"
             f"<p>This code expires in {API_KEY_OTP_TTL_MINUTES} minutes. If you didn't request this, someone may have access to your account -- change your password and contact support.</p>",
         ),

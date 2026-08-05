@@ -5,6 +5,7 @@ only, echoed back in the response so the flow is testable end-to-end without a p
 non-development environment this must be replaced by an actual email/SMS send (the OTP hash is
 still all that's persisted either way — codes are never stored in plaintext)."""
 import hmac
+import html
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -25,7 +26,7 @@ from .schemas import (
     RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, verify_password, verify_totp
-from .services import DomainError, capabilities_for, client_ip, debit_platform_wallet, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
+from .services import DomainError, RateLimitError, capabilities_for, client_ip, debit_platform_wallet, enforce_rate_limit, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
 
 logger = logging.getLogger("textzi.auth")
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -81,9 +82,26 @@ def registration_status(user_id: str, db: Session = Depends(get_db)):
     return RegistrationStatusResponse(email_verified=user.email_verified, mobile_verified=user.mobile_verified, status=user.status.value)
 
 
+REGISTER_RATE_LIMIT_MAX_REQUESTS = 5
+REGISTER_RATE_LIMIT_WINDOW_SECONDS = 3600
+
+
 @router.post("/register", response_model=RegisterResponse)
-def register(payload: RegisterRequest, db: Session = Depends(get_db)):
-    existing = db.scalar(select(User).where(User.email == payload.email))
+def register(payload: RegisterRequest, request: Request, db: Session = Depends(get_db)):
+    # Unauthenticated and, on its own, fires a real email on every call -- without a limit this
+    # is an open primitive for repeatedly emailing an arbitrary (non-yet-verified) address,
+    # confirmed as a real gap: request_mobile_otp already has an equivalent cooldown/cap for the
+    # exact same reason, this endpoint never did.
+    try:
+        enforce_rate_limit(f"ratelimit:register:{client_ip(request)}", REGISTER_RATE_LIMIT_MAX_REQUESTS, REGISTER_RATE_LIMIT_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    # Normalized (stripped + lowercased) both for the new-row storage and for the lookup below via
+    # func.lower() -- without this, "user@x.com" and "User@x.com" were treated as different
+    # accounts (duplicate signups) and a genuine user logging in with different casing than they
+    # registered with got a spurious "incorrect password".
+    email = payload.email.strip().lower()
+    existing = db.scalar(select(User).where(func.lower(User.email) == email))
     if existing:
         # A genuinely registered account (email verified, or already past onboarding) must still
         # block a repeat registration -- otherwise this becomes an account-takeover vector (an
@@ -96,9 +114,14 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         user = existing
         user.password_hash = hash_password(payload.password)
         user.full_name = payload.full_name
+        # A previously-suspended abandoned signup must resume as pending_verification, not stay
+        # suspended -- otherwise request_mobile_otp's own status check rejects it with a
+        # misleading "already completed verification", a dead end for an account that was never
+        # actually completed.
+        user.status = UserStatus.pending_verification
         db.commit()
     else:
-        user = User(email=payload.email, password_hash=hash_password(payload.password), full_name=payload.full_name, status=UserStatus.pending_verification)
+        user = User(email=email, password_hash=hash_password(payload.password), full_name=payload.full_name, status=UserStatus.pending_verification)
         db.add(user); db.commit(); db.refresh(user)
     code = _issue_otp(db, EmailVerification, user.id, channel="email", destination=user.email)
     send_email(
@@ -107,7 +130,7 @@ def register(payload: RegisterRequest, db: Session = Depends(get_db)):
         subject="Verify your Textzi account",
         html_body=render_email(
             "Verify your email address",
-            f"<p>Hi {user.full_name},</p><p>Use the code below to verify your email and continue setting up your Textzi account.</p>"
+            f"<p>Hi {html.escape(user.full_name)},</p><p>Use the code below to verify your email and continue setting up your Textzi account.</p>"
             f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:28px; font-weight:bold; letter-spacing:6px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{code}</span></p>"
             f"<p>This code expires in {settings.otp_ttl_minutes} minutes. If you didn't request this, you can safely ignore this email.</p>",
         ),
@@ -307,7 +330,7 @@ def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str)
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     ip = client_ip(request)
-    user = db.scalar(select(User).where(User.email == payload.email))
+    user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
     if user and user.login_locked_until and user.login_locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many failed login attempts; try again later")
     password_ok = verify_password(payload.password, user.password_hash if user else _DUMMY_PASSWORD_HASH)
@@ -443,7 +466,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
     another admin (POST /v1/admin/users/{id}/reset-password). The response is identical whether
     or not the email exists or belongs to staff, to avoid leaking account existence/tier."""
     generic = ForgotPasswordResponse(message="If an account with that email exists, we've sent a password reset code.")
-    user = db.scalar(select(User).where(User.email == payload.email))
+    user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
     # A suspended account must stay locked out through this public, unauthenticated path -- an
     # admin suspended it for a reason (abuse, fraud, non-payment), and letting anyone silently set
     # a new password for it defeats the suspension entirely: the account activates on whatever
@@ -462,7 +485,7 @@ def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db
         subject="Reset your Textzi password",
         html_body=render_email(
             "Reset your password",
-            f"<p>Hi {user.full_name},</p><p>Use the code below to reset your Textzi password.</p>"
+            f"<p>Hi {html.escape(user.full_name)},</p><p>Use the code below to reset your Textzi password.</p>"
             f"<p style=\"margin:24px 0; text-align:center;\"><span style=\"display:inline-block; font-size:28px; font-weight:bold; letter-spacing:6px; color:#1a1a1a; background:#f4f4f5; padding:12px 24px; border-radius:6px;\">{code}</span></p>"
             f"<p>This code expires in {PASSWORD_RESET_TTL_MINUTES} minutes. If you didn't request this, you can safely ignore this email.</p>",
         ),

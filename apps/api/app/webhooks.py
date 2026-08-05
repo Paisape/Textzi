@@ -108,7 +108,10 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
     attempt.delivered_at = datetime.now(timezone.utc)
     message = db.get(Message, attempt.message_id)
     webhook_payload = payload.model_dump()
-    if message and message.is_encrypted:
+    # TtbsDrWebhookPayload.Recipient is optional -- mask_mobile has no None-guard of its own, so
+    # this must not attempt to redact/mask a value that was never actually present, or a DR
+    # missing that field would 500 before ever being recorded.
+    if message and message.is_encrypted and payload.Recipient:
         webhook_payload = redact_payload_values(webhook_payload, {payload.Recipient: mask_mobile(payload.Recipient)})
     attempt.webhook_payload = webhook_payload
 
@@ -118,7 +121,7 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
         # requires an explicit admin rule (rule.refund) -- accuracy of the status label shouldn't
         # by itself move money; that stays an admin-gated decision.
         attempt.status = "delivery_failed"
-        attempt.error = (rule.label if rule and rule.label else None) or payload.DeliveryStatus or f"DeliveryStatusCode {payload.DeliveryStatusCode}"
+        attempt.error = ((rule.label if rule and rule.label else None) or payload.DeliveryStatus or f"DeliveryStatusCode {payload.DeliveryStatusCode}")[:300]
         if message:
             message.status = "delivery_failed"
         if rule and rule.refund:

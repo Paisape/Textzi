@@ -4,6 +4,7 @@ uploads_dir pattern as _save_upload in channels.py), and emails it to the organi
 contact. Auto-invoiced transactions (recharge, DLT fee, channel subscription) call both back to
 back; an admin manual credit to someone else's entity may leave the draft unissued until an
 admin approves it later."""
+import html
 import os
 from datetime import datetime, timezone
 
@@ -306,7 +307,7 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
             subject="Your Textzi invoice is on its way",
             html_body=render_email(
                 INTRO_LINES.get(invoice.type, "Your invoice is being prepared"),
-                f"<p>Hi {primary_user.full_name},</p>"
+                f"<p>Hi {html.escape(primary_user.full_name)},</p>"
                 f"<p>{INTRO_LINES.get(invoice.type, 'Your invoice is being prepared')} of "
                 f"<b>Rs. {float(invoice.total_amount):.2f}</b> for {INVOICE_TYPE_LABELS.get(invoice.type, invoice.type)}. "
                 f"Your invoice ({invoice.invoice_number}) will be emailed to you shortly.</p>",
@@ -335,7 +336,7 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
             subject=f"Textzi Invoice {invoice.invoice_number}",
             html_body=render_email(
                 "Your invoice is ready",
-                f"<p>Hi {primary_user.full_name},</p>"
+                f"<p>Hi {html.escape(primary_user.full_name)},</p>"
                 f"<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" style=\"margin:16px 0; width:100%;\">"
                 f"<tr><td style=\"padding:6px 0; color:#6a6a6a;\">Invoice number</td><td style=\"padding:6px 0; text-align:right;\"><b>{invoice.invoice_number}</b></td></tr>"
                 f"<tr><td style=\"padding:6px 0; color:#6a6a6a;\">{INVOICE_TYPE_LABELS.get(invoice.type, invoice.type)}</td><td style=\"padding:6px 0; text-align:right;\"><b>Rs. {float(invoice.total_amount):.2f}</b></td></tr>"

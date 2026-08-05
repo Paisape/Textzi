@@ -170,10 +170,10 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         db.rollback(); raise HTTPException(status_code=429, detail=str(exc)) from exc
     except DomainError as exc:
         status_code, error_detail = 422, str(exc)
-        db.rollback(); raise HTTPException(status_code=422, detail=str(exc)) from exc
+        db.rollback(); message_id = None; raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IntegrityError as exc:
         status_code, error_detail = 409, "Duplicate idempotency key"
-        db.rollback(); raise HTTPException(status_code=409, detail="Duplicate idempotency key") from exc
+        db.rollback(); message_id = None; raise HTTPException(status_code=409, detail="Duplicate idempotency key") from exc
     finally:
         metadata = {"method": request.method}
         if error_detail:
@@ -181,7 +181,12 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         db.add(ApiLog(
             request_id=request_id, entity_id=entity_id, message_id=message_id, endpoint=request.url.path, status_code=status_code,
             latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata,
-            ip_address=caller_ip, country=request.headers.get("CF-IPCountry"), user_agent=request.headers.get("user-agent", "")[:300],
+            # Both are attacker-influenceable (X-Forwarded-For when trust_proxy_headers is on;
+            # CF-IPCountry is just a client header) -- truncated to the column widths the same way
+            # user_agent already was, so an oversized value degrades to a truncated log entry
+            # instead of a Postgres DataError replacing the real response with an unhandled 500.
+            ip_address=(caller_ip or "")[:64], country=(request.headers.get("CF-IPCountry") or "")[:4] or None,
+            user_agent=request.headers.get("user-agent", "")[:300],
         ))
         db.commit()
 
@@ -228,7 +233,8 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
         db.add(ApiLog(
             request_id=request_id, entity_id=entity_id, endpoint=request.url.path, status_code=status_code,
             latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata,
-            ip_address=caller_ip, country=request.headers.get("CF-IPCountry"), user_agent=request.headers.get("user-agent", "")[:300],
+            ip_address=(caller_ip or "")[:64], country=(request.headers.get("CF-IPCountry") or "")[:4] or None,
+            user_agent=request.headers.get("user-agent", "")[:300],
         ))
         db.commit()
 

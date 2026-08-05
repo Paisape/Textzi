@@ -351,7 +351,11 @@ def credit_wallet(db: Session, entity_id: str, amount: float, transaction_type: 
         raise DomainError("Wallet is not configured")
     amount_dec = Decimal(str(amount))
     wallet.prepaid_balance = wallet.prepaid_balance + amount_dec
-    db.add(WalletTransaction(entity_id=entity_id, channel=channel, type=transaction_type, amount=amount_dec, balance_after=_wallet_available(wallet), reference=reference))
+    # balance_after is a ledger snapshot, not the wallet's own balance -- must stay Decimal all
+    # the way to the column (_wallet_available_decimal), not _wallet_available's float cast, or
+    # this one field picks up binary-float rounding noise the rest of this function deliberately
+    # avoids.
+    db.add(WalletTransaction(entity_id=entity_id, channel=channel, type=transaction_type, amount=amount_dec, balance_after=_wallet_available_decimal(wallet), reference=reference))
     return wallet
 
 
@@ -372,7 +376,7 @@ def debit_wallet(db: Session, entity_id: str, amount: float, reference: str | No
     remaining = amount_dec - from_prepaid
     if remaining > 0:
         wallet.credit_used = wallet.credit_used + remaining
-    db.add(WalletTransaction(entity_id=entity_id, channel=channel, type="debit", amount=-amount_dec, balance_after=_wallet_available(wallet), reference=reference))
+    db.add(WalletTransaction(entity_id=entity_id, channel=channel, type="debit", amount=-amount_dec, balance_after=_wallet_available_decimal(wallet), reference=reference))
     return wallet
 
 
@@ -550,7 +554,7 @@ def credit_platform_wallet(db: Session, amount: float, type: str, reference: str
         db.flush()
     amount_dec = Decimal(str(amount))
     wallet.balance = wallet.balance + amount_dec
-    db.add(PlatformWalletTransaction(type=type, amount=amount_dec, balance_after=float(wallet.balance), reference=reference))
+    db.add(PlatformWalletTransaction(type=type, amount=amount_dec, balance_after=wallet.balance, reference=reference))
     return wallet
 
 
@@ -563,7 +567,7 @@ def debit_platform_wallet(db: Session, amount: float, type: str, reference: str 
     if not wallet or wallet.balance < amount_dec:
         return None
     wallet.balance = wallet.balance - amount_dec
-    db.add(PlatformWalletTransaction(type=type, amount=-amount_dec, balance_after=float(wallet.balance), reference=reference))
+    db.add(PlatformWalletTransaction(type=type, amount=-amount_dec, balance_after=wallet.balance, reference=reference))
     return wallet
 
 
