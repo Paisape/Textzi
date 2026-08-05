@@ -97,6 +97,26 @@ async function onDownloadDocument(requestId: string, doc: DltDocument) {
   }
 }
 
+const downloadingZipId = ref<string | null>(null)
+async function onDownloadZip(request: DltRequest) {
+  downloadingZipId.value = request.id
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/admin/dlt-requests/${request.id}/download-zip`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `DLT-Request-${(request.company_name || request.id).replace(/[^A-Za-z0-9._-]+/g, '-')}.zip`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    updateError.value = extractErrorMessage(error, 'Could not download the zip.')
+  }
+  finally {
+    downloadingZipId.value = null
+  }
+}
+
 const detailDialog = ref(false)
 const detailRequest = ref<DltRequest | null>(null)
 
@@ -176,6 +196,7 @@ onMounted(load)
             <th>Submitted</th>
             <th>Status</th>
             <th />
+            <th>Download</th>
           </tr>
         </thead>
         <tbody>
@@ -255,10 +276,21 @@ onMounted(load)
                 @update:model-value="(value: string) => onUpdateStatus(request, value)"
               />
             </td>
+            <td>
+              <VBtn
+                variant="tonal"
+                size="small"
+                prepend-icon="tabler-file-zip"
+                :loading="downloadingZipId === request.id"
+                @click="onDownloadZip(request)"
+              >
+                ZIP
+              </VBtn>
+            </td>
           </tr>
           <tr v-if="!requests.length">
             <td
-              colspan="8"
+              colspan="9"
               class="text-center text-medium-emphasis"
             >
               No DLT registration requests yet.

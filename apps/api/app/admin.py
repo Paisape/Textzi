@@ -1,11 +1,14 @@
 import hmac
+import io
 import os
 import secrets
+import zipfile
 from datetime import datetime, timedelta, timezone
 import jwt
 import razorpay
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
+from fpdf import FPDF
 from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -15,7 +18,7 @@ from .config import settings
 from .database import get_db
 from .email_service import render_email, send_email
 from .erpnext import sync_invoice_to_erpnext
-from .invoicing import create_draft_invoice, issue_invoice
+from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
@@ -491,6 +494,99 @@ def download_dlt_request_document(request_id: str, doc_id: str, db: Session = De
     if not doc or doc.request_id != request_id:
         raise HTTPException(status_code=404, detail="Document not found")
     return FileResponse(doc.stored_path, filename=doc.filename)
+
+
+def _render_dlt_kyc_pdf(r: DltOnboardingRequest, entity: Entity | None, org: Organization | None, aadhar_masked: str | None, documents: list[DltOnboardingRequestDocument]) -> bytes:
+    """A one-page summary of the structured KYC fields plus an index of every attached file --
+    bundled alongside the actual files into one zip (download_dlt_request_zip) so an admin has
+    everything needed for the real-world Tata registration handoff in a single download."""
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.set_margins(15, 15, 15)
+    pdf.add_page()
+    width = 180.0
+
+    def field(label: str, value: str) -> None:
+        pdf.set_font("Helvetica", "B", 10)
+        pdf.cell(55, 7, label)
+        pdf.set_font("Helvetica", "", 10)
+        pdf.multi_cell(width - 55, 7, _safe_text(value) or "-")
+
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.cell(width, 9, "DLT Registration Request - KYC Summary", ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    pdf.set_text_color(110, 110, 110)
+    pdf.cell(width, 5, f"Request ID: {r.id}", ln=True)
+    pdf.set_text_color(0, 0, 0)
+    pdf.ln(4)
+
+    field("Organisation:", org.name if org else "-")
+    field("Entity:", entity.name if entity else "-")
+    field("Company Name:", r.company_name or "-")
+    field("Company PAN:", r.company_pan or "-")
+    field("Company GST:", r.company_gst or "-")
+    field("Authorized Signatory:", r.authorized_signatory_name or "-")
+    field("Contact Number:", r.contact_number or "-")
+    field("Contact Email:", r.contact_email or "-")
+    field("Authorized Person Aadhar:", aadhar_masked or "-")
+    field("Notes:", r.notes or "-")
+    field("Status:", r.status.replace("_", " ").title())
+    field("Fee Charged:", f"Rs. {float(r.total_amount):,.2f}")
+    field("Submitted:", r.created_at.strftime("%d-%b-%Y %H:%M"))
+
+    pdf.ln(4)
+    pdf.set_font("Helvetica", "B", 11)
+    pdf.cell(width, 7, "Attached Documents", ln=True)
+    pdf.set_font("Helvetica", "", 9)
+    for doc in documents:
+        label = "Authorization Letter" if doc.document_type == "authorization_letter" else "Supporting Document"
+        pdf.cell(width, 6, f"- [{label}] {_safe_text(doc.filename)}", ln=True)
+
+    return bytes(pdf.output())
+
+
+@router.get("/dlt-requests/{request_id}/download-zip", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def download_dlt_request_zip(request_id: str, db: Session = Depends(get_db)):
+    """Everything needed for the real-world Tata registration handoff in one download: a
+    generated KYC-summary PDF plus every uploaded document (supporting + authorization letter),
+    each read from its own stored_path on disk."""
+    request_row = db.get(DltOnboardingRequest, request_id)
+    if not request_row:
+        raise HTTPException(status_code=404, detail="DLT registration request not found")
+    entity = db.get(Entity, request_row.entity_id)
+    org = db.get(Organization, entity.organization_id) if entity else None
+    documents = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == request_id)).all()
+    aadhar_masked = mask_aadhar(decrypt_secret(request_row.authorized_person_aadhar_encrypted)) if request_row.authorized_person_aadhar_encrypted else None
+
+    pdf_bytes = _render_dlt_kyc_pdf(request_row, entity, org, aadhar_masked, documents)
+
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("KYC-Summary.pdf", pdf_bytes)
+        used_names: set[str] = set()
+        for i, doc in enumerate(documents, start=1):
+            prefix = "Authorization-Letter" if doc.document_type == "authorization_letter" else f"Document-{i}"
+            name = f"{prefix}-{doc.filename}"
+            final_name = name
+            suffix = 1
+            # Guard against two documents colliding on the same final zip-entry name (e.g. two
+            # supporting docs both literally named "id-proof.pdf").
+            while final_name in used_names:
+                suffix += 1
+                final_name = f"{prefix}-{suffix}-{doc.filename}"
+            used_names.add(final_name)
+            try:
+                with open(doc.stored_path, "rb") as f:
+                    zf.writestr(final_name, f.read())
+            except OSError:
+                continue  # File missing from disk -- skip it rather than fail the whole zip.
+    buffer.seek(0)
+    safe_company = "".join(c if c.isalnum() or c in "._-" else "-" for c in (request_row.company_name or request_row.id))
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/zip",
+        headers={"Content-Disposition": f"attachment; filename=DLT-Request-{safe_company}.zip"},
+    )
 
 
 def _user_admin_out(db: Session, user: User) -> UserAdminOut:
