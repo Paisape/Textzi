@@ -607,6 +607,16 @@ class ApiLog(Base):
     status_code: Mapped[int] = mapped_column(Integer)
     latency_ms: Mapped[int] = mapped_column(Integer)
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
+    # The caller's own request fingerprint -- client_ip(request)/CF-IPCountry/User-Agent were
+    # already being computed in main.py's send endpoints (client_ip for the API-key IP allow-list
+    # check) but silently discarded before logging; now persisted so the admin API Log report can
+    # actually show who/where/what called in, not just the outcome. Only set on single-send
+    # (message_id links this call to the one Message it created) -- bulk creates many Messages
+    # per call, so there's no single row to link to and it's left null there.
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(4), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(300), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

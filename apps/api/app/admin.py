@@ -20,12 +20,12 @@ from .email_service import render_email, send_email
 from .erpnext import sync_invoice_to_erpnext
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
     PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction,
 )
 from .schemas import (
-    AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
+    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
@@ -1578,6 +1578,39 @@ def list_admin_messages(entity_id: str | None = None, status_filter: str | None 
     return result
 
 
+@router.get("/api-log", response_model=list[AdminApiLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_admin_api_log(entity_id: str | None = None, status_code: int | None = None, limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
+    """Every raw call to the developer-facing send-sms API (both single and bulk), cross-
+    organization -- the caller's own IP/country/User-Agent (main.py already computed these for
+    the API-key allow-list check; now also persisted here), plus message_id where this call
+    resulted in exactly one Message (single-send only -- bulk creates many per call, so it's left
+    null there), letting the frontend link straight into that message's own route/webhook
+    telemetry via the existing /messages/{id}/telemetry endpoint instead of duplicating it here."""
+    limit = max(1, min(limit, MESSAGE_LOG_LIMIT))
+    offset = max(0, offset)
+    query = select(ApiLog).order_by(ApiLog.created_at.desc()).limit(limit).offset(offset)
+    if entity_id:
+        query = query.where(ApiLog.entity_id == entity_id)
+    if status_code:
+        query = query.where(ApiLog.status_code == status_code)
+    logs = db.scalars(query).all()
+    entity_ids = {l.entity_id for l in logs if l.entity_id}
+    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()} if entity_ids else {}
+    org_ids = {e.organization_id for e in entities.values()}
+    org_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
+    result = []
+    for l in logs:
+        entity = entities.get(l.entity_id) if l.entity_id else None
+        result.append(AdminApiLogOut(
+            id=l.id, entity_id=l.entity_id, entity_name=entity.name if entity else None,
+            organization_name=org_names.get(entity.organization_id) if entity else None,
+            message_id=l.message_id, endpoint=l.endpoint, method=l.metadata_json.get("method") if l.metadata_json else None,
+            status_code=l.status_code, latency_ms=l.latency_ms, error=l.metadata_json.get("error") if l.metadata_json else None,
+            ip_address=l.ip_address, country=l.country, user_agent=l.user_agent, created_at=l.created_at.isoformat(),
+        ))
+    return result
+
+
 @router.get("/platform-messages", response_model=list[AdminPlatformMessageOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_admin_platform_messages(limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
     """The platform's own SMS log ("self", as opposed to /messages' "other user") -- currently
@@ -1782,7 +1815,7 @@ def get_admin_notifications(db: Session = Depends(get_db)):
     if platform_wallet and float(platform_wallet.balance) < LOW_PLATFORM_WALLET_THRESHOLD:
         notifications.append(NotificationOut(
             id="platform-wallet-low", severity="warning", title="Platform wallet balance is low",
-            description=f"Only {float(platform_wallet.balance):.0f} credits left -- login OTP SMS will silently stop sending once this hits zero.", link="/platform-wallet",
+            description=f"Only {float(platform_wallet.balance):.0f} credits left -- login OTP SMS will silently stop sending once this hits zero.", link="/platform-sms-settings",
         ))
 
     stuck_payments = db.scalar(select(func.count()).select_from(PaymentOrder).where(PaymentOrder.status == "created")) or 0

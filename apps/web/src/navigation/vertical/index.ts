@@ -136,6 +136,11 @@ export const adminNav = [
     icon: { icon: 'tabler-message-report' },
   },
   {
+    title: 'API Log & Report',
+    to: { name: 'admin-api-log' },
+    icon: { icon: 'tabler-api' },
+  },
+  {
     title: 'Contact Us Submissions',
     to: { name: 'admin-contact-messages' },
     icon: { icon: 'tabler-mail-question' },

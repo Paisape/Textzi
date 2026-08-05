@@ -893,6 +893,23 @@ class ApiLogEntryOut(BaseModel):
     created_at: str
 
 
+class AdminApiLogOut(BaseModel):
+    id: str
+    entity_id: str | None
+    entity_name: str | None
+    organization_name: str | None
+    message_id: str | None
+    endpoint: str
+    method: str | None
+    status_code: int
+    latency_ms: int
+    error: str | None
+    ip_address: str | None
+    country: str | None
+    user_agent: str | None
+    created_at: str
+
+
 class WalletCreditRequest(BaseModel):
     entity_id: str
     amount: float = Field(gt=0, le=1_000_000)

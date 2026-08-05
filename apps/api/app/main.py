@@ -105,14 +105,17 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
     # below) is what actually gets logged -- previously this was hardcoded to 202 in the finally
     # block regardless of outcome, so a failed call (401/403/422/409) was indistinguishable from
     # a successful one in api_logs.
-    status_code, error_detail = 202, None
+    status_code, error_detail, message_id = 202, None, None
+    caller_ip = client_ip(request)
     try:
-        entity = resolve_entity_from_key(db, x_api_key, client_ip(request)); entity_id = entity.id
+        entity = resolve_entity_from_key(db, x_api_key, caller_ip); entity_id = entity.id
         enforce_rate_limit(f"ratelimit:sms:{entity.id}", settings.sms_rate_limit_max_requests, settings.sms_rate_limit_window_seconds)
         require_channel_active(db, entity.id, "sms")
         if idempotency_key:
             existing = db.scalar(select(Message).where(Message.entity_id == entity.id, Message.idempotency_key == idempotency_key))
-            if existing: return SmsSendResponse(status=existing.status, message_id=existing.id, route=existing.route or "default", balance=available_balance(db, entity.id), credits_charged=existing.credits_charged)
+            if existing:
+                message_id = existing.id
+                return SmsSendResponse(status=existing.status, message_id=existing.id, route=existing.route or "default", balance=available_balance(db, entity.id), credits_charged=existing.credits_charged)
         assert_not_opted_out(db, entity.id, payload.mobile)
         # No render_template call here -- the caller sends the complete, already-composed
         # message (payload.message) exactly as it should go out. resolve_template_by_dlt_id
@@ -139,6 +142,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
             },
         )
         db.add(message); db.flush()
+        message_id = message.id
         debit_wallet(db, entity.id, credits, reference=message.id)  # 1 credit per 160-char segment (services.sms_segment_credits)
         db.commit(); db.refresh(message)
         # No real queue consumer exists yet (see sms.py's compose_sms, which has always dispatched
@@ -174,7 +178,11 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         metadata = {"method": request.method}
         if error_detail:
             metadata["error"] = error_detail
-        db.add(ApiLog(request_id=request_id, entity_id=entity_id, endpoint=request.url.path, status_code=status_code, latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata))
+        db.add(ApiLog(
+            request_id=request_id, entity_id=entity_id, message_id=message_id, endpoint=request.url.path, status_code=status_code,
+            latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata,
+            ip_address=caller_ip, country=request.headers.get("CF-IPCountry"), user_agent=request.headers.get("user-agent", "")[:300],
+        ))
         db.commit()
 
 
@@ -188,8 +196,9 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
     ones that already succeeded -- the response reports a per-recipient result."""
     started, request_id, entity_id = time.perf_counter(), str(uuid.uuid4()), None
     status_code, error_detail = 202, None
+    caller_ip = client_ip(request)
     try:
-        entity = resolve_entity_from_key(db, x_api_key, client_ip(request)); entity_id = entity.id
+        entity = resolve_entity_from_key(db, x_api_key, caller_ip); entity_id = entity.id
         # Costs len(recipients) units, not 1 -- otherwise a 100-recipient batch would only cost
         # as much rate-limit budget as a single send, letting bulk push up to
         # max_requests * 100 actual messages through the same window a single-send caller is
@@ -216,7 +225,11 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
         metadata = {"method": request.method, "endpoint": "bulk"}
         if error_detail:
             metadata["error"] = error_detail
-        db.add(ApiLog(request_id=request_id, entity_id=entity_id, endpoint=request.url.path, status_code=status_code, latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata))
+        db.add(ApiLog(
+            request_id=request_id, entity_id=entity_id, endpoint=request.url.path, status_code=status_code,
+            latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata,
+            ip_address=caller_ip, country=request.headers.get("CF-IPCountry"), user_agent=request.headers.get("user-agent", "")[:300],
+        ))
         db.commit()
 
     results: list[BulkSmsRecipientResult] = []
