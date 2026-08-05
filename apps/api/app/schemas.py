@@ -690,6 +690,8 @@ class DltRequestQuoteResponse(BaseModel):
     combined_fee: float
     gst_amount: float
     total_amount: float
+    telemarketer_name: str
+    telemarketer_id: str
 
 
 class DltDocumentOut(BaseModel):

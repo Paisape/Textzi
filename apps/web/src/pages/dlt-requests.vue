@@ -46,6 +46,7 @@ const DOCUMENT_TYPE_LABELS: Record<string, string> = {
   incorporation_certificate: 'Incorporation cert.',
   address_proof: 'Address proof',
   director_list: 'Director list',
+  pe_tm_mapping: 'PE-TM mapping',
 }
 
 const STATUS_FILTERS = [

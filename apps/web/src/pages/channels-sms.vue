@@ -251,7 +251,7 @@ async function onSubmitSelfService() {
 }
 
 // DLT: request-help path
-type DltQuote = { combined_fee: number, gst_amount: number, total_amount: number }
+type DltQuote = { combined_fee: number, gst_amount: number, total_amount: number, telemarketer_name: string, telemarketer_id: string }
 const dltQuote = ref<DltQuote | null>(null)
 const requestCompanyName = ref('')
 const requestCompanyPan = ref('')
@@ -267,6 +267,7 @@ const requestAadharDoc = ref<File | File[] | null>(null)
 const requestIncorporationCert = ref<File | File[] | null>(null)
 const requestAddressProof = ref<File | File[] | null>(null)
 const requestDirectorList = ref<File | File[] | null>(null)
+const requestPeTmMapping = ref<File | File[] | null>(null)
 const requestOtherDocs = ref<File | File[] | null>(null)
 const requestAuthLetter = ref<File | File[] | null>(null)
 const requestSubmitting = ref(false)
@@ -285,6 +286,21 @@ async function loadDltQuote() {
   }
   catch {
     dltQuote.value = null
+  }
+}
+
+const tmIdCopied = ref(false)
+async function onCopyTelemarketerId() {
+  if (!dltQuote.value)
+    return
+  try {
+    await navigator.clipboard.writeText(dltQuote.value.telemarketer_id)
+    tmIdCopied.value = true
+    setTimeout(() => { tmIdCopied.value = false }, 2000)
+  }
+  catch {
+    // Clipboard access can be denied by the browser -- the ID is already shown on screen to
+    // copy manually, so there's nothing more useful to do here.
   }
 }
 
@@ -315,6 +331,7 @@ async function onSubmitRequest() {
   const incorporationCert = firstFile(requestIncorporationCert.value)
   const addressProof = firstFile(requestAddressProof.value)
   const directorList = firstFile(requestDirectorList.value)
+  const peTmMapping = firstFile(requestPeTmMapping.value)
   const otherFiles = asFileArray(requestOtherDocs.value)
   const letter = firstFile(requestAuthLetter.value)
   if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestCompanyGst.value.trim() || !requestSignatoryName.value.trim()
@@ -329,6 +346,7 @@ async function onSubmitRequest() {
     [incorporationCert, 'the company incorporation certificate'],
     [addressProof, 'the address proof in the company name'],
     [directorList, 'the director list (as per MCA)'],
+    [peTmMapping, 'the PE-TM chain mapping confirmation'],
     [letter, 'the signed authorization letter'],
   ]
   const missing = requiredDocs.find(([file]) => !file)
@@ -354,6 +372,7 @@ async function onSubmitRequest() {
     form.set('incorporation_certificate', incorporationCert as File)
     form.set('address_proof', addressProof as File)
     form.set('director_list', directorList as File)
+    form.set('pe_tm_mapping', peTmMapping as File)
     form.set('authorization_letter', letter as File)
     for (const file of otherFiles)
       form.append('other_documents', file)
@@ -364,7 +383,7 @@ async function onSubmitRequest() {
     requestNotes.value = ''
     requestPanDoc.value = null; requestGstDoc.value = null; requestAadharDoc.value = null
     requestIncorporationCert.value = null; requestAddressProof.value = null; requestDirectorList.value = null
-    requestOtherDocs.value = null; requestAuthLetter.value = null
+    requestPeTmMapping.value = null; requestOtherDocs.value = null; requestAuthLetter.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -1277,6 +1296,47 @@ onMounted(async () => {
                     >
                       Please note that during this activity you would need OTP, hence the authorized person must be available to share OTP.
                     </VAlert>
+
+                    <VAlert
+                      type="warning"
+                      variant="tonal"
+                      density="compact"
+                      class="mb-4"
+                    >
+                      <div class="mb-2">
+                        Please send a <strong>PE-TM chain mapping</strong> request from your own DLT operator login (Airtel/Jio/Vi), selecting the following as your Telemarketer:
+                      </div>
+                      <div
+                        v-if="dltQuote"
+                        class="d-flex flex-wrap align-center gap-4"
+                      >
+                        <div>
+                          <div class="text-caption text-medium-emphasis">
+                            Telemarketer Name
+                          </div>
+                          <div class="font-weight-medium">
+                            {{ dltQuote.telemarketer_name }}
+                          </div>
+                        </div>
+                        <div>
+                          <div class="text-caption text-medium-emphasis">
+                            Telemarketer ID
+                          </div>
+                          <div class="d-flex align-center gap-1">
+                            <span class="font-weight-medium">{{ dltQuote.telemarketer_id }}</span>
+                            <VBtn
+                              icon
+                              variant="text"
+                              size="x-small"
+                              @click="onCopyTelemarketerId"
+                            >
+                              <VIcon :icon="tmIdCopied ? 'tabler-check' : 'tabler-copy'" />
+                            </VBtn>
+                          </div>
+                        </div>
+                      </div>
+                    </VAlert>
+
                     <VForm @submit.prevent="onSubmitRequest">
                       <VRow>
                         <VCol
@@ -1436,6 +1496,17 @@ onMounted(async () => {
                             label="Director list (as per MCA)"
                             accept=".pdf,.jpg,.jpeg,.png"
                             prepend-icon="tabler-users"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestPeTmMapping"
+                            label="PE-TM chain mapping confirmation"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-link"
                           />
                         </VCol>
                         <VCol

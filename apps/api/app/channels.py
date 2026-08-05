@@ -257,6 +257,15 @@ def simulate_subscription_payment(user: User = Depends(require_user), db: Sessio
     return RechargeResponse(entity_id=entity.id, amount=0, available_balance=0, dev_note="Development mode — channel subscription marked paid directly.")
 
 
+# Textzi's own registered Telemarketer identity on the DLT ecosystem -- the customer must submit
+# a PE-TM chain mapping request from their own DLT operator (Airtel/Jio/Vi) login, selecting
+# Textzi as their Telemarketer, before real message delivery can work. Static (this is Textzi's
+# own registration, not something that varies per request) -- confirmed live as the cusTmId TTBS
+# already returns on every accepted send.
+TEXTZI_TELEMARKETER_NAME = "Paisape Techfin Private Limited"
+TEXTZI_TELEMARKETER_ID = "1602145178481206053"
+
+
 @router.get("/dlt/quote", response_model=DltRequestQuoteResponse)
 def quote_dlt_request(user: User = Depends(require_user), db: Session = Depends(get_db)):
     try:
@@ -266,7 +275,10 @@ def quote_dlt_request(user: User = Depends(require_user), db: Session = Depends(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     combined = float(fees.dlt_platform_fee) + float(fees.dlt_service_fee)
     gst_amount = round(combined * GST_RATE, 2)
-    return DltRequestQuoteResponse(combined_fee=combined, gst_amount=gst_amount, total_amount=round(combined + gst_amount, 2))
+    return DltRequestQuoteResponse(
+        combined_fee=combined, gst_amount=gst_amount, total_amount=round(combined + gst_amount, 2),
+        telemarketer_name=TEXTZI_TELEMARKETER_NAME, telemarketer_id=TEXTZI_TELEMARKETER_ID,
+    )
 
 
 @router.post("/dlt/self-service")
@@ -327,6 +339,7 @@ def submit_dlt_request(
     incorporation_certificate: UploadFile = File(...),
     address_proof: UploadFile = File(...),
     director_list: UploadFile = File(...),
+    pe_tm_mapping: UploadFile = File(...),
     authorization_letter: UploadFile = File(...),
     other_documents: list[UploadFile] | None = File(default=None),
     user: User = Depends(require_user),
@@ -397,6 +410,7 @@ def submit_dlt_request(
         _save_typed(incorporation_certificate, "incorporation_certificate", "incorporation-certificate.pdf"),
         _save_typed(address_proof, "address_proof", "address-proof.pdf"),
         _save_typed(director_list, "director_list", "director-list.pdf"),
+        _save_typed(pe_tm_mapping, "pe_tm_mapping", "pe-tm-mapping.pdf"),
         _save_typed(authorization_letter, "authorization_letter", "authorization-letter.pdf"),
     ]
     for doc in (other_documents or []):
