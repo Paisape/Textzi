@@ -21,6 +21,16 @@ from .services import DomainError, credit_wallet, mask_mobile, redact_payload_va
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
 
 
+def _ttbs_reports_failure(payload: TtbsDrWebhookPayload) -> bool:
+    """DeliveryStatusCodeRule alone means an unmapped code silently reads as a billable success --
+    confirmed live as a real false positive: DeliveryStatusCode 93 came back with TTBS's own
+    DeliveryStatus text reading "UNDELIVERABLE" (the SMS never reached a real handset), yet no
+    admin rule existed for code 93, so it was recorded as "delivered". TTBS already tells us in
+    plain text whether a code means success -- trust that as the primary signal instead of
+    requiring an admin to have pre-registered every possible code TTBS might ever send."""
+    return payload.DeliveryStatus is not None and payload.DeliveryStatus.strip().upper() != "DELIVERED"
+
+
 def _resolve_ttbs_route_by_token(db: Session, token: str) -> ProviderRoute | None:
     for row in db.scalars(select(ProviderRoute).where(ProviderRoute.provider_type == "ttbs")).all():
         secret_encrypted = row.config.get("webhook_secret_encrypted")
@@ -81,7 +91,7 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
         platform_message.delivery_status_code = payload.DeliveryStatusCode
         platform_message.delivered_at = datetime.now(timezone.utc)
         platform_message.webhook_payload = payload.model_dump()
-        platform_message.status = "delivery_failed" if rule else "delivered"
+        platform_message.status = "delivery_failed" if (rule or _ttbs_reports_failure(payload)) else "delivered"
         db.commit()
         return {"status": "processed"}
 
@@ -99,13 +109,16 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
         webhook_payload = redact_payload_values(webhook_payload, {payload.Recipient: mask_mobile(payload.Recipient)})
     attempt.webhook_payload = webhook_payload
 
-    if rule:
-        # An admin has explicitly flagged this code as a failure.
+    if rule or _ttbs_reports_failure(payload):
+        # Failure if an admin explicitly flagged this code, OR TTBS's own DeliveryStatus text
+        # says anything other than "DELIVERED" -- see _ttbs_reports_failure. Refunding still
+        # requires an explicit admin rule (rule.refund) -- accuracy of the status label shouldn't
+        # by itself move money; that stays an admin-gated decision.
         attempt.status = "delivery_failed"
-        attempt.error = rule.label or f"DeliveryStatusCode {payload.DeliveryStatusCode}"
+        attempt.error = (rule.label if rule and rule.label else None) or payload.DeliveryStatus or f"DeliveryStatusCode {payload.DeliveryStatusCode}"
         if message:
             message.status = "delivery_failed"
-        if rule.refund:
+        if rule and rule.refund:
             # Refund exactly what was charged at send time (services.sms_segment_credits -- 1+
             # credits depending on message length), not a hardcoded 1, which would under-refund
             # any multi-segment message.
@@ -114,8 +127,8 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
             except DomainError:
                 pass
     else:
-        # No rule for this code -- counts as a billable success (the charge from send time
-        # stands), matching "every code we haven't explicitly flagged is a success."
+        # No rule for this code and TTBS's own status text says "DELIVERED" (or is absent) --
+        # counts as a billable success (the charge from send time stands).
         attempt.status = "delivered"
         if message:
             message.status = "delivered"
