@@ -43,6 +43,9 @@ const DOCUMENT_TYPE_LABELS: Record<string, string> = {
   pan: 'PAN',
   gst: 'GST',
   aadhar: 'Aadhar',
+  incorporation_certificate: 'Incorporation cert.',
+  address_proof: 'Address proof',
+  director_list: 'Director list',
 }
 
 const STATUS_FILTERS = [

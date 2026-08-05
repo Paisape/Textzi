@@ -264,6 +264,9 @@ const requestNotes = ref('')
 const requestPanDoc = ref<File | File[] | null>(null)
 const requestGstDoc = ref<File | File[] | null>(null)
 const requestAadharDoc = ref<File | File[] | null>(null)
+const requestIncorporationCert = ref<File | File[] | null>(null)
+const requestAddressProof = ref<File | File[] | null>(null)
+const requestDirectorList = ref<File | File[] | null>(null)
 const requestOtherDocs = ref<File | File[] | null>(null)
 const requestAuthLetter = ref<File | File[] | null>(null)
 const requestSubmitting = ref(false)
@@ -309,27 +312,28 @@ async function onSubmitRequest() {
   const panDoc = firstFile(requestPanDoc.value)
   const gstDoc = firstFile(requestGstDoc.value)
   const aadharDoc = firstFile(requestAadharDoc.value)
+  const incorporationCert = firstFile(requestIncorporationCert.value)
+  const addressProof = firstFile(requestAddressProof.value)
+  const directorList = firstFile(requestDirectorList.value)
   const otherFiles = asFileArray(requestOtherDocs.value)
   const letter = firstFile(requestAuthLetter.value)
-  if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestSignatoryName.value.trim()
+  if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestCompanyGst.value.trim() || !requestSignatoryName.value.trim()
     || !requestContactNumber.value.trim() || !requestContactEmail.value.trim() || !requestAadhar.value.trim()) {
     requestError.value = 'Fill in every required field.'
     return
   }
-  if (!panDoc) {
-    requestError.value = 'Upload the PAN card copy.'
-    return
-  }
-  if (!aadharDoc) {
-    requestError.value = 'Upload the Aadhar card copy.'
-    return
-  }
-  if (requestCompanyGst.value.trim() && !gstDoc) {
-    requestError.value = 'Upload the GST certificate copy since a GST number was provided.'
-    return
-  }
-  if (!letter) {
-    requestError.value = 'Upload the signed authorization letter.'
+  const requiredDocs: [File | null, string][] = [
+    [panDoc, 'the PAN card copy'],
+    [gstDoc, 'the GST certificate copy'],
+    [aadharDoc, 'the Aadhar card copy'],
+    [incorporationCert, 'the company incorporation certificate'],
+    [addressProof, 'the address proof in the company name'],
+    [directorList, 'the director list (as per MCA)'],
+    [letter, 'the signed authorization letter'],
+  ]
+  const missing = requiredDocs.find(([file]) => !file)
+  if (missing) {
+    requestError.value = `Upload ${missing[1]}.`
     return
   }
   requestSubmitting.value = true
@@ -337,27 +341,30 @@ async function onSubmitRequest() {
     const form = new FormData()
     form.set('company_name', requestCompanyName.value.trim())
     form.set('company_pan', requestCompanyPan.value.trim().toUpperCase())
-    if (requestCompanyGst.value.trim())
-      form.set('company_gst', requestCompanyGst.value.trim().toUpperCase())
+    form.set('company_gst', requestCompanyGst.value.trim().toUpperCase())
     form.set('authorized_signatory_name', requestSignatoryName.value.trim())
     form.set('contact_number', requestContactNumber.value.trim())
     form.set('contact_email', requestContactEmail.value.trim())
     form.set('authorized_person_aadhar', requestAadhar.value.trim())
     if (requestNotes.value.trim())
       form.set('notes', requestNotes.value.trim())
-    form.set('pan_document', panDoc)
-    form.set('aadhar_document', aadharDoc)
-    if (gstDoc)
-      form.set('gst_document', gstDoc)
+    form.set('pan_document', panDoc as File)
+    form.set('gst_document', gstDoc as File)
+    form.set('aadhar_document', aadharDoc as File)
+    form.set('incorporation_certificate', incorporationCert as File)
+    form.set('address_proof', addressProof as File)
+    form.set('director_list', directorList as File)
+    form.set('authorization_letter', letter as File)
     for (const file of otherFiles)
       form.append('other_documents', file)
-    form.set('authorization_letter', letter)
     const created = await $api<{ id: string }>('/v1/channels/sms/dlt/request', { method: 'POST', body: form })
     await $api(`/v1/channels/sms/dlt/request/${created.id}/recharge`, { method: 'POST' })
     requestCompanyName.value = ''; requestCompanyPan.value = ''; requestCompanyGst.value = ''
     requestSignatoryName.value = ''; requestContactNumber.value = ''; requestContactEmail.value = ''; requestAadhar.value = ''
     requestNotes.value = ''
-    requestPanDoc.value = null; requestGstDoc.value = null; requestAadharDoc.value = null; requestOtherDocs.value = null; requestAuthLetter.value = null
+    requestPanDoc.value = null; requestGstDoc.value = null; requestAadharDoc.value = null
+    requestIncorporationCert.value = null; requestAddressProof.value = null; requestDirectorList.value = null
+    requestOtherDocs.value = null; requestAuthLetter.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -1300,7 +1307,7 @@ onMounted(async () => {
                         >
                           <AppTextField
                             v-model="requestCompanyGst"
-                            label="Company GST (optional)"
+                            label="Company GST"
                             placeholder="15-character GSTIN"
                             maxlength="15"
                             style="text-transform: uppercase;"
@@ -1396,8 +1403,39 @@ onMounted(async () => {
                             label="GST certificate copy"
                             accept=".pdf,.jpg,.jpeg,.png"
                             prepend-icon="tabler-id-badge-2"
-                            :hint="requestCompanyGst.trim() ? 'Required since a GST number was provided.' : 'Optional'"
-                            persistent-hint
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestIncorporationCert"
+                            label="Company incorporation certificate"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-certificate"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestAddressProof"
+                            label="Address proof (in company name)"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-home"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestDirectorList"
+                            label="Director list (as per MCA)"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-users"
                           />
                         </VCol>
                         <VCol

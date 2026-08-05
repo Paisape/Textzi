@@ -315,16 +315,19 @@ def download_authorization_letter_sample(user: User = Depends(require_user)):
 def submit_dlt_request(
     company_name: str = Form(...),
     company_pan: str = Form(...),
+    company_gst: str = Form(...),
     authorized_signatory_name: str = Form(...),
     contact_number: str = Form(...),
     contact_email: str = Form(...),
     authorized_person_aadhar: str = Form(...),
-    company_gst: str | None = Form(default=None),
     notes: str | None = Form(default=None),
     pan_document: UploadFile = File(...),
+    gst_document: UploadFile = File(...),
     aadhar_document: UploadFile = File(...),
+    incorporation_certificate: UploadFile = File(...),
+    address_proof: UploadFile = File(...),
+    director_list: UploadFile = File(...),
     authorization_letter: UploadFile = File(...),
-    gst_document: UploadFile | None = File(default=None),
     other_documents: list[UploadFile] | None = File(default=None),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
@@ -339,15 +342,12 @@ def submit_dlt_request(
     company_pan = company_pan.strip().upper()
     if not PAN_PATTERN.fullmatch(company_pan):
         raise HTTPException(status_code=422, detail="Company PAN must be in the format AAAAA9999A.")
-    if company_gst:
-        company_gst = company_gst.strip().upper()
-        # GST characters 3-12 always embed the PAN it was issued against -- a cheap, high-value
-        # sanity check that catches a mismatched/mistyped GST without needing a full checksum
-        # implementation.
-        if len(company_gst) != 15 or company_gst[2:12] != company_pan:
-            raise HTTPException(status_code=422, detail="Company GST must be 15 characters and contain the company PAN.")
-        if not gst_document:
-            raise HTTPException(status_code=422, detail="Upload the GST certificate copy since a GST number was provided.")
+    company_gst = company_gst.strip().upper()
+    # GST characters 3-12 always embed the PAN it was issued against -- a cheap, high-value
+    # sanity check that catches a mismatched/mistyped GST without needing a full checksum
+    # implementation.
+    if len(company_gst) != 15 or company_gst[2:12] != company_pan:
+        raise HTTPException(status_code=422, detail="Company GST must be 15 characters and contain the company PAN.")
     authorized_person_aadhar = authorized_person_aadhar.strip().replace(" ", "")
     if not AADHAR_PATTERN.fullmatch(authorized_person_aadhar):
         raise HTTPException(status_code=422, detail="Aadhar number must be exactly 12 digits.")
@@ -392,11 +392,13 @@ def submit_dlt_request(
 
     doc_rows = [
         _save_typed(pan_document, "pan", "pan-card.pdf"),
+        _save_typed(gst_document, "gst", "gst-certificate.pdf"),
         _save_typed(aadhar_document, "aadhar", "aadhar-card.pdf"),
+        _save_typed(incorporation_certificate, "incorporation_certificate", "incorporation-certificate.pdf"),
+        _save_typed(address_proof, "address_proof", "address-proof.pdf"),
+        _save_typed(director_list, "director_list", "director-list.pdf"),
         _save_typed(authorization_letter, "authorization_letter", "authorization-letter.pdf"),
     ]
-    if gst_document:
-        doc_rows.append(_save_typed(gst_document, "gst", "gst-certificate.pdf"))
     for doc in (other_documents or []):
         doc_rows.append(_save_typed(doc, "supporting", "document"))
     db.commit(); db.refresh(request_row)
