@@ -261,7 +261,10 @@ const requestContactNumber = ref('')
 const requestContactEmail = ref('')
 const requestAadhar = ref('')
 const requestNotes = ref('')
-const requestDocs = ref<File | File[] | null>(null)
+const requestPanDoc = ref<File | File[] | null>(null)
+const requestGstDoc = ref<File | File[] | null>(null)
+const requestAadharDoc = ref<File | File[] | null>(null)
+const requestOtherDocs = ref<File | File[] | null>(null)
 const requestAuthLetter = ref<File | File[] | null>(null)
 const requestSubmitting = ref(false)
 const requestError = ref('')
@@ -303,15 +306,26 @@ async function onDownloadAuthorizationLetterSample() {
 
 async function onSubmitRequest() {
   requestError.value = ''
-  const files = asFileArray(requestDocs.value)
+  const panDoc = firstFile(requestPanDoc.value)
+  const gstDoc = firstFile(requestGstDoc.value)
+  const aadharDoc = firstFile(requestAadharDoc.value)
+  const otherFiles = asFileArray(requestOtherDocs.value)
   const letter = firstFile(requestAuthLetter.value)
   if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestSignatoryName.value.trim()
     || !requestContactNumber.value.trim() || !requestContactEmail.value.trim() || !requestAadhar.value.trim()) {
     requestError.value = 'Fill in every required field.'
     return
   }
-  if (!files.length) {
-    requestError.value = 'Upload at least one supporting document.'
+  if (!panDoc) {
+    requestError.value = 'Upload the PAN card copy.'
+    return
+  }
+  if (!aadharDoc) {
+    requestError.value = 'Upload the Aadhar card copy.'
+    return
+  }
+  if (requestCompanyGst.value.trim() && !gstDoc) {
+    requestError.value = 'Upload the GST certificate copy since a GST number was provided.'
     return
   }
   if (!letter) {
@@ -331,14 +345,19 @@ async function onSubmitRequest() {
     form.set('authorized_person_aadhar', requestAadhar.value.trim())
     if (requestNotes.value.trim())
       form.set('notes', requestNotes.value.trim())
-    for (const file of files)
-      form.append('documents', file)
+    form.set('pan_document', panDoc)
+    form.set('aadhar_document', aadharDoc)
+    if (gstDoc)
+      form.set('gst_document', gstDoc)
+    for (const file of otherFiles)
+      form.append('other_documents', file)
     form.set('authorization_letter', letter)
     const created = await $api<{ id: string }>('/v1/channels/sms/dlt/request', { method: 'POST', body: form })
     await $api(`/v1/channels/sms/dlt/request/${created.id}/recharge`, { method: 'POST' })
     requestCompanyName.value = ''; requestCompanyPan.value = ''; requestCompanyGst.value = ''
     requestSignatoryName.value = ''; requestContactNumber.value = ''; requestContactEmail.value = ''; requestAadhar.value = ''
-    requestNotes.value = ''; requestDocs.value = null; requestAuthLetter.value = null
+    requestNotes.value = ''
+    requestPanDoc.value = null; requestGstDoc.value = null; requestAadharDoc.value = null; requestOtherDocs.value = null; requestAuthLetter.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -1342,18 +1361,60 @@ onMounted(async () => {
                         class="mb-4 mt-4"
                       />
 
-                      <VFileInput
-                        v-model="requestDocs"
-                        label="Supporting documents (company registration, ID proof, etc.)"
-                        accept=".pdf,.jpg,.jpeg,.png"
-                        multiple
-                        prepend-icon="tabler-files"
-                        hint="Please upload colour copies only."
-                        persistent-hint
-                        class="mb-4"
-                      />
+                      <p class="text-body-2 text-medium-emphasis mb-2">
+                        Please upload colour copies only.
+                      </p>
+                      <VRow>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestPanDoc"
+                            label="PAN card copy"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-id-badge-2"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestAadharDoc"
+                            label="Aadhar card copy"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-id-badge-2"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestGstDoc"
+                            label="GST certificate copy"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-id-badge-2"
+                            :hint="requestCompanyGst.trim() ? 'Required since a GST number was provided.' : 'Optional'"
+                            persistent-hint
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <VFileInput
+                            v-model="requestOtherDocs"
+                            label="Other supporting documents (optional)"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            multiple
+                            prepend-icon="tabler-files"
+                          />
+                        </VCol>
+                      </VRow>
 
-                      <div class="d-flex align-center justify-space-between mb-1">
+                      <div class="d-flex align-center justify-space-between mb-1 mt-4">
                         <span class="text-body-2 font-weight-medium">Authorization letter</span>
                         <VBtn
                           variant="text"

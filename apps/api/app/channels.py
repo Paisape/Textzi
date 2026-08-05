@@ -321,8 +321,11 @@ def submit_dlt_request(
     authorized_person_aadhar: str = Form(...),
     company_gst: str | None = Form(default=None),
     notes: str | None = Form(default=None),
-    documents: list[UploadFile] = File(...),
+    pan_document: UploadFile = File(...),
+    aadhar_document: UploadFile = File(...),
     authorization_letter: UploadFile = File(...),
+    gst_document: UploadFile | None = File(default=None),
+    other_documents: list[UploadFile] | None = File(default=None),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
@@ -343,6 +346,8 @@ def submit_dlt_request(
         # implementation.
         if len(company_gst) != 15 or company_gst[2:12] != company_pan:
             raise HTTPException(status_code=422, detail="Company GST must be 15 characters and contain the company PAN.")
+        if not gst_document:
+            raise HTTPException(status_code=422, detail="Upload the GST certificate copy since a GST number was provided.")
     authorized_person_aadhar = authorized_person_aadhar.strip().replace(" ", "")
     if not AADHAR_PATTERN.fullmatch(authorized_person_aadhar):
         raise HTTPException(status_code=422, detail="Aadhar number must be exactly 12 digits.")
@@ -359,8 +364,6 @@ def submit_dlt_request(
         fees = resolve_channel_fees(db, "sms")
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not documents:
-        raise HTTPException(status_code=422, detail="Upload at least one supporting document")
     combined = float(fees.dlt_platform_fee) + float(fees.dlt_service_fee)
     gst_amount = round(combined * GST_RATE, 2)
     request_row = DltOnboardingRequest(
@@ -380,16 +383,22 @@ def submit_dlt_request(
         total_amount=round(combined + gst_amount, 2),
     )
     db.add(request_row); db.flush()
-    doc_rows = []
-    for doc in documents:
-        stored_path, _ = _save_upload(doc, f"dlt-requests/{request_row.id}")
-        doc_row = DltOnboardingRequestDocument(request_id=request_row.id, filename=doc.filename or "document", stored_path=stored_path, document_type="supporting")
-        db.add(doc_row)
-        doc_rows.append(doc_row)
-    letter_path, _ = _save_upload(authorization_letter, f"dlt-requests/{request_row.id}")
-    letter_row = DltOnboardingRequestDocument(request_id=request_row.id, filename=authorization_letter.filename or "authorization_letter", stored_path=letter_path, document_type="authorization_letter")
-    db.add(letter_row)
-    doc_rows.append(letter_row)
+
+    def _save_typed(upload: UploadFile, document_type: str, default_name: str) -> DltOnboardingRequestDocument:
+        stored_path, _ = _save_upload(upload, f"dlt-requests/{request_row.id}")
+        row = DltOnboardingRequestDocument(request_id=request_row.id, filename=upload.filename or default_name, stored_path=stored_path, document_type=document_type)
+        db.add(row)
+        return row
+
+    doc_rows = [
+        _save_typed(pan_document, "pan", "pan-card.pdf"),
+        _save_typed(aadhar_document, "aadhar", "aadhar-card.pdf"),
+        _save_typed(authorization_letter, "authorization_letter", "authorization-letter.pdf"),
+    ]
+    if gst_document:
+        doc_rows.append(_save_typed(gst_document, "gst", "gst-certificate.pdf"))
+    for doc in (other_documents or []):
+        doc_rows.append(_save_typed(doc, "supporting", "document"))
     db.commit(); db.refresh(request_row)
     return _dlt_request_out(request_row, doc_rows)
 

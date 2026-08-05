@@ -538,8 +538,9 @@ def _render_dlt_kyc_pdf(r: DltOnboardingRequest, entity: Entity | None, org: Org
     pdf.set_font("Helvetica", "B", 11)
     pdf.cell(width, 7, "Attached Documents", ln=True)
     pdf.set_font("Helvetica", "", 9)
+    doc_type_labels = {"authorization_letter": "Authorization Letter", "pan": "PAN Card", "gst": "GST Certificate", "aadhar": "Aadhar Card"}
     for doc in documents:
-        label = "Authorization Letter" if doc.document_type == "authorization_letter" else "Supporting Document"
+        label = doc_type_labels.get(doc.document_type, "Supporting Document")
         pdf.cell(width, 6, f"- [{label}] {_safe_text(doc.filename)}", ln=True)
 
     return bytes(pdf.output())
@@ -563,9 +564,10 @@ def download_dlt_request_zip(request_id: str, db: Session = Depends(get_db)):
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("KYC-Summary.pdf", pdf_bytes)
+        zip_prefixes = {"authorization_letter": "Authorization-Letter", "pan": "PAN-Card", "gst": "GST-Certificate", "aadhar": "Aadhar-Card"}
         used_names: set[str] = set()
         for i, doc in enumerate(documents, start=1):
-            prefix = "Authorization-Letter" if doc.document_type == "authorization_letter" else f"Document-{i}"
+            prefix = zip_prefixes.get(doc.document_type, f"Document-{i}")
             name = f"{prefix}-{doc.filename}"
             final_name = name
             suffix = 1

@@ -38,6 +38,13 @@ const updatingId = ref<string | null>(null)
 const updateError = ref('')
 const statusFilter = ref('')
 
+const DOCUMENT_TYPE_LABELS: Record<string, string> = {
+  authorization_letter: 'Auth letter',
+  pan: 'PAN',
+  gst: 'GST',
+  aadhar: 'Aadhar',
+}
+
 const STATUS_FILTERS = [
   { value: '', title: 'All statuses' },
   { value: 'pending_payment', title: 'Pending payment' },
@@ -237,12 +244,12 @@ onMounted(load)
                 >
                   {{ doc.filename }}
                   <VChip
-                    v-if="doc.document_type === 'authorization_letter'"
+                    v-if="DOCUMENT_TYPE_LABELS[doc.document_type]"
                     size="x-small"
                     color="primary"
                     class="ms-2"
                   >
-                    Auth letter
+                    {{ DOCUMENT_TYPE_LABELS[doc.document_type] }}
                   </VChip>
                 </VBtn>
               </div>
