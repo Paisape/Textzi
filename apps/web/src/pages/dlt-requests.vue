@@ -12,11 +12,18 @@ const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
 const stepUp = useStepUpAuth()
 
-type DltDocument = { id: string, filename: string }
+type DltDocument = { id: string, filename: string, document_type: string }
 type DltRequest = {
   id: string
   status: string
   notes: string | null
+  company_name: string | null
+  company_pan: string | null
+  company_gst: string | null
+  authorized_signatory_name: string | null
+  contact_number: string | null
+  contact_email: string | null
+  authorized_person_aadhar_masked: string | null
   total_amount: number
   created_at: string
   documents: DltDocument[]
@@ -90,6 +97,14 @@ async function onDownloadDocument(requestId: string, doc: DltDocument) {
   }
 }
 
+const detailDialog = ref(false)
+const detailRequest = ref<DltRequest | null>(null)
+
+function onViewDetails(request: DltRequest) {
+  detailRequest.value = request
+  detailDialog.value = true
+}
+
 function statusColor(status: string): string {
   if (status === 'completed')
     return 'success'
@@ -154,6 +169,7 @@ onMounted(load)
         <thead>
           <tr>
             <th>Organisation</th>
+            <th>KYC</th>
             <th>Notes</th>
             <th>Documents</th>
             <th>Fee charged</th>
@@ -175,6 +191,15 @@ onMounted(load)
                 {{ request.entity_name }}
               </div>
             </td>
+            <td>
+              <VBtn
+                variant="text"
+                size="small"
+                @click="onViewDetails(request)"
+              >
+                View
+              </VBtn>
+            </td>
             <td style="max-inline-size: 240px;">
               {{ request.notes || '—' }}
             </td>
@@ -190,6 +215,14 @@ onMounted(load)
                   @click="onDownloadDocument(request.id, doc)"
                 >
                   {{ doc.filename }}
+                  <VChip
+                    v-if="doc.document_type === 'authorization_letter'"
+                    size="x-small"
+                    color="primary"
+                    class="ms-2"
+                  >
+                    Auth letter
+                  </VChip>
                 </VBtn>
               </div>
             </td>
@@ -225,7 +258,7 @@ onMounted(load)
           </tr>
           <tr v-if="!requests.length">
             <td
-              colspan="7"
+              colspan="8"
               class="text-center text-medium-emphasis"
             >
               No DLT registration requests yet.
@@ -236,6 +269,69 @@ onMounted(load)
     </VCardText>
     </VCard>
   </template>
+
+  <VDialog
+    v-model="detailDialog"
+    max-width="600"
+  >
+    <VCard v-if="detailRequest">
+      <VCardTitle>KYC Details</VCardTitle>
+      <VCardText>
+        <VTable density="compact">
+          <tbody>
+            <tr>
+              <td class="text-medium-emphasis">
+                Company name
+              </td>
+              <td>{{ detailRequest.company_name || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Company PAN
+              </td>
+              <td>{{ detailRequest.company_pan || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Company GST
+              </td>
+              <td>{{ detailRequest.company_gst || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Authorized signatory
+              </td>
+              <td>{{ detailRequest.authorized_signatory_name || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Contact number
+              </td>
+              <td>{{ detailRequest.contact_number || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Contact email
+              </td>
+              <td>{{ detailRequest.contact_email || '—' }}</td>
+            </tr>
+            <tr>
+              <td class="text-medium-emphasis">
+                Authorized person Aadhar
+              </td>
+              <td>{{ detailRequest.authorized_person_aadhar_masked || '—' }}</td>
+            </tr>
+          </tbody>
+        </VTable>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn @click="detailDialog = false">
+          Close
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
 
   <StepUpDialog
     v-model="stepUp.dialogOpen.value"

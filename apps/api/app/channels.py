@@ -4,13 +4,16 @@ on the customer's behalf, which goes into an admin review queue since real DLT r
 a manual submission to the telecom registry) and channel subscription payment. Mirrors the
 Razorpay dev/real dual-path pattern already used in wallet.py/payments.py."""
 import hmac
+import io
 import os
+import re
 import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import razorpay
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from docx import Document
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -31,8 +34,8 @@ from .schemas import (
     DltOnboardingRequestOut, DltRequestQuoteResponse, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse,
     ReportsSummaryResponse,
 )
-from .security import generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity
+from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
+from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -106,6 +109,65 @@ def _save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
     with open(stored_path, "wb") as f:
         f.write(content)
     return stored_path, content
+
+
+def _dlt_request_out(r: DltOnboardingRequest, docs: list[DltOnboardingRequestDocument]) -> DltOnboardingRequestOut:
+    return DltOnboardingRequestOut(
+        id=r.id, status=r.status, notes=r.notes,
+        company_name=r.company_name, company_pan=r.company_pan, company_gst=r.company_gst,
+        authorized_signatory_name=r.authorized_signatory_name, contact_number=r.contact_number, contact_email=r.contact_email,
+        authorized_person_aadhar_masked=mask_aadhar(decrypt_secret(r.authorized_person_aadhar_encrypted)) if r.authorized_person_aadhar_encrypted else None,
+        total_amount=float(r.total_amount), created_at=r.created_at.isoformat(),
+        documents=[DltDocumentOut(id=d.id, filename=d.filename, document_type=d.document_type) for d in docs],
+    )
+
+
+def _build_authorization_letter_sample() -> bytes:
+    """A fillable template matching Tata's own required declaration-letter wording -- the
+    customer prints it on their company letterhead, fills in the blanks by hand, signs it, and
+    uploads the scanned/photographed result back via the authorization_letter upload field."""
+    doc = Document()
+    note = doc.add_paragraph()
+    note.add_run("[Print this letter on your Company Letterhead]").italic = True
+    doc.add_paragraph()
+    doc.add_paragraph("Date: _______________")
+    doc.add_paragraph()
+    doc.add_paragraph("To,")
+    doc.add_paragraph("Tata Teleservices Ltd.,")
+    doc.add_paragraph()
+    sub = doc.add_paragraph()
+    sub.add_run("Sub: Declaration of the Authorized Person for Telemarketing Activities").bold = True
+    doc.add_paragraph()
+    doc.add_paragraph(
+        "I, _____________________ (Name of the authorized signatory), Director / Partner of "
+        "_____________________ (Company Name) (should be Director as per MCA / assigned by Board "
+        "of Directors in MOA, or legal partner as per valid Partnership deed, etc.) have the "
+        "authority to sign on behalf of our company for Telemarketer/Enterprise related activities "
+        "OR am authorizing _____________________ (Authorized person's name) to sign on behalf of "
+        "the company for related activities.",
+    )
+    doc.add_paragraph()
+    doc.add_paragraph(
+        "We further confirm that the entity is liable for and bound by all acts of commission and "
+        "omission by the authorized representative. All acts committed by the above authorized "
+        "representative shall be treated as if these acts were committed by the entity.",
+    )
+    doc.add_paragraph()
+    doc.add_paragraph("Authorized Person's Name: _____________________")
+    doc.add_paragraph("Contact Number: _____________________")
+    doc.add_paragraph("Email ID: _____________________")
+    doc.add_paragraph("Authorized ID Proof Type: _____________________")
+    doc.add_paragraph("ID Proof Number: _____________________")
+    doc.add_paragraph()
+    doc.add_paragraph("Thanks & Regards,")
+    doc.add_paragraph()
+    doc.add_paragraph("Authorized signatory's / person's name & Employee ID: _____________________")
+    doc.add_paragraph("Signature of Partner/Director/Authorized Person: _____________________")
+    doc.add_paragraph("Name of Signatory: _____________________")
+    doc.add_paragraph("Company Stamp / Seal: _____________________")
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
 
 
 def _razorpay_client() -> razorpay.Client:
@@ -235,16 +297,63 @@ def submit_self_service_dlt(
     return {"pe_id": pe.id, "header_id": header.id, "status": "approved"}
 
 
+PAN_PATTERN = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
+AADHAR_PATTERN = re.compile(r"[0-9]{12}")
+MOBILE_PATTERN = re.compile(r"[6-9][0-9]{9}")
+
+
+@router.get("/dlt/authorization-letter-sample")
+def download_authorization_letter_sample(user: User = Depends(require_user)):
+    return Response(
+        content=_build_authorization_letter_sample(),
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": "attachment; filename=Textzi-Authorization-Letter-Sample.docx"},
+    )
+
+
 @router.post("/dlt/request", response_model=DltOnboardingRequestOut)
 def submit_dlt_request(
+    company_name: str = Form(...),
+    company_pan: str = Form(...),
+    authorized_signatory_name: str = Form(...),
+    contact_number: str = Form(...),
+    contact_email: str = Form(...),
+    authorized_person_aadhar: str = Form(...),
+    company_gst: str | None = Form(default=None),
     notes: str | None = Form(default=None),
     documents: list[UploadFile] = File(...),
+    authorization_letter: UploadFile = File(...),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     """A customer without existing DLT registration asks Textzi to handle it for them. Fees are
     snapshotted now so later admin fee-config changes never retroactively alter a submitted
-    request. This only files the request -- payment happens via a separate endpoint."""
+    request. This only files the request -- payment happens via a separate endpoint. The KYC
+    fields mirror exactly what Tata's own telemarketer-registration process requires (company
+    PAN/GST, authorized signatory, and a signed authorization letter declaring who's allowed to
+    act on the company's behalf) -- collecting them up front avoids a slow back-and-forth once
+    an admin actually starts the real-world registration."""
+    company_pan = company_pan.strip().upper()
+    if not PAN_PATTERN.fullmatch(company_pan):
+        raise HTTPException(status_code=422, detail="Company PAN must be in the format AAAAA9999A.")
+    if company_gst:
+        company_gst = company_gst.strip().upper()
+        # GST characters 3-12 always embed the PAN it was issued against -- a cheap, high-value
+        # sanity check that catches a mismatched/mistyped GST without needing a full checksum
+        # implementation.
+        if len(company_gst) != 15 or company_gst[2:12] != company_pan:
+            raise HTTPException(status_code=422, detail="Company GST must be 15 characters and contain the company PAN.")
+    authorized_person_aadhar = authorized_person_aadhar.strip().replace(" ", "")
+    if not AADHAR_PATTERN.fullmatch(authorized_person_aadhar):
+        raise HTTPException(status_code=422, detail="Aadhar number must be exactly 12 digits.")
+    contact_number = contact_number.strip()
+    if not MOBILE_PATTERN.fullmatch(contact_number):
+        raise HTTPException(status_code=422, detail="Contact number must be a valid 10-digit Indian mobile number.")
+    contact_email = contact_email.strip()
+    if "@" not in contact_email or "." not in contact_email.rsplit("@", 1)[-1]:
+        raise HTTPException(status_code=422, detail="Enter a valid email address.")
+    if not company_name.strip() or not authorized_signatory_name.strip():
+        raise HTTPException(status_code=422, detail="Company name and authorized signatory name are required.")
     try:
         entity = resolve_user_entity(db, user)
         fees = resolve_channel_fees(db, "sms")
@@ -258,6 +367,13 @@ def submit_dlt_request(
         entity_id=entity.id,
         status="pending_payment",
         notes=notes,
+        company_name=company_name.strip(),
+        company_pan=company_pan,
+        company_gst=company_gst,
+        authorized_signatory_name=authorized_signatory_name.strip(),
+        contact_number=contact_number,
+        contact_email=contact_email,
+        authorized_person_aadhar_encrypted=encrypt_secret(authorized_person_aadhar),
         dlt_platform_fee=fees.dlt_platform_fee,
         dlt_service_fee=fees.dlt_service_fee,
         gst_amount=gst_amount,
@@ -267,15 +383,15 @@ def submit_dlt_request(
     doc_rows = []
     for doc in documents:
         stored_path, _ = _save_upload(doc, f"dlt-requests/{request_row.id}")
-        doc_row = DltOnboardingRequestDocument(request_id=request_row.id, filename=doc.filename or "document", stored_path=stored_path)
+        doc_row = DltOnboardingRequestDocument(request_id=request_row.id, filename=doc.filename or "document", stored_path=stored_path, document_type="supporting")
         db.add(doc_row)
         doc_rows.append(doc_row)
+    letter_path, _ = _save_upload(authorization_letter, f"dlt-requests/{request_row.id}")
+    letter_row = DltOnboardingRequestDocument(request_id=request_row.id, filename=authorization_letter.filename or "authorization_letter", stored_path=letter_path, document_type="authorization_letter")
+    db.add(letter_row)
+    doc_rows.append(letter_row)
     db.commit(); db.refresh(request_row)
-    return DltOnboardingRequestOut(
-        id=request_row.id, status=request_row.status, notes=request_row.notes,
-        total_amount=float(request_row.total_amount), created_at=request_row.created_at.isoformat(),
-        documents=[DltDocumentOut(id=d.id, filename=d.filename) for d in doc_rows],
-    )
+    return _dlt_request_out(request_row, doc_rows)
 
 
 def _mark_dlt_request_paid(db: Session, request_row: DltOnboardingRequest, reference: str) -> None:
@@ -304,11 +420,7 @@ def simulate_dlt_request_payment(request_id: str, user: User = Depends(require_u
         raise HTTPException(status_code=409, detail=f"This request has already been {request_row.status}")
     _mark_dlt_request_paid(db, request_row, "self-service-dev-payment")
     docs = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == request_row.id)).all()
-    return DltOnboardingRequestOut(
-        id=request_row.id, status=request_row.status, notes=request_row.notes,
-        total_amount=float(request_row.total_amount), created_at=request_row.created_at.isoformat(),
-        documents=[DltDocumentOut(id=d.id, filename=d.filename) for d in docs],
-    )
+    return _dlt_request_out(request_row, docs)
 
 
 @router.post("/dlt/request/{request_id}/razorpay/order", response_model=RazorpayOrderResponse)
@@ -361,11 +473,7 @@ def verify_dlt_request_payment(request_id: str, payload: RazorpayVerifyRequest, 
     order.status = "paid"
     _mark_dlt_request_paid(db, request_row, payload.razorpay_payment_id)
     docs = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == request_row.id)).all()
-    return DltOnboardingRequestOut(
-        id=request_row.id, status=request_row.status, notes=request_row.notes,
-        total_amount=float(request_row.total_amount), created_at=request_row.created_at.isoformat(),
-        documents=[DltDocumentOut(id=d.id, filename=d.filename) for d in docs],
-    )
+    return _dlt_request_out(request_row, docs)
 
 
 @router.get("/dlt/requests", response_model=list[DltOnboardingRequestOut])
@@ -378,7 +486,7 @@ def list_my_dlt_requests(user: User = Depends(require_user), db: Session = Depen
     out = []
     for r in requests:
         docs = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == r.id)).all()
-        out.append(DltOnboardingRequestOut(id=r.id, status=r.status, notes=r.notes, total_amount=float(r.total_amount), created_at=r.created_at.isoformat(), documents=[DltDocumentOut(id=d.id, filename=d.filename) for d in docs]))
+        out.append(_dlt_request_out(r, docs))
     return out
 
 

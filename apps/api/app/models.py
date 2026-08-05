@@ -485,6 +485,18 @@ class DltOnboardingRequest(Base):
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
     status: Mapped[str] = mapped_column(String(20), default="pending_payment")
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # KYC fields Tata's own telemarketer-registration process requires -- nullable so existing
+    # rows from before this feature don't break, but the submit endpoint requires all of them for
+    # new requests. authorized_person_aadhar is Aadhar (India's national ID number) -- Fernet-
+    # encrypted at rest like TTBS credentials (security.py's encrypt_secret/decrypt_secret), never
+    # returned to any API response in plaintext, only masked (services.mask_aadhar).
+    company_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    company_pan: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    company_gst: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    authorized_signatory_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    contact_number: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    authorized_person_aadhar_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     dlt_platform_fee: Mapped[float] = mapped_column(Numeric(12, 2))
     dlt_service_fee: Mapped[float] = mapped_column(Numeric(12, 2))
     gst_amount: Mapped[float] = mapped_column(Numeric(12, 2))
@@ -500,6 +512,11 @@ class DltOnboardingRequestDocument(Base):
     request_id: Mapped[str] = mapped_column(ForeignKey("dlt_onboarding_requests.id"), index=True)
     filename: Mapped[str] = mapped_column(String(255))
     stored_path: Mapped[str] = mapped_column(String(300))
+    # "supporting" (company registration, ID proof, etc.) or "authorization_letter" -- the signed
+    # Tata declaration letter is functionally distinct (it has its own required upload + a
+    # downloadable fillable sample) and needs to be shown separately in the admin review UI, not
+    # mixed in anonymously with the general supporting-documents pile.
+    document_type: Mapped[str] = mapped_column(String(50), default="supporting")
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

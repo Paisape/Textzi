@@ -32,9 +32,9 @@ from .schemas import (
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse, WalletTopupReportRowOut,
 )
-from .security import decode_access_token, decrypt_recipient_lenient, hash_api_key, hash_password
+from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
-from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -450,8 +450,12 @@ def _dlt_request_admin_out(db: Session, r: DltOnboardingRequest) -> DltOnboardin
     org = db.get(Organization, entity.organization_id) if entity else None
     docs = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == r.id)).all()
     return DltOnboardingRequestAdminOut(
-        id=r.id, status=r.status, notes=r.notes, total_amount=float(r.total_amount), created_at=r.created_at.isoformat(),
-        documents=[DltDocumentOut(id=d.id, filename=d.filename) for d in docs],
+        id=r.id, status=r.status, notes=r.notes,
+        company_name=r.company_name, company_pan=r.company_pan, company_gst=r.company_gst,
+        authorized_signatory_name=r.authorized_signatory_name, contact_number=r.contact_number, contact_email=r.contact_email,
+        authorized_person_aadhar_masked=mask_aadhar(decrypt_secret(r.authorized_person_aadhar_encrypted)) if r.authorized_person_aadhar_encrypted else None,
+        total_amount=float(r.total_amount), created_at=r.created_at.isoformat(),
+        documents=[DltDocumentOut(id=d.id, filename=d.filename, document_type=d.document_type) for d in docs],
         entity_id=r.entity_id, entity_name=entity.name if entity else "(deleted entity)",
         organization_name=org.name if org else "(deleted organization)",
     )

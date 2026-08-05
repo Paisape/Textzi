@@ -695,12 +695,20 @@ class DltRequestQuoteResponse(BaseModel):
 class DltDocumentOut(BaseModel):
     id: str
     filename: str
+    document_type: str
 
 
 class DltOnboardingRequestOut(BaseModel):
     id: str
     status: str
     notes: str | None
+    company_name: str | None
+    company_pan: str | None
+    company_gst: str | None
+    authorized_signatory_name: str | None
+    contact_number: str | None
+    contact_email: str | None
+    authorized_person_aadhar_masked: str | None
     total_amount: float
     created_at: str
     documents: list[DltDocumentOut]

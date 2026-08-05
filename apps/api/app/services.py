@@ -605,6 +605,13 @@ def mask_mobile(mobile: str) -> str:
     return "X" * (len(mobile) - 4) + mobile[-4:]
 
 
+def mask_aadhar(aadhar: str) -> str:
+    """Keeps only the last 4 digits visible, e.g. 123456789012 -> XXXXXXXX9012."""
+    if len(aadhar) <= 4:
+        return "X" * len(aadhar)
+    return "X" * (len(aadhar) - 4) + aadhar[-4:]
+
+
 def mask_email(email: str) -> str:
     """Keeps the first character of the local part and the whole domain visible, e.g.
     jane.doe@example.com -> j*******@example.com."""

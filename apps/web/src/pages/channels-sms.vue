@@ -253,10 +253,19 @@ async function onSubmitSelfService() {
 // DLT: request-help path
 type DltQuote = { combined_fee: number, gst_amount: number, total_amount: number }
 const dltQuote = ref<DltQuote | null>(null)
+const requestCompanyName = ref('')
+const requestCompanyPan = ref('')
+const requestCompanyGst = ref('')
+const requestSignatoryName = ref('')
+const requestContactNumber = ref('')
+const requestContactEmail = ref('')
+const requestAadhar = ref('')
 const requestNotes = ref('')
 const requestDocs = ref<File | File[] | null>(null)
+const requestAuthLetter = ref<File | File[] | null>(null)
 const requestSubmitting = ref(false)
 const requestError = ref('')
+const sampleDownloading = ref(false)
 
 function asFileArray(value: File | File[] | null): File[] {
   if (!value)
@@ -273,23 +282,63 @@ async function loadDltQuote() {
   }
 }
 
+async function onDownloadAuthorizationLetterSample() {
+  sampleDownloading.value = true
+  try {
+    const blob = await $api<Blob, 'blob'>('/v1/channels/sms/dlt/authorization-letter-sample', { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'Textzi-Authorization-Letter-Sample.docx'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    requestError.value = extractErrorMessage(error, 'Could not download the sample format.')
+  }
+  finally {
+    sampleDownloading.value = false
+  }
+}
+
 async function onSubmitRequest() {
   requestError.value = ''
   const files = asFileArray(requestDocs.value)
+  const letter = firstFile(requestAuthLetter.value)
+  if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestSignatoryName.value.trim()
+    || !requestContactNumber.value.trim() || !requestContactEmail.value.trim() || !requestAadhar.value.trim()) {
+    requestError.value = 'Fill in every required field.'
+    return
+  }
   if (!files.length) {
     requestError.value = 'Upload at least one supporting document.'
+    return
+  }
+  if (!letter) {
+    requestError.value = 'Upload the signed authorization letter.'
     return
   }
   requestSubmitting.value = true
   try {
     const form = new FormData()
+    form.set('company_name', requestCompanyName.value.trim())
+    form.set('company_pan', requestCompanyPan.value.trim().toUpperCase())
+    if (requestCompanyGst.value.trim())
+      form.set('company_gst', requestCompanyGst.value.trim().toUpperCase())
+    form.set('authorized_signatory_name', requestSignatoryName.value.trim())
+    form.set('contact_number', requestContactNumber.value.trim())
+    form.set('contact_email', requestContactEmail.value.trim())
+    form.set('authorized_person_aadhar', requestAadhar.value.trim())
     if (requestNotes.value.trim())
       form.set('notes', requestNotes.value.trim())
     for (const file of files)
       form.append('documents', file)
+    form.set('authorization_letter', letter)
     const created = await $api<{ id: string }>('/v1/channels/sms/dlt/request', { method: 'POST', body: form })
     await $api(`/v1/channels/sms/dlt/request/${created.id}/recharge`, { method: 'POST' })
-    requestNotes.value = ''; requestDocs.value = null
+    requestCompanyName.value = ''; requestCompanyPan.value = ''; requestCompanyGst.value = ''
+    requestSignatoryName.value = ''; requestContactNumber.value = ''; requestContactEmail.value = ''; requestAadhar.value = ''
+    requestNotes.value = ''; requestDocs.value = null; requestAuthLetter.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -1194,22 +1243,136 @@ onMounted(async () => {
                         <span>₹{{ dltQuote.total_amount.toLocaleString('en-IN') }}</span>
                       </div>
                     </div>
+                    <VAlert
+                      type="info"
+                      variant="tonal"
+                      density="compact"
+                      class="mb-4"
+                    >
+                      Please note that during this activity you would need OTP, hence the authorized person must be available to share OTP.
+                    </VAlert>
                     <VForm @submit.prevent="onSubmitRequest">
+                      <VRow>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestCompanyName"
+                            label="Name of Company"
+                            placeholder="Enter name"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestCompanyPan"
+                            label="Company PAN"
+                            placeholder="AAAAA9999A"
+                            maxlength="10"
+                            style="text-transform: uppercase;"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestCompanyGst"
+                            label="Company GST (optional)"
+                            placeholder="15-character GSTIN"
+                            maxlength="15"
+                            style="text-transform: uppercase;"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestSignatoryName"
+                            label="Authorized Signatory Name"
+                            placeholder="As per company records"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestContactNumber"
+                            label="Contact Number"
+                            placeholder="10-digit mobile number"
+                            maxlength="10"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestContactEmail"
+                            label="Email"
+                            type="email"
+                            placeholder="name@company.com"
+                          />
+                        </VCol>
+                        <VCol
+                          cols="12"
+                          sm="6"
+                        >
+                          <AppTextField
+                            v-model="requestAadhar"
+                            label="Authorized Person Aadhar"
+                            placeholder="12-digit Aadhar number"
+                            maxlength="12"
+                            hint="Stored encrypted; never shown to anyone in full."
+                            persistent-hint
+                          />
+                        </VCol>
+                      </VRow>
+
                       <AppTextarea
                         v-model="requestNotes"
                         label="Notes (optional)"
                         placeholder="Anything our team should know about your business"
                         rows="2"
-                        class="mb-4"
+                        class="mb-4 mt-4"
                       />
+
                       <VFileInput
                         v-model="requestDocs"
                         label="Supporting documents (company registration, ID proof, etc.)"
                         accept=".pdf,.jpg,.jpeg,.png"
                         multiple
                         prepend-icon="tabler-files"
+                        hint="Please upload colour copies only."
+                        persistent-hint
                         class="mb-4"
                       />
+
+                      <div class="d-flex align-center justify-space-between mb-1">
+                        <span class="text-body-2 font-weight-medium">Authorization letter</span>
+                        <VBtn
+                          variant="text"
+                          size="small"
+                          prepend-icon="tabler-download"
+                          :loading="sampleDownloading"
+                          @click="onDownloadAuthorizationLetterSample"
+                        >
+                          Download sample format
+                        </VBtn>
+                      </div>
+                      <VFileInput
+                        v-model="requestAuthLetter"
+                        label="Signed authorization letter (colour copy)"
+                        accept=".pdf,.jpg,.jpeg,.png"
+                        prepend-icon="tabler-file-signature"
+                        class="mb-4"
+                      />
+
                       <VBtn
                         type="submit"
                         :loading="requestSubmitting"
