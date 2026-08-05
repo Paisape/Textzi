@@ -23,6 +23,56 @@ def _ttbs_recipient(mobile: str) -> str:
     return digits
 
 
+# TTBS's own "HTTP PUSH API" documentation (Table 2-4-2, DR for DLT Error Codes, plus the
+# adjoining SMSC/module-error table) -- codes not listed here (e.g. TTBS's own success code, or
+# anything TTBS adds later) have no built-in description; DeliveryStatusCodeRule.label remains
+# the way an admin can label/refund an unlisted code. This dict is purely for showing a
+# human-readable reason in the admin report -- it never affects delivered/failed status or
+# billing (see _ttbs_reports_failure in webhooks.py for that).
+TTBS_DELIVERY_STATUS_DESCRIPTIONS: dict[int, str] = {
+    74: "Category has been Blocked",
+    75: "Mode is blocked",
+    76: "Mandatory fields are missing",
+    79: "Entity is blacklisted",
+    80: "Entity is not active",
+    81: "RTM is blacklisted",
+    82: "RTM is not active",
+    83: "Header is not active",
+    84: "Header is blacklisted",
+    85: "Header is not owned by Entity",
+    86: "Template ID not registered in DLT system",
+    87: "Content template is not owned by Entity",
+    88: "Input file format is not valid",
+    89: "RTM is unauthorized",
+    90: "Template ID status in DLT is in Inactive or Blocked state",
+    91: "Invalid MSISDN number",
+    92: "Template dynamic variable exceeded max length",
+    93: "Invalid API Key",
+    94: "Invalid Template ID - NULL or Alpha or Length not valid",
+    95: "Header is not mapped with template",
+    96: "Consent Template is not mapped with template",
+    97: "SMS content is not mapped with template",
+    98: "No Available Time to Deliver",
+    99: "Days are Blocked",
+    100: "HTTP Client errors (4xx)",
+    101: "HTTP Server Errors (5xx)",
+    600: "Native Error from SMSC",
+    601: "Internal Module Timeout",
+    602: "Submit Failed - EXPIRED",
+    603: "Message Expired",
+    604: "Message Timedout",
+    605: "UDH missing fragment",
+    702: "Submit Failed - SUBMIT_FAILED",
+    703: "Message Expired",
+    704: "Message Expired",
+    705: "UDH missing fragment",
+}
+
+
+def ttbs_delivery_status_description(code: int | None) -> str | None:
+    return TTBS_DELIVERY_STATUS_DESCRIPTIONS.get(code) if code is not None else None
+
+
 def _extract_ttbs_message_id(body: str) -> str | None:
     """TTBS's campaignService/campaigns/qs endpoint was originally a plain short ID in the
     response body -- confirmed live it now returns a JSON object instead (e.g. {"campaignId":

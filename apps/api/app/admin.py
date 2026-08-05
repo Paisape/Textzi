@@ -33,6 +33,7 @@ from .schemas import (
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse, WalletTopupReportRowOut,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, hash_api_key, hash_password
+from .providers import ttbs_delivery_status_description
 from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
@@ -1467,6 +1468,7 @@ def list_admin_messages(entity_id: str | None = None, status_filter: str | None 
             route=m.route,
             credits_charged=m.credits_charged,
             delivery_status_code=attempt.delivery_status_code if attempt else None,
+            delivery_status_description=ttbs_delivery_status_description(attempt.delivery_status_code) if attempt else None,
             delivery_error=attempt.error if attempt else None,
             created_at=m.created_at.isoformat(),
         ))
@@ -1623,7 +1625,8 @@ def get_message_telemetry(message_id: str, db: Session = Depends(get_db)):
         attempts=[
             DeliveryAttemptTelemetryOut(
                 id=a.id, route=a.route, status=a.status, provider_message_id=a.provider_message_id, error=a.error,
-                delivery_status_code=a.delivery_status_code, delivered_at=a.delivered_at.isoformat() if a.delivered_at else None,
+                delivery_status_code=a.delivery_status_code, delivery_status_description=ttbs_delivery_status_description(a.delivery_status_code),
+                delivered_at=a.delivered_at.isoformat() if a.delivered_at else None,
                 request_payload=a.request_payload, response_body=a.response_body, webhook_payload=a.webhook_payload,
                 created_at=a.created_at.isoformat(),
             )
@@ -1645,6 +1648,7 @@ def get_platform_message_telemetry(message_id: str, db: Session = Depends(get_db
         rendered_body=redact_otp(message.rendered_body), status=message.status, route=message.route,
         request_payload=message.request_payload, response_body=message.response_body,
         delivery_status_code=message.delivery_status_code,
+        delivery_status_description=ttbs_delivery_status_description(message.delivery_status_code),
         delivered_at=message.delivered_at.isoformat() if message.delivered_at else None,
         webhook_payload=message.webhook_payload,
         created_at=message.created_at.isoformat(),
