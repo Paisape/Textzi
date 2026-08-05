@@ -288,12 +288,16 @@ def submit_self_service_dlt(
     header_id: str = Form(...),
     header_value: str = Form(...),
     certificate: UploadFile = File(...),
+    pe_tm_mapping: UploadFile = File(...),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     """A customer who already has their own DLT registration self-declares it here, uploads
     the PE certificate as proof, and it's approved immediately -- no admin review, matching how
-    admin-created DLT assets already go active on creation without an approval step."""
+    admin-created DLT assets already go active on creation without an approval step. Also
+    requires proof of the PE-TM chain mapping request (see PeId.pe_tm_mapping_path) -- since
+    Textzi never touches their DLT registration in this flow, linking it to Textzi's own
+    Telemarketer ID is something only the customer can do, from their own operator login."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
@@ -301,7 +305,8 @@ def submit_self_service_dlt(
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == pe_value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
     stored_path, _ = _save_upload(certificate, f"pe-certificates/{entity.id}")
-    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, status=Status.active)
+    mapping_path, _ = _save_upload(pe_tm_mapping, f"pe-certificates/{entity.id}")
+    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_path=mapping_path, status=Status.active)
     db.add(pe); db.flush()
     header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.active)
     db.add(header)
@@ -339,7 +344,6 @@ def submit_dlt_request(
     incorporation_certificate: UploadFile = File(...),
     address_proof: UploadFile = File(...),
     director_list: UploadFile = File(...),
-    pe_tm_mapping: UploadFile = File(...),
     authorization_letter: UploadFile = File(...),
     other_documents: list[UploadFile] | None = File(default=None),
     user: User = Depends(require_user),
@@ -410,7 +414,6 @@ def submit_dlt_request(
         _save_typed(incorporation_certificate, "incorporation_certificate", "incorporation-certificate.pdf"),
         _save_typed(address_proof, "address_proof", "address-proof.pdf"),
         _save_typed(director_list, "director_list", "director-list.pdf"),
-        _save_typed(pe_tm_mapping, "pe_tm_mapping", "pe-tm-mapping.pdf"),
         _save_typed(authorization_letter, "authorization_letter", "authorization-letter.pdf"),
     ]
     for doc in (other_documents or []):

@@ -203,6 +203,12 @@ class PeId(Base):
     value: Mapped[str] = mapped_column(String(64))
     operator: Mapped[str] = mapped_column(String(80))
     certificate_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Proof the customer submitted a PE-TM chain mapping request from their own DLT operator
+    # login, selecting Textzi as their Telemarketer -- only meaningful for self-service (a
+    # customer bringing their own already-registered PE has to link it to Textzi themselves);
+    # the full-service DltOnboardingRequest flow doesn't need this since Textzi's own team
+    # handles the mapping directly as part of doing the whole registration.
+    pe_tm_mapping_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.pending)
     __table_args__ = (UniqueConstraint("entity_id", "value", name="uq_entity_pe"),)
 

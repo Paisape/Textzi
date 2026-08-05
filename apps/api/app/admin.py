@@ -541,7 +541,6 @@ def _render_dlt_kyc_pdf(r: DltOnboardingRequest, entity: Entity | None, org: Org
     doc_type_labels = {
         "authorization_letter": "Authorization Letter", "pan": "PAN Card", "gst": "GST Certificate", "aadhar": "Aadhar Card",
         "incorporation_certificate": "Incorporation Certificate", "address_proof": "Address Proof", "director_list": "Director List (MCA)",
-        "pe_tm_mapping": "PE-TM Chain Mapping",
     }
     for doc in documents:
         label = doc_type_labels.get(doc.document_type, "Supporting Document")
@@ -571,7 +570,6 @@ def download_dlt_request_zip(request_id: str, db: Session = Depends(get_db)):
         zip_prefixes = {
             "authorization_letter": "Authorization-Letter", "pan": "PAN-Card", "gst": "GST-Certificate", "aadhar": "Aadhar-Card",
             "incorporation_certificate": "Incorporation-Certificate", "address_proof": "Address-Proof", "director_list": "Director-List",
-            "pe_tm_mapping": "PE-TM-Chain-Mapping",
         }
         used_names: set[str] = set()
         for i, doc in enumerate(documents, start=1):

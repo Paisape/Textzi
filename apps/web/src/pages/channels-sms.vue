@@ -214,6 +214,7 @@ const ssOperator = ref('')
 const ssHeaderId = ref('')
 const ssHeaderValue = ref('')
 const ssCertificate = ref<File | File[] | null>(null)
+const ssPeTmMapping = ref<File | File[] | null>(null)
 const ssSubmitting = ref(false)
 const ssError = ref('')
 
@@ -226,8 +227,13 @@ function firstFile(value: File | File[] | null): File | null {
 async function onSubmitSelfService() {
   ssError.value = ''
   const certificate = firstFile(ssCertificate.value)
+  const peTmMapping = firstFile(ssPeTmMapping.value)
   if (!ssValue.value.trim() || !ssOperator.value.trim() || !ssHeaderId.value.trim() || !ssHeaderValue.value.trim() || !certificate) {
     ssError.value = 'Fill in every field and upload your PE certificate.'
+    return
+  }
+  if (!peTmMapping) {
+    ssError.value = 'Upload the PE-TM chain mapping confirmation.'
     return
   }
   ssSubmitting.value = true
@@ -238,8 +244,9 @@ async function onSubmitSelfService() {
     form.set('header_id', ssHeaderId.value.trim())
     form.set('header_value', ssHeaderValue.value.trim())
     form.set('certificate', certificate)
+    form.set('pe_tm_mapping', peTmMapping)
     await $api('/v1/channels/sms/dlt/self-service', { method: 'POST', body: form })
-    ssValue.value = ''; ssOperator.value = ''; ssHeaderId.value = ''; ssHeaderValue.value = ''; ssCertificate.value = null
+    ssValue.value = ''; ssOperator.value = ''; ssHeaderId.value = ''; ssHeaderValue.value = ''; ssCertificate.value = null; ssPeTmMapping.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -267,7 +274,6 @@ const requestAadharDoc = ref<File | File[] | null>(null)
 const requestIncorporationCert = ref<File | File[] | null>(null)
 const requestAddressProof = ref<File | File[] | null>(null)
 const requestDirectorList = ref<File | File[] | null>(null)
-const requestPeTmMapping = ref<File | File[] | null>(null)
 const requestOtherDocs = ref<File | File[] | null>(null)
 const requestAuthLetter = ref<File | File[] | null>(null)
 const requestSubmitting = ref(false)
@@ -331,7 +337,6 @@ async function onSubmitRequest() {
   const incorporationCert = firstFile(requestIncorporationCert.value)
   const addressProof = firstFile(requestAddressProof.value)
   const directorList = firstFile(requestDirectorList.value)
-  const peTmMapping = firstFile(requestPeTmMapping.value)
   const otherFiles = asFileArray(requestOtherDocs.value)
   const letter = firstFile(requestAuthLetter.value)
   if (!requestCompanyName.value.trim() || !requestCompanyPan.value.trim() || !requestCompanyGst.value.trim() || !requestSignatoryName.value.trim()
@@ -346,7 +351,6 @@ async function onSubmitRequest() {
     [incorporationCert, 'the company incorporation certificate'],
     [addressProof, 'the address proof in the company name'],
     [directorList, 'the director list (as per MCA)'],
-    [peTmMapping, 'the PE-TM chain mapping confirmation'],
     [letter, 'the signed authorization letter'],
   ]
   const missing = requiredDocs.find(([file]) => !file)
@@ -372,7 +376,6 @@ async function onSubmitRequest() {
     form.set('incorporation_certificate', incorporationCert as File)
     form.set('address_proof', addressProof as File)
     form.set('director_list', directorList as File)
-    form.set('pe_tm_mapping', peTmMapping as File)
     form.set('authorization_letter', letter as File)
     for (const file of otherFiles)
       form.append('other_documents', file)
@@ -383,7 +386,7 @@ async function onSubmitRequest() {
     requestNotes.value = ''
     requestPanDoc.value = null; requestGstDoc.value = null; requestAadharDoc.value = null
     requestIncorporationCert.value = null; requestAddressProof.value = null; requestDirectorList.value = null
-    requestPeTmMapping.value = null; requestOtherDocs.value = null; requestAuthLetter.value = null
+    requestOtherDocs.value = null; requestAuthLetter.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -710,10 +713,10 @@ async function onSubmitOtp() {
   }
 }
 
-watch(dltMode, mode => {
-  if (mode === 'request' && !dltQuote.value)
+watch(dltMode, () => {
+  if (!dltQuote.value)
     loadDltQuote()
-})
+}, { immediate: true })
 
 // ---- API Docs tab ----
 const apiBaseUrl = ref('https://api.textzi.in')
@@ -1198,6 +1201,47 @@ onMounted(async () => {
                     >
                       {{ ssError }}
                     </VAlert>
+
+                    <VAlert
+                      type="warning"
+                      variant="tonal"
+                      density="compact"
+                      class="mb-4"
+                    >
+                      <div class="mb-2">
+                        Since you're bringing your own DLT registration, please send a <strong>PE-TM chain mapping</strong> request from your own DLT operator login (Airtel/Jio/Vi), selecting the following as your Telemarketer:
+                      </div>
+                      <div
+                        v-if="dltQuote"
+                        class="d-flex flex-wrap align-center gap-4"
+                      >
+                        <div>
+                          <div class="text-caption text-medium-emphasis">
+                            Telemarketer Name
+                          </div>
+                          <div class="font-weight-medium">
+                            {{ dltQuote.telemarketer_name }}
+                          </div>
+                        </div>
+                        <div>
+                          <div class="text-caption text-medium-emphasis">
+                            Telemarketer ID
+                          </div>
+                          <div class="d-flex align-center gap-1">
+                            <span class="font-weight-medium">{{ dltQuote.telemarketer_id }}</span>
+                            <VBtn
+                              icon
+                              variant="text"
+                              size="x-small"
+                              @click="onCopyTelemarketerId"
+                            >
+                              <VIcon :icon="tmIdCopied ? 'tabler-check' : 'tabler-copy'" />
+                            </VBtn>
+                          </div>
+                        </div>
+                      </div>
+                    </VAlert>
+
                     <VForm @submit.prevent="onSubmitSelfService">
                       <VRow>
                         <VCol
@@ -1249,6 +1293,14 @@ onMounted(async () => {
                           />
                         </VCol>
                         <VCol cols="12">
+                          <VFileInput
+                            v-model="ssPeTmMapping"
+                            label="PE-TM chain mapping confirmation"
+                            accept=".pdf,.jpg,.jpeg,.png"
+                            prepend-icon="tabler-link"
+                          />
+                        </VCol>
+                        <VCol cols="12">
                           <VBtn
                             type="submit"
                             :loading="ssSubmitting"
@@ -1295,46 +1347,6 @@ onMounted(async () => {
                       class="mb-4"
                     >
                       Please note that during this activity you would need OTP, hence the authorized person must be available to share OTP.
-                    </VAlert>
-
-                    <VAlert
-                      type="warning"
-                      variant="tonal"
-                      density="compact"
-                      class="mb-4"
-                    >
-                      <div class="mb-2">
-                        Please send a <strong>PE-TM chain mapping</strong> request from your own DLT operator login (Airtel/Jio/Vi), selecting the following as your Telemarketer:
-                      </div>
-                      <div
-                        v-if="dltQuote"
-                        class="d-flex flex-wrap align-center gap-4"
-                      >
-                        <div>
-                          <div class="text-caption text-medium-emphasis">
-                            Telemarketer Name
-                          </div>
-                          <div class="font-weight-medium">
-                            {{ dltQuote.telemarketer_name }}
-                          </div>
-                        </div>
-                        <div>
-                          <div class="text-caption text-medium-emphasis">
-                            Telemarketer ID
-                          </div>
-                          <div class="d-flex align-center gap-1">
-                            <span class="font-weight-medium">{{ dltQuote.telemarketer_id }}</span>
-                            <VBtn
-                              icon
-                              variant="text"
-                              size="x-small"
-                              @click="onCopyTelemarketerId"
-                            >
-                              <VIcon :icon="tmIdCopied ? 'tabler-check' : 'tabler-copy'" />
-                            </VBtn>
-                          </div>
-                        </div>
-                      </div>
                     </VAlert>
 
                     <VForm @submit.prevent="onSubmitRequest">
@@ -1496,17 +1508,6 @@ onMounted(async () => {
                             label="Director list (as per MCA)"
                             accept=".pdf,.jpg,.jpeg,.png"
                             prepend-icon="tabler-users"
-                          />
-                        </VCol>
-                        <VCol
-                          cols="12"
-                          sm="6"
-                        >
-                          <VFileInput
-                            v-model="requestPeTmMapping"
-                            label="PE-TM chain mapping confirmation"
-                            accept=".pdf,.jpg,.jpeg,.png"
-                            prepend-icon="tabler-link"
                           />
                         </VCol>
                         <VCol
