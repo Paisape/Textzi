@@ -1768,6 +1768,9 @@ def get_message_telemetry(message_id: str, db: Session = Depends(get_db)):
                 delivery_status_text=(a.webhook_payload or {}).get("DeliveryStatus") if a.webhook_payload else None,
                 delivered_at=a.delivered_at.isoformat() if a.delivered_at else None,
                 request_payload=a.request_payload, response_body=a.response_body, webhook_payload=a.webhook_payload,
+                customer_webhook_url=a.customer_webhook_url, customer_webhook_payload=a.customer_webhook_payload,
+                customer_webhook_status=a.customer_webhook_status, customer_webhook_error=a.customer_webhook_error,
+                customer_webhook_sent_at=a.customer_webhook_sent_at.isoformat() if a.customer_webhook_sent_at else None,
                 created_at=a.created_at.isoformat(),
             )
             for a in attempts

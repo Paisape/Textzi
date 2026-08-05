@@ -646,6 +646,17 @@ class DeliveryAttempt(Base):
     request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_body: Mapped[str | None] = mapped_column(Text, nullable=True)
     webhook_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # The OTHER direction: webhook_payload above is what TTBS sent US; these track what WE then
+    # relayed on to the customer's own ChannelSettings.dr_webhook_url (webhooks.py's
+    # _relay_to_customer) -- previously fire-and-forget with zero record of whether it was even
+    # attempted, let alone whether it succeeded, confirmed live: a customer could report "we never
+    # got your delivery report" and there was no way to check what Textzi actually sent or why it
+    # failed. customer_webhook_status is one of "not_configured" | "success" | "failed".
+    customer_webhook_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    customer_webhook_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    customer_webhook_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    customer_webhook_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    customer_webhook_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

@@ -39,20 +39,23 @@ def _resolve_ttbs_route_by_token(db: Session, token: str) -> ProviderRoute | Non
     return None
 
 
-def _relay_to_customer(webhook_url: str, payload: dict) -> None:
+def _relay_to_customer(webhook_url: str, payload: dict) -> tuple[str, str | None]:
     """Best-effort forward to the customer's own DR webhook -- a slow or broken customer
     endpoint must never affect Textzi's own delivery-report processing, so failures here are
-    swallowed rather than raised. assert_safe_webhook_url is re-checked here, not just once when
-    the customer saved the URL -- a hostname can resolve safely at save time and to a private/
-    internal address at request time (DNS rebinding), so every actual outbound call re-validates
-    against whatever the hostname resolves to right now."""
+    swallowed rather than raised, not propagated. assert_safe_webhook_url is re-checked here, not
+    just once when the customer saved the URL -- a hostname can resolve safely at save time and
+    to a private/internal address at request time (DNS rebinding), so every actual outbound call
+    re-validates against whatever the hostname resolves to right now. Returns (status, error) so
+    the caller can persist what actually happened onto the DeliveryAttempt row, instead of this
+    being invisible everywhere the way it was before."""
     try:
         assert_safe_webhook_url(webhook_url)
         request = Request(webhook_url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
         with urlopen(request, timeout=5):
             pass
-    except (OSError, ValueError):
-        pass
+        return "success", None
+    except (OSError, ValueError) as exc:
+        return "failed", str(exc)[:300]
 
 
 @router.post("/ttbs/dr")
@@ -137,12 +140,21 @@ def ttbs_delivery_report(payload: TtbsDrWebhookPayload, token: str, db: Session 
 
     channel_settings = db.get(ChannelSettings, (attempt.entity_id, "sms"))
     if channel_settings and channel_settings.dr_webhook_url:
-        _relay_to_customer(channel_settings.dr_webhook_url, {
+        relay_payload = {
             "message_id": attempt.message_id,
             "recipient": payload.Recipient,
             "status": attempt.status,
             "delivery_status_code": payload.DeliveryStatusCode,
             "delivered_at": attempt.delivered_at.isoformat(),
-        })
+        }
+        status, error = _relay_to_customer(channel_settings.dr_webhook_url, relay_payload)
+        attempt.customer_webhook_url = channel_settings.dr_webhook_url
+        attempt.customer_webhook_payload = relay_payload
+        attempt.customer_webhook_status = status
+        attempt.customer_webhook_error = error
+        attempt.customer_webhook_sent_at = datetime.now(timezone.utc)
+    else:
+        attempt.customer_webhook_status = "not_configured"
+    db.commit()
 
     return {"status": "processed"}

@@ -88,6 +88,11 @@ type DeliveryAttemptTelemetry = {
   request_payload: Record<string, any> | null
   response_body: string | null
   webhook_payload: Record<string, any> | null
+  customer_webhook_url: string | null
+  customer_webhook_payload: Record<string, any> | null
+  customer_webhook_status: string | null
+  customer_webhook_error: string | null
+  customer_webhook_sent_at: string | null
   created_at: string
 }
 
@@ -406,6 +411,45 @@ onMounted(() => load())
               class="text-caption text-medium-emphasis"
             >
               TTBS's own DeliveryStatus: <strong>{{ attempt.delivery_status_text }}</strong>
+            </p>
+
+            <div class="text-caption text-medium-emphasis mt-3 mb-1 d-flex align-center gap-2">
+              6. Relayed to customer's webhook
+              <VChip
+                v-if="attempt.customer_webhook_status"
+                size="x-small"
+                :color="attempt.customer_webhook_status === 'success' ? 'success' : attempt.customer_webhook_status === 'failed' ? 'error' : 'default'"
+                class="text-capitalize"
+              >
+                {{ attempt.customer_webhook_status.replaceAll('_', ' ') }}
+              </VChip>
+            </div>
+            <p
+              v-if="attempt.customer_webhook_status === 'not_configured'"
+              class="text-body-2 text-medium-emphasis"
+            >
+              This customer hasn't configured a DR webhook URL — nothing was sent.
+            </p>
+            <template v-else-if="attempt.customer_webhook_url">
+              <p class="text-caption text-medium-emphasis mb-1">
+                Sent to {{ attempt.customer_webhook_url }}<span v-if="attempt.customer_webhook_sent_at"> · {{ new Date(attempt.customer_webhook_sent_at).toLocaleString('en-IN') }}</span>
+              </p>
+              <p
+                v-if="attempt.customer_webhook_error"
+                class="text-caption text-error mb-1"
+              >
+                {{ attempt.customer_webhook_error }}
+              </p>
+              <pre
+                v-if="attempt.customer_webhook_payload"
+                class="telemetry-block"
+              >{{ formatJson(attempt.customer_webhook_payload) }}</pre>
+            </template>
+            <p
+              v-else
+              class="text-body-2 text-medium-emphasis"
+            >
+              Not sent yet — waiting on a delivery report from TTBS.
             </p>
           </template>
 

@@ -844,6 +844,11 @@ class DeliveryAttemptTelemetryOut(BaseModel):
     request_payload: dict[str, Any] | None
     response_body: str | None
     webhook_payload: dict[str, Any] | None
+    customer_webhook_url: str | None
+    customer_webhook_payload: dict[str, Any] | None
+    customer_webhook_status: str | None
+    customer_webhook_error: str | None
+    customer_webhook_sent_at: str | None
     created_at: str
 
 
