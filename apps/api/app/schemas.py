@@ -803,6 +803,7 @@ class AdminMessageOut(BaseModel):
     credits_charged: int
     delivery_status_code: int | None
     delivery_status_description: str | None
+    delivery_status_text: str | None
     delivery_error: str | None
     created_at: str
 
@@ -816,6 +817,9 @@ class AdminPlatformMessageOut(BaseModel):
     rendered_body: str
     status: str
     route: str | None
+    delivery_status_code: int | None
+    delivery_status_description: str | None
+    delivery_status_text: str | None
     created_at: str
 
 
@@ -827,6 +831,7 @@ class DeliveryAttemptTelemetryOut(BaseModel):
     error: str | None
     delivery_status_code: int | None
     delivery_status_description: str | None
+    delivery_status_text: str | None
     delivered_at: str | None
     request_payload: dict[str, Any] | None
     response_body: str | None
@@ -856,6 +861,7 @@ class PlatformMessageTelemetryOut(BaseModel):
     response_body: str | None
     delivery_status_code: int | None
     delivery_status_description: str | None
+    delivery_status_text: str | None
     delivered_at: str | None
     webhook_payload: dict[str, Any] | None
     created_at: str

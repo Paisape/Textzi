@@ -25,6 +25,7 @@ type MessageRow = {
   credits_charged: number
   delivery_status_code: number | null
   delivery_status_description: string | null
+  delivery_status_text: string | null
   delivery_error: string | null
   created_at: string
 }
@@ -36,6 +37,9 @@ type PlatformMessageRow = {
   rendered_body: string
   status: string
   route: string | null
+  delivery_status_code: number | null
+  delivery_status_description: string | null
+  delivery_status_text: string | null
   created_at: string
 }
 
@@ -47,6 +51,7 @@ type DeliveryAttemptTelemetry = {
   error: string | null
   delivery_status_code: number | null
   delivery_status_description: string | null
+  delivery_status_text: string | null
   delivered_at: string | null
   request_payload: Record<string, any> | null
   response_body: string | null
@@ -76,6 +81,7 @@ type PlatformMessageTelemetry = {
   response_body: string | null
   delivery_status_code: number | null
   delivery_status_description: string | null
+  delivery_status_text: string | null
   delivered_at: string | null
   webhook_payload: Record<string, any> | null
   created_at: string
@@ -302,6 +308,9 @@ onMounted(loadMessages)
                   <VChip size="small" :color="STATUS_COLORS[row.status] || 'default'" class="text-capitalize">
                     {{ row.status.replaceAll('_', ' ') }}
                   </VChip>
+                  <div v-if="row.delivery_status_text" class="text-caption text-medium-emphasis mt-1">
+                    TTBS: {{ row.delivery_status_text }}
+                  </div>
                 </td>
                 <td>{{ row.route ?? '—' }}</td>
                 <td>{{ row.credits_charged }}</td>
@@ -384,6 +393,9 @@ onMounted(loadMessages)
                   <VChip size="small" :color="STATUS_COLORS[row.status] || 'default'" class="text-capitalize">
                     {{ row.status.replaceAll('_', ' ') }}
                   </VChip>
+                  <div v-if="row.delivery_status_text" class="text-caption text-medium-emphasis mt-1">
+                    TTBS: {{ row.delivery_status_text }}{{ row.delivery_status_code !== null ? ` (${row.delivery_status_code}${row.delivery_status_description ? ' — ' + row.delivery_status_description : ''})` : '' }}
+                  </div>
                 </td>
                 <td>{{ row.route ?? '—' }}</td>
                 <td>{{ new Date(row.created_at).toLocaleString('en-IN') }}</td>
@@ -476,6 +488,9 @@ onMounted(loadMessages)
               DeliveryStatusCode: {{ attempt.delivery_status_code }}<span v-if="attempt.delivery_status_description"> — {{ attempt.delivery_status_description }}</span>
               <span v-if="attempt.delivered_at">· {{ new Date(attempt.delivered_at).toLocaleString('en-IN') }}</span>
             </p>
+            <p v-if="attempt.delivery_status_text" class="text-caption text-medium-emphasis">
+              TTBS's own DeliveryStatus: <strong>{{ attempt.delivery_status_text }}</strong>
+            </p>
           </template>
 
           <p v-if="!telemetry.attempts.length" class="text-body-2 text-medium-emphasis mt-4">
@@ -511,6 +526,9 @@ onMounted(loadMessages)
           <p v-if="platformTelemetry.delivery_status_code !== null" class="text-caption text-medium-emphasis mt-1">
             DeliveryStatusCode: {{ platformTelemetry.delivery_status_code }}<span v-if="platformTelemetry.delivery_status_description"> — {{ platformTelemetry.delivery_status_description }}</span>
             <span v-if="platformTelemetry.delivered_at">· {{ new Date(platformTelemetry.delivered_at).toLocaleString('en-IN') }}</span>
+          </p>
+          <p v-if="platformTelemetry.delivery_status_text" class="text-caption text-medium-emphasis">
+            TTBS's own DeliveryStatus: <strong>{{ platformTelemetry.delivery_status_text }}</strong>
           </p>
         </template>
       </VCardText>

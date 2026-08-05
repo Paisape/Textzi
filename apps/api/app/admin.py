@@ -1469,6 +1469,7 @@ def list_admin_messages(entity_id: str | None = None, status_filter: str | None 
             credits_charged=m.credits_charged,
             delivery_status_code=attempt.delivery_status_code if attempt else None,
             delivery_status_description=ttbs_delivery_status_description(attempt.delivery_status_code) if attempt else None,
+            delivery_status_text=(attempt.webhook_payload or {}).get("DeliveryStatus") if attempt and attempt.webhook_payload else None,
             delivery_error=attempt.error if attempt else None,
             created_at=m.created_at.isoformat(),
         ))
@@ -1486,6 +1487,9 @@ def list_admin_platform_messages(limit: int = MESSAGE_LOG_LIMIT, offset: int = 0
         AdminPlatformMessageOut(
             id=m.id, purpose=m.purpose, recipient=mask_mobile(m.recipient),
             rendered_body=redact_otp(m.rendered_body), status=m.status, route=m.route,
+            delivery_status_code=m.delivery_status_code,
+            delivery_status_description=ttbs_delivery_status_description(m.delivery_status_code),
+            delivery_status_text=(m.webhook_payload or {}).get("DeliveryStatus") if m.webhook_payload else None,
             created_at=m.created_at.isoformat(),
         )
         for m in messages
@@ -1626,6 +1630,7 @@ def get_message_telemetry(message_id: str, db: Session = Depends(get_db)):
             DeliveryAttemptTelemetryOut(
                 id=a.id, route=a.route, status=a.status, provider_message_id=a.provider_message_id, error=a.error,
                 delivery_status_code=a.delivery_status_code, delivery_status_description=ttbs_delivery_status_description(a.delivery_status_code),
+                delivery_status_text=(a.webhook_payload or {}).get("DeliveryStatus") if a.webhook_payload else None,
                 delivered_at=a.delivered_at.isoformat() if a.delivered_at else None,
                 request_payload=a.request_payload, response_body=a.response_body, webhook_payload=a.webhook_payload,
                 created_at=a.created_at.isoformat(),
@@ -1649,6 +1654,7 @@ def get_platform_message_telemetry(message_id: str, db: Session = Depends(get_db
         request_payload=message.request_payload, response_body=message.response_body,
         delivery_status_code=message.delivery_status_code,
         delivery_status_description=ttbs_delivery_status_description(message.delivery_status_code),
+        delivery_status_text=(message.webhook_payload or {}).get("DeliveryStatus") if message.webhook_payload else None,
         delivered_at=message.delivered_at.isoformat() if message.delivered_at else None,
         webhook_payload=message.webhook_payload,
         created_at=message.created_at.isoformat(),
