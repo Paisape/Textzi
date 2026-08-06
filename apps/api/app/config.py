@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     redis_url: str = "redis://localhost:6379/0"
     sms_rate_limit_max_requests: int = 120
     sms_rate_limit_window_seconds: int = 60
+    # Cold-tier archive storage (archiving.py) -- optional, same fail-open convention as
+    # razorpay_key_id/razorpay_key_secret above: while unset, the R2 promotion step of the
+    # archive job just skips itself (logs and returns) rather than erroring, so local dev and any
+    # deployment that hasn't configured this yet keeps working unaffected.
+    r2_account_id: str | None = None
+    r2_access_key_id: str | None = None
+    r2_secret_access_key: str | None = None
+    r2_bucket_name: str | None = None
+    archive_local_after_days: int = 7
+    archive_r2_after_days: int = 30
 
 
 settings = Settings()

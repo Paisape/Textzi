@@ -580,8 +580,31 @@ class Message(Base):
     # the request/response chain, DeliveryAttempt is the provider-facing half.
     request_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     response_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    # Set by archiving.py once this row (plus its DeliveryAttempts/ApiLog) has been written to the
+    # local gzip archive and its heavy fields nulled out here -- the idempotency marker for
+    # re-running the archive job (skip anything already archived). The row itself and its
+    # lightweight reporting fields are never deleted, so reports.py's export endpoint always reads
+    # straight from this table regardless of how old the range is.
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (UniqueConstraint("entity_id", "idempotency_key", name="uq_message_idempotency"),)
+
+
+class ArchiveManifest(Base):
+    """One row per archive file this app has ever written -- both the local gzip+JSONL tier and
+    the Parquet-on-R2 tier. The source of truth for "has this month already been archived/
+    promoted" (idempotency for archiving.py's daily job), and for archiving.read_archived_rows()
+    to know which tier holds a given month's full raw telemetry, without probing the
+    filesystem/R2 on every lookup."""
+    __tablename__ = "archive_manifest"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    tier: Mapped[str] = mapped_column(String(10))  # "local" | "r2"
+    period: Mapped[str] = mapped_column(String(7))  # "YYYY-MM", the month this file covers
+    path: Mapped[str] = mapped_column(String(500))  # local filesystem path, or R2 object key
+    record_count: Mapped[int] = mapped_column(Integer, default=0)
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (UniqueConstraint("tier", "period", name="uq_archive_tier_period"),)
 
 
 class AccountActivity(Base):

@@ -92,6 +92,42 @@ async function onLoadMoreMessages() {
   await loadMessages(false)
 }
 
+function isoDate(date: Date) {
+  return date.toISOString().slice(0, 10)
+}
+
+const reportDateFrom = ref(isoDate(new Date(Date.now() - 29 * 24 * 60 * 60 * 1000)))
+const reportDateTo = ref(isoDate(new Date()))
+const downloadingReport = ref(false)
+const reportError = ref('')
+
+async function onDownloadReport() {
+  reportError.value = ''
+  if (!reportDateFrom.value || !reportDateTo.value) {
+    reportError.value = 'Select both a from and to date.'
+    return
+  }
+  downloadingReport.value = true
+  try {
+    const blob = await $api<Blob, 'blob'>('/v1/reports/messages/export', {
+      query: { date_from: reportDateFrom.value, date_to: reportDateTo.value },
+      responseType: 'blob',
+    })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `Textzi-Messages-${reportDateFrom.value}-to-${reportDateTo.value}.xlsx`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    reportError.value = extractErrorMessage(error, 'Could not download this report.')
+  }
+  finally {
+    downloadingReport.value = false
+  }
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -356,9 +392,46 @@ onMounted(load)
             <VCol cols="12" md="6">
               <VCard>
                 <VCardText>
-                  <h6 class="text-h6 mb-4">
-                    Recent messages
-                  </h6>
+                  <div class="d-flex flex-wrap align-center justify-space-between gap-4 mb-4">
+                    <h6 class="text-h6">
+                      Recent messages
+                    </h6>
+                    <div class="d-flex flex-wrap align-center gap-2">
+                      <VTextField
+                        v-model="reportDateFrom"
+                        type="date"
+                        label="From"
+                        density="compact"
+                        style="max-width: 150px;"
+                        hide-details
+                      />
+                      <VTextField
+                        v-model="reportDateTo"
+                        type="date"
+                        label="To"
+                        density="compact"
+                        style="max-width: 150px;"
+                        hide-details
+                      />
+                      <VBtn
+                        size="small"
+                        prepend-icon="tabler-download"
+                        :loading="downloadingReport"
+                        @click="onDownloadReport"
+                      >
+                        Download report
+                      </VBtn>
+                    </div>
+                  </div>
+                  <VAlert
+                    v-if="reportError"
+                    type="error"
+                    variant="tonal"
+                    density="compact"
+                    class="mb-4"
+                  >
+                    {{ reportError }}
+                  </VAlert>
                   <VTable>
                     <thead>
                       <tr>

@@ -6,20 +6,26 @@ matching GET /v1/wallet's own visibility; Purchase Ledger reuses invoices:view s
 from the same Invoice rows the Invoices page already shows; Activity Log is gated by the new
 activity:view capability, which -- unlike team:view/invoices:view -- is account-owner-only (see
 services.ROLE_CAPABILITIES)."""
-from fastapi import APIRouter, Depends, HTTPException
+from datetime import datetime, time, timezone
+from io import BytesIO
+
+from fastapi import APIRouter, Depends, HTTPException, Response
+from openpyxl import Workbook
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import AccountActivity, ApiLog, Invoice, PaymentOrder, User, WalletTransaction
+from .models import AccountActivity, ApiLog, DeliveryAttempt, Invoice, Message, PaymentOrder, User, WalletTransaction
 from .permissions import require_capability
 from .schemas import ActivityLogEntryOut, ApiLogEntryOut, PaymentLedgerEntryOut, PurchaseLedgerEntryOut, WalletLedgerEntryOut
-from .services import DomainError, resolve_user_entity
+from .security import decrypt_recipient_lenient
+from .services import DomainError, mask_mobile, resolve_user_entity
 
 router = APIRouter(prefix="/v1/reports", tags=["reports"])
 
 LEDGER_LIMIT = 200
+EXPORT_MAX_RANGE_DAYS = 366
 
 
 @router.get("/wallet-ledger", response_model=list[WalletLedgerEntryOut])
@@ -111,3 +117,61 @@ def api_log(user: User = Depends(require_user), db: Session = Depends(get_db)):
         )
         for a in rows
     ]
+
+
+@router.get("/messages/export")
+def export_messages(date_from: str, date_to: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Downloadable XLSX for any date range, including dates past the archiving cutoff --
+    archiving.py only ever clears the heavy per-attempt JSON/text telemetry columns, never the
+    reporting fields this pulls from (recipient, body, status, route, credits, delivery outcome),
+    so this always reads straight from Postgres regardless of how old the range is, no archive
+    read needed. Scoped to the caller's own entity -- never any other customer's data, same as
+    every other endpoint in this router."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        start = datetime.combine(datetime.strptime(date_from, "%Y-%m-%d").date(), time.min, tzinfo=timezone.utc)
+        end = datetime.combine(datetime.strptime(date_to, "%Y-%m-%d").date(), time.max, tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="date_from/date_to must be in YYYY-MM-DD format") from exc
+    if end < start:
+        raise HTTPException(status_code=422, detail="date_to must be on or after date_from")
+    if (end - start).days > EXPORT_MAX_RANGE_DAYS:
+        raise HTTPException(status_code=422, detail=f"Date range cannot exceed {EXPORT_MAX_RANGE_DAYS} days")
+
+    messages = db.scalars(
+        select(Message).where(Message.entity_id == entity.id, Message.created_at >= start, Message.created_at <= end).order_by(Message.created_at),
+    ).all()
+    message_ids = [m.id for m in messages]
+    last_attempt_by_message: dict[str, DeliveryAttempt] = {}
+    if message_ids:
+        for a in db.scalars(select(DeliveryAttempt).where(DeliveryAttempt.message_id.in_(message_ids)).order_by(DeliveryAttempt.created_at)).all():
+            last_attempt_by_message[a.message_id] = a  # last write per message_id wins -- rows arrive in created_at order
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Messages"
+    ws.append(["Recipient", "Message", "Status", "Route", "Credits Charged", "Delivery Status Code", "Delivery Error", "Delivered At", "Sent At"])
+    for m in messages:
+        attempt = last_attempt_by_message.get(m.id)
+        recipient = mask_mobile(decrypt_recipient_lenient(m.recipient)) if m.is_encrypted else m.recipient
+        body = "[Encrypted]" if m.is_encrypted else m.rendered_body
+        ws.append([
+            recipient, body, m.status, m.route or "", m.credits_charged,
+            attempt.delivery_status_code if attempt else None, attempt.error if attempt else None,
+            attempt.delivered_at.replace(tzinfo=None) if attempt and attempt.delivered_at else None,
+            m.created_at.replace(tzinfo=None),
+        ])
+    for column_cells in ws.columns:
+        ws.column_dimensions[column_cells[0].column_letter].width = 20
+
+    buffer = BytesIO()
+    wb.save(buffer)
+    filename = f"Textzi-Messages-{date_from}-to-{date_to}.xlsx"
+    return Response(
+        content=buffer.getvalue(),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
