@@ -55,6 +55,7 @@ const statusFilter = ref<number | null>(null)
 const offset = ref(0)
 const hasMore = ref(false)
 const PAGE_SIZE = 50
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 
 async function load(reset = true) {
   loadError.value = ''
@@ -83,7 +84,10 @@ async function onLoadMore() {
   await load(false)
 }
 
-watch([entityIdFilter, statusFilter], () => load())
+watch([entityIdFilter, statusFilter], () => {
+  clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => load(), 300)
+})
 
 type DeliveryAttemptTelemetry = {
   id: string

@@ -86,8 +86,12 @@ const SEVERITY_ICONS: Record<string, string> = { info: 'tabler-info-circle', war
 async function loadAdminDashboard() {
   adminLoadError.value = ''
   try {
-    notifications.value = await $api<Notification[]>('/v1/admin/notifications')
-    usageSummary.value = await stepUp.withStepUp(() => $api<UsageSummary>('/v1/admin/usage/summary'))
+    const [notificationsResult, summaryResult] = await Promise.all([
+      $api<Notification[]>('/v1/admin/notifications'),
+      stepUp.withStepUp(() => $api<UsageSummary>('/v1/admin/usage/summary')),
+    ])
+    notifications.value = notificationsResult
+    usageSummary.value = summaryResult
   }
   catch (error: any) {
     adminLoadError.value = extractErrorMessage(error, 'Could not load the platform overview.')
