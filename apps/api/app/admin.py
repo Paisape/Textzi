@@ -608,7 +608,7 @@ def _user_admin_out(db: Session, user: User) -> UserAdminOut:
 
 
 @router.get("/users", response_model=list[UserAdminOut], dependencies=[Depends(require_staff("support")), Depends(require_admin_recent_2fa)])
-def list_users(search: str | None = None, db: Session = Depends(get_db)):
+def list_users(search: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     """Platform staff only -- every tenant/customer-side account (enterprise_customer, sub_user,
     finance_user, marketing_user, read_only_user) is managed instead through /admin/customers,
     since mixing the two together made it unclear which "users" a given search result even
@@ -617,7 +617,7 @@ def list_users(search: str | None = None, db: Session = Depends(get_db)):
     if search:
         like = f"%{search}%"
         query = query.where(or_(User.full_name.ilike(like), User.email.ilike(like)))
-    users = db.scalars(query).all()
+    users = db.scalars(query.limit(min(limit, 1000)).offset(offset)).all()
     user_ids = [u.id for u in users]
     two_factor_enabled_ids = {tf.user_id for tf in db.scalars(select(TwoFactorAuth).where(TwoFactorAuth.user_id.in_(user_ids), TwoFactorAuth.enabled == True)).all()} if user_ids else set()  # noqa: E712
     return [UserAdminOut(id=u.id, email=u.email, full_name=u.full_name, role=u.role, status=u.status, organization_id=u.organization_id, email_verified=u.email_verified, mobile_verified=u.mobile_verified, two_factor_enabled=u.id in two_factor_enabled_ids) for u in users]
@@ -1297,8 +1297,11 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     )
 
 
+CUSTOMER_LIST_MAX_LIMIT = 1000
+
+
 @router.get("/customers", response_model=list[CustomerAdminOut], dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
-def list_customers(search: str | None = None, db: Session = Depends(get_db)):
+def list_customers(search: str | None = None, limit: int = 50, offset: int = 0, db: Session = Depends(get_db)):
     """Every organization shown with its primary contact's name -- the organization name alone
     (e.g. "Acme Retail Pvt Ltd") doesn't identify who the actual customer is, which made picking
     the right one in flows like admin wallet credit needlessly error-prone. Search matches the
@@ -1309,23 +1312,43 @@ def list_customers(search: str | None = None, db: Session = Depends(get_db)):
     least one tenant-role user at registration, so this is a reliable "not actually a customer"
     signal without hardcoding a name or id -- notably, it's what keeps the "Textzi Platform" org
     (home of the platform's own admin accounts, a holdover from before platform self-sending had
-    its own dedicated tables) out of this list without touching that org/its users at all."""
+    its own dedicated tables) out of this list without touching that org/its users at all.
+
+    Two-phase to keep pagination cheap: first fetch every org + its primary contact (simple
+    queries, no message/wallet joins) and filter+paginate that in Python since search matches
+    computed fields (org name, contact name/email) that don't live on one table -- then only run
+    _bulk_customer_stats's message-count/wallet-balance aggregation for the current page's orgs,
+    not the whole customer base. limit is capped at CUSTOMER_LIST_MAX_LIMIT (also what the
+    frontend's CSV export requests, to get an effectively-complete export in one call without
+    truly unbounded results)."""
+    limit = min(limit, CUSTOMER_LIST_MAX_LIMIT)
     tenant_org_ids = {
         row[0] for row in db.execute(
             select(User.organization_id).where(User.organization_id.is_not(None), User.role.notin_(PLATFORM_INTERNAL_ROLES)).distinct()
         ).all()
     }
     orgs = [o for o in db.scalars(select(Organization).order_by(Organization.name)).all() if o.id in tenant_org_ids]
-    entities_by_org, wallets_by_entity, message_counts, last_activity, primary_by_org = _bulk_customer_stats(db, [o.id for o in orgs])
+    primary_by_org: dict[str, User] = {}
+    if orgs:
+        for u in db.scalars(select(User).where(User.organization_id.in_([o.id for o in orgs])).order_by(User.organization_id, User.created_at.asc())).all():
+            primary_by_org.setdefault(u.organization_id, u)
 
-    out = []
     search_lower = search.lower() if search else None
+    matched_orgs = []
     for org in orgs:
         primary = primary_by_org.get(org.id)
         if search_lower:
             haystack = f"{org.name} {primary.full_name if primary else ''} {primary.email if primary else ''}".lower()
             if search_lower not in haystack:
                 continue
+        matched_orgs.append(org)
+    page_orgs = matched_orgs[offset:offset + limit]
+
+    entities_by_org, wallets_by_entity, message_counts, last_activity, _ = _bulk_customer_stats(db, [o.id for o in page_orgs])
+
+    out = []
+    for org in page_orgs:
+        primary = primary_by_org.get(org.id)
         entities = entities_by_org.get(org.id, [])
         entity_ids = [e.id for e in entities]
         wallet_balance = sum(float(wallets_by_entity[eid].prepaid_balance) for eid in entity_ids if eid in wallets_by_entity)

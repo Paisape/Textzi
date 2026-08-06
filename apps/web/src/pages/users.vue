@@ -52,28 +52,44 @@ const saveError = ref('')
 const search = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
+const PAGE_SIZE = 50
+const offset = ref(0)
+const hasMore = ref(false)
+
 const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authStore.staffArea === 'support') : null)
 // Support Team can view this page but not act on it -- every mutation endpoint (invite,
 // role-change, status-change, reset-password, force-disable-2FA) stays require_admin-only on the
 // backend, so the controls that would call them are hidden rather than left visible-but-broken.
 const canManage = computed(() => authStore.isAdmin)
 
-async function load() {
+async function load(reset = true) {
   loadError.value = ''
+  if (reset)
+    offset.value = 0
   try {
     await authStore.load()
     if (!hasAccess.value)
       return
-    users.value = await $api<AdminUser[]>('/v1/admin/users', { query: search.value ? { search: search.value } : {} })
+    const query: Record<string, any> = { limit: PAGE_SIZE, offset: offset.value }
+    if (search.value)
+      query.search = search.value
+    const page = await $api<AdminUser[]>('/v1/admin/users', { query })
+    users.value = reset ? page : [...users.value, ...page]
+    hasMore.value = page.length === PAGE_SIZE
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load users.')
   }
 }
 
+async function onLoadMore() {
+  offset.value += PAGE_SIZE
+  await load(false)
+}
+
 watch(search, () => {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(load, 300)
+  searchTimer = setTimeout(() => load(true), 300)
 })
 
 const showInviteDialog = ref(false)
@@ -364,6 +380,11 @@ onMounted(load)
           </tr>
         </tbody>
       </VTable>
+      <div v-if="hasMore" class="text-center mt-4">
+        <VBtn size="small" variant="text" @click="onLoadMore">
+          Load more
+        </VBtn>
+      </div>
     </VCardText>
   </VCard>
 

@@ -28,39 +28,71 @@ const loadError = ref('')
 const search = ref('')
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
-function onExportCsv() {
-  downloadCsv(
-    'customers.csv',
-    [
-      { key: 'primary_contact_name', label: 'Customer' },
-      { key: 'primary_contact_email', label: 'Email' },
-      { key: 'primary_contact_mobile', label: 'Mobile' },
-      { key: 'organization_name', label: 'Organization' },
-      { key: 'entity_count', label: 'Entities' },
-      { key: 'wallet_balance', label: 'Wallet Balance' },
-      { key: 'messages_sent', label: 'Messages Sent' },
-      { key: 'last_activity', label: 'Last Activity' },
-    ],
-    customers.value,
-  )
+const PAGE_SIZE = 50
+const offset = ref(0)
+const hasMore = ref(false)
+
+const exporting = ref(false)
+
+async function onExportCsv() {
+  // A separate request rather than exporting whatever page is currently on screen -- fetches
+  // every org matching the current search in one call (capped at the backend's 1000-row limit,
+  // which comfortably covers "export everything" for the foreseeable future) so the CSV always
+  // reflects the full filtered set, not just the loaded page.
+  exporting.value = true
+  try {
+    const all = await $api<CustomerRow[]>('/v1/admin/customers', { query: { limit: 1000, ...(search.value ? { search: search.value } : {}) } })
+    downloadCsv(
+      'customers.csv',
+      [
+        { key: 'primary_contact_name', label: 'Customer' },
+        { key: 'primary_contact_email', label: 'Email' },
+        { key: 'primary_contact_mobile', label: 'Mobile' },
+        { key: 'organization_name', label: 'Organization' },
+        { key: 'entity_count', label: 'Entities' },
+        { key: 'wallet_balance', label: 'Wallet Balance' },
+        { key: 'messages_sent', label: 'Messages Sent' },
+        { key: 'last_activity', label: 'Last Activity' },
+      ],
+      all,
+    )
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not export customers.')
+  }
+  finally {
+    exporting.value = false
+  }
 }
 
-async function loadCustomers() {
+async function loadCustomers(reset = true) {
   loadError.value = ''
+  if (reset)
+    offset.value = 0
   try {
     await authStore.load()
     if (!(authStore.isAdmin || authStore.staffArea === 'sales'))
       return
-    customers.value = await $api<CustomerRow[]>('/v1/admin/customers', { query: search.value ? { search: search.value } : {} })
+    const query: Record<string, any> = { limit: PAGE_SIZE, offset: offset.value }
+    if (search.value)
+      query.search = search.value
+    const page = await $api<CustomerRow[]>('/v1/admin/customers', { query })
+    customers.value = reset ? page : [...customers.value, ...page]
+    hasMore.value = page.length === PAGE_SIZE
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load customers.')
   }
 }
 
+async function onLoadMore() {
+  offset.value += PAGE_SIZE
+  await loadCustomers(false)
+}
+
 watch(search, () => {
   clearTimeout(searchTimer)
-  searchTimer = setTimeout(loadCustomers, 300)
+  searchTimer = setTimeout(() => loadCustomers(true), 300)
 })
 
 const showCreateDialog = ref(false)
@@ -181,6 +213,7 @@ onMounted(loadCustomers)
         <VBtn
           variant="tonal"
           prepend-icon="tabler-file-export"
+          :loading="exporting"
           @click="onExportCsv"
         >
           Export CSV
@@ -252,6 +285,11 @@ onMounted(loadCustomers)
           </tr>
         </tbody>
       </VTable>
+      <div v-if="hasMore" class="text-center pa-4">
+        <VBtn size="small" variant="text" @click="onLoadMore">
+          Load more
+        </VBtn>
+      </div>
     </VCard>
   </template>
 
