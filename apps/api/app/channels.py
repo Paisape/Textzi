@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 import razorpay
 from docx import Document
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -684,10 +684,13 @@ def get_reports_summary(user: User = Depends(require_user), db: Session = Depend
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    messages = db.scalars(select(Message).where(Message.entity_id == entity.id)).all()
+    # GROUP BY in the database instead of loading every message ever sent into Python just to
+    # count 3 status buckets -- the previous version re-scanned the entity's entire send history
+    # on every dashboard load, growing unbounded with account age/volume.
+    counts = dict(db.execute(select(Message.status, func.count()).where(Message.entity_id == entity.id).group_by(Message.status)).all())
     return ReportsSummaryResponse(
-        total=len(messages),
-        submitted=sum(1 for m in messages if m.status == "submitted"),
-        failed=sum(1 for m in messages if m.status == "failed"),
-        accepted=sum(1 for m in messages if m.status == "accepted"),
+        total=sum(counts.values()),
+        submitted=counts.get("submitted", 0),
+        failed=counts.get("failed", 0),
+        accepted=counts.get("accepted", 0),
     )

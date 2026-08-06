@@ -11,7 +11,7 @@ from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 from openpyxl import Workbook
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .auth import require_user
@@ -26,6 +26,7 @@ router = APIRouter(prefix="/v1/reports", tags=["reports"])
 
 LEDGER_LIMIT = 200
 EXPORT_MAX_RANGE_DAYS = 366
+EXPORT_MAX_ROWS = 100_000
 
 
 @router.get("/wallet-ledger", response_model=list[WalletLedgerEntryOut])
@@ -119,6 +120,17 @@ def api_log(user: User = Depends(require_user), db: Session = Depends(get_db)):
     ]
 
 
+def _xlsx_safe(value: str | None) -> str | None:
+    """Defense-in-depth against CSV/Excel formula injection: a cell starting with =, +, -, or @
+    can be interpreted as a formula by Excel/Sheets when the file is opened. recipient is
+    regex-locked to digits (schemas.py) and rendered_body is always the exporting account's own
+    template output, so neither is currently attacker-reachable -- this guards the one column
+    that could carry carrier-supplied text (delivery error) against that changing later."""
+    if value and value[0] in ("=", "+", "-", "@"):
+        return f"'{value}"
+    return value
+
+
 @router.get("/messages/export")
 def export_messages(date_from: str, date_to: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Downloadable XLSX for any date range, including dates past the archiving cutoff --
@@ -141,6 +153,12 @@ def export_messages(date_from: str, date_to: str, user: User = Depends(require_u
     if (end - start).days > EXPORT_MAX_RANGE_DAYS:
         raise HTTPException(status_code=422, detail=f"Date range cannot exceed {EXPORT_MAX_RANGE_DAYS} days")
 
+    row_count = db.scalar(
+        select(func.count()).select_from(Message).where(Message.entity_id == entity.id, Message.created_at >= start, Message.created_at <= end),
+    )
+    if row_count > EXPORT_MAX_ROWS:
+        raise HTTPException(status_code=422, detail=f"This range has {row_count:,} messages, over the {EXPORT_MAX_ROWS:,} export limit -- please narrow the date range.")
+
     messages = db.scalars(
         select(Message).where(Message.entity_id == entity.id, Message.created_at >= start, Message.created_at <= end).order_by(Message.created_at),
     ).all()
@@ -159,8 +177,8 @@ def export_messages(date_from: str, date_to: str, user: User = Depends(require_u
         recipient = mask_mobile(decrypt_recipient_lenient(m.recipient)) if m.is_encrypted else m.recipient
         body = "[Encrypted]" if m.is_encrypted else m.rendered_body
         ws.append([
-            recipient, body, m.status, m.route or "", m.credits_charged,
-            attempt.delivery_status_code if attempt else None, attempt.error if attempt else None,
+            _xlsx_safe(recipient), _xlsx_safe(body), m.status, m.route or "", m.credits_charged,
+            attempt.delivery_status_code if attempt else None, _xlsx_safe(attempt.error) if attempt else None,
             attempt.delivered_at.replace(tzinfo=None) if attempt and attempt.delivered_at else None,
             m.created_at.replace(tzinfo=None),
         ])

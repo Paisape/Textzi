@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -587,7 +587,17 @@ class Message(Base):
     # straight from this table regardless of how old the range is.
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    __table_args__ = (UniqueConstraint("entity_id", "idempotency_key", name="uq_message_idempotency"),)
+    __table_args__ = (
+        UniqueConstraint("entity_id", "idempotency_key", name="uq_message_idempotency"),
+        # Backs reports.py's export query and channels.py's dashboard summary (both filter by
+        # entity_id, order/range by created_at) -- without this, both degrate to a scan of the
+        # single-column entity_id index followed by an in-memory sort/filter as the table grows.
+        Index("ix_messages_entity_created", "entity_id", "created_at"),
+        # Backs archiving.archive_to_local()'s daily WHERE archived_at IS NULL AND created_at <
+        # cutoff scan -- without this it's a full table scan once the hot tier grows past a few
+        # months.
+        Index("ix_messages_archived_created", "archived_at", "created_at"),
+    )
 
 
 class ArchiveManifest(Base):

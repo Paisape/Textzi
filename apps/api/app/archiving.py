@@ -99,60 +99,79 @@ def _local_archive_path(period: str) -> str:
     return os.path.join(LOCAL_ARCHIVE_DIR, f"messages-{period}.jsonl.gz")
 
 
+ARCHIVE_BATCH_SIZE = 2000
+
+
 def archive_to_local(db: Session) -> dict:
     """Step 1 of the daily job. Finds Message rows older than archive_local_after_days that
     haven't been archived yet, appends their full detail to the appropriate month's local gzip
     file, then nulls the heavy fields on the live rows (keeping the row itself for fast
-    lightweight history/billing queries)."""
+    lightweight history/billing queries).
+
+    Processes ARCHIVE_BATCH_SIZE messages at a time, committing after each batch, rather than one
+    query + one giant transaction for the whole backlog -- on a database that's never run this
+    job before (weeks/months of un-archived history), an unbounded version would hold every
+    matching Message/DeliveryAttempt/ApiLog row (and their write locks) in memory for the entire
+    run. Each batch's WHERE clause naturally excludes rows the previous batch already marked
+    archived_at, so this is just a resumable loop, not a change in what ultimately gets archived."""
     cutoff = datetime.now(timezone.utc) - timedelta(days=settings.archive_local_after_days)
-    messages = db.scalars(
-        select(Message).where(Message.created_at < cutoff, Message.archived_at.is_(None)).order_by(Message.created_at),
-    ).all()
-    if not messages:
-        return {"archived": 0, "periods": []}
-
-    message_ids = [m.id for m in messages]
-    attempts_by_message: dict[str, list[DeliveryAttempt]] = defaultdict(list)
-    for a in db.scalars(select(DeliveryAttempt).where(DeliveryAttempt.message_id.in_(message_ids)).order_by(DeliveryAttempt.created_at)).all():
-        attempts_by_message[a.message_id].append(a)
-    api_log_by_message: dict[str, ApiLog] = {
-        l.message_id: l for l in db.scalars(select(ApiLog).where(ApiLog.message_id.in_(message_ids))).all() if l.message_id
-    }
-
-    by_period: dict[str, list[Message]] = defaultdict(list)
-    for m in messages:
-        by_period[_month_period(m.created_at)].append(m)
-
     os.makedirs(LOCAL_ARCHIVE_DIR, exist_ok=True)
-    now = datetime.now(timezone.utc)
-    for period, period_messages in by_period.items():
-        path = _local_archive_path(period)
-        with gzip.open(path, "at", encoding="utf-8") as f:
+    total_archived = 0
+    periods_touched: set[str] = set()
+
+    while True:
+        messages = db.scalars(
+            select(Message).where(Message.created_at < cutoff, Message.archived_at.is_(None)).order_by(Message.created_at).limit(ARCHIVE_BATCH_SIZE),
+        ).all()
+        if not messages:
+            break
+
+        message_ids = [m.id for m in messages]
+        attempts_by_message: dict[str, list[DeliveryAttempt]] = defaultdict(list)
+        for a in db.scalars(select(DeliveryAttempt).where(DeliveryAttempt.message_id.in_(message_ids)).order_by(DeliveryAttempt.created_at)).all():
+            attempts_by_message[a.message_id].append(a)
+        api_log_by_message: dict[str, ApiLog] = {
+            l.message_id: l for l in db.scalars(select(ApiLog).where(ApiLog.message_id.in_(message_ids))).all() if l.message_id
+        }
+
+        by_period: dict[str, list[Message]] = defaultdict(list)
+        for m in messages:
+            by_period[_month_period(m.created_at)].append(m)
+
+        now = datetime.now(timezone.utc)
+        for period, period_messages in by_period.items():
+            path = _local_archive_path(period)
+            with gzip.open(path, "at", encoding="utf-8") as f:
+                for m in period_messages:
+                    record = _message_to_full_record(m, attempts_by_message.get(m.id, []), api_log_by_message.get(m.id))
+                    f.write(json.dumps(record) + "\n")
+            size = os.path.getsize(path)
+            manifest = db.scalar(select(ArchiveManifest).where(ArchiveManifest.tier == "local", ArchiveManifest.period == period))
+            if manifest:
+                manifest.record_count += len(period_messages)
+                manifest.size_bytes = size
+            else:
+                db.add(ArchiveManifest(tier="local", period=period, path=path, record_count=len(period_messages), size_bytes=size))
             for m in period_messages:
-                record = _message_to_full_record(m, attempts_by_message.get(m.id, []), api_log_by_message.get(m.id))
-                f.write(json.dumps(record) + "\n")
-        size = os.path.getsize(path)
-        manifest = db.scalar(select(ArchiveManifest).where(ArchiveManifest.tier == "local", ArchiveManifest.period == period))
-        if manifest:
-            manifest.record_count += len(period_messages)
-            manifest.size_bytes = size
-        else:
-            db.add(ArchiveManifest(tier="local", period=period, path=path, record_count=len(period_messages), size_bytes=size))
-        for m in period_messages:
-            m.request_payload = None
-            m.response_payload = None
-            m.archived_at = now
-            for a in attempts_by_message.get(m.id, []):
-                a.request_payload = None
-                a.response_body = None
-                a.webhook_payload = None
-                a.customer_webhook_payload = None
-            log = api_log_by_message.get(m.id)
-            if log:
-                log.metadata_json = {}
-                log.user_agent = None
-    db.commit()
-    return {"archived": len(messages), "periods": sorted(by_period.keys())}
+                m.request_payload = None
+                m.response_payload = None
+                m.archived_at = now
+                for a in attempts_by_message.get(m.id, []):
+                    a.request_payload = None
+                    a.response_body = None
+                    a.webhook_payload = None
+                    a.customer_webhook_payload = None
+                log = api_log_by_message.get(m.id)
+                if log:
+                    log.metadata_json = {}
+                    log.user_agent = None
+            periods_touched.add(period)
+        db.commit()
+        total_archived += len(messages)
+        if len(messages) < ARCHIVE_BATCH_SIZE:
+            break
+
+    return {"archived": total_archived, "periods": sorted(periods_touched)}
 
 
 def _r2_client(db: Session):
