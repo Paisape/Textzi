@@ -9,11 +9,11 @@ from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .auth import send_platform_test_sms
 from .database import get_db
 from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts, list_tax_templates
-from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
+from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
 from .schemas import (
     ErpNextAccountOut, ErpNextTaxTemplateOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
-    PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate, PlatformTestSmsRequest, PlatformTestSmsResponse,
-    PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
+    PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
+    PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
 )
 from .security import encrypt_secret
 from .services import DomainError, credit_platform_wallet, get_platform_company_info, log_activity, mask_mobile
@@ -71,6 +71,38 @@ def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, request: Request, 
     log_activity(db, None, "platform_smtp_settings_updated", "Platform SMTP settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformSmtpSettingsOut(host=row.host, port=row.port, username=row.username, from_address=row.from_address, use_tls=row.use_tls, configured=bool(row.host))
+
+
+@router.get("/r2-settings", response_model=PlatformR2SettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_r2_settings(db: Session = Depends(get_db)):
+    row = db.get(PlatformR2Settings, "platform")
+    if not row:
+        row = PlatformR2Settings(id="platform")
+    return PlatformR2SettingsOut(
+        account_id=row.account_id, access_key_id=row.access_key_id, bucket_name=row.bucket_name,
+        configured=bool(row.account_id and row.access_key_id and row.secret_access_key_encrypted and row.bucket_name),
+    )
+
+
+@router.put("/r2-settings", response_model=PlatformR2SettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_r2_settings(payload: PlatformR2SettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """secret_access_key is write-only, same convention as the SMTP password and ERPNext api_secret
+    -- GET never returns it, and a blank value on PUT keeps whatever was already stored."""
+    row = db.get(PlatformR2Settings, "platform")
+    if not row:
+        row = PlatformR2Settings(id="platform")
+        db.add(row)
+    row.account_id = payload.account_id
+    row.access_key_id = payload.access_key_id
+    if payload.secret_access_key:
+        row.secret_access_key_encrypted = encrypt_secret(payload.secret_access_key)
+    row.bucket_name = payload.bucket_name
+    log_activity(db, None, "platform_r2_settings_updated", "Platform R2 archive storage settings updated.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit(); db.refresh(row)
+    return PlatformR2SettingsOut(
+        account_id=row.account_id, access_key_id=row.access_key_id, bucket_name=row.bucket_name,
+        configured=bool(row.account_id and row.access_key_id and row.secret_access_key_encrypted and row.bucket_name),
+    )
 
 
 @router.get("/erpnext-settings", response_model=PlatformErpNextSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

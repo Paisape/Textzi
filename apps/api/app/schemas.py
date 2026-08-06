@@ -1010,6 +1010,20 @@ class PlatformSmtpSettingsUpdate(BaseModel):
     use_tls: bool = True
 
 
+class PlatformR2SettingsOut(BaseModel):
+    account_id: str | None
+    access_key_id: str | None
+    bucket_name: str | None
+    configured: bool
+
+
+class PlatformR2SettingsUpdate(BaseModel):
+    account_id: str | None = None
+    access_key_id: str | None = None
+    secret_access_key: str | None = None  # blank = keep the existing one, same convention as SMTP's password
+    bucket_name: str | None = None
+
+
 class PlatformErpNextSettingsOut(BaseModel):
     base_url: str | None
     api_key: str | None

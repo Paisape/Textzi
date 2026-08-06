@@ -18,9 +18,9 @@ facing report export (reports.py) never needs this -- it reads Postgres directly
 only clears heavy JSON fields and never deletes the Message/DeliveryAttempt/ApiLog rows.
 
 Two entry points, meant to run as a daily job (see archive_jobs.py): archive_to_local() then
-promote_to_r2(). R2 credentials are optional (config.py's r2_* settings) -- promote_to_r2() is a
-no-op while unset, matching this codebase's existing fail-open convention for optional third-party
-integrations (Razorpay, SMTP)."""
+promote_to_r2(). R2 credentials are optional and DB-backed (PlatformR2Settings, editable from the
+admin UI -- see platform_admin.py) -- promote_to_r2() is a no-op while unset, matching this
+codebase's existing fail-open convention for optional third-party integrations (Razorpay, SMTP)."""
 import gzip
 import io
 import json
@@ -32,7 +32,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import settings
-from .models import ApiLog, ArchiveManifest, DeliveryAttempt, Message
+from .models import ApiLog, ArchiveManifest, DeliveryAttempt, Message, PlatformR2Settings
+from .security import decrypt_secret
 
 LOCAL_ARCHIVE_DIR = os.path.join(settings.uploads_dir, "archives", "local")
 
@@ -154,15 +155,19 @@ def archive_to_local(db: Session) -> dict:
     return {"archived": len(messages), "periods": sorted(by_period.keys())}
 
 
-def _r2_client():
-    if not (settings.r2_account_id and settings.r2_access_key_id and settings.r2_secret_access_key and settings.r2_bucket_name):
+def _r2_client(db: Session):
+    """Credentials come from PlatformR2Settings (DB-backed, editable from the admin UI) rather
+    than config.py -- same convention as PlatformSmtpSettings. Returns None (caller no-ops) while
+    unconfigured."""
+    row = db.get(PlatformR2Settings, "platform")
+    if not (row and row.account_id and row.access_key_id and row.secret_access_key_encrypted and row.bucket_name):
         return None
     import boto3
     return boto3.client(
         "s3",
-        endpoint_url=f"https://{settings.r2_account_id}.r2.cloudflarestorage.com",
-        aws_access_key_id=settings.r2_access_key_id,
-        aws_secret_access_key=settings.r2_secret_access_key,
+        endpoint_url=f"https://{row.account_id}.r2.cloudflarestorage.com",
+        aws_access_key_id=row.access_key_id,
+        aws_secret_access_key=decrypt_secret(row.secret_access_key_encrypted),
         region_name="auto",
     )
 
@@ -174,9 +179,10 @@ def promote_to_r2(db: Session) -> dict:
     confirmed-successful upload -- never both missing at once. No-op (returns immediately) if R2
     isn't configured, so this is always safe to call from the daily job regardless of
     deployment/environment."""
-    client = _r2_client()
+    client = _r2_client(db)
     if not client:
         return {"promoted": 0, "reason": "R2 not configured"}
+    bucket_name = db.get(PlatformR2Settings, "platform").bucket_name
 
     import pyarrow as pa
     import pyarrow.parquet as pq
@@ -204,7 +210,7 @@ def promote_to_r2(db: Session) -> dict:
         pq.write_table(table, buffer, compression="zstd", compression_level=19)
         buffer.seek(0)
         object_key = f"archives/messages-{manifest.period}.parquet"
-        client.put_object(Bucket=settings.r2_bucket_name, Key=object_key, Body=buffer.getvalue())
+        client.put_object(Bucket=bucket_name, Key=object_key, Body=buffer.getvalue())
 
         db.add(ArchiveManifest(tier="r2", period=manifest.period, path=object_key, record_count=len(trimmed_records), size_bytes=len(buffer.getvalue())))
         db.commit()
@@ -248,11 +254,12 @@ def read_archived_rows(db: Session, entity_id: str, date_from: datetime, date_to
                     if date_from <= created_at <= date_to:
                         results.append(_full_record_to_trimmed(record) | {"_tier": "local"})
         else:
-            client = client or _r2_client()
+            client = client or _r2_client(db)
             if not client:
                 continue
+            bucket_name = db.get(PlatformR2Settings, "platform").bucket_name
             import pyarrow.parquet as pq
-            obj = client.get_object(Bucket=settings.r2_bucket_name, Key=manifest.path)
+            obj = client.get_object(Bucket=bucket_name, Key=manifest.path)
             table = pq.read_table(io.BytesIO(obj["Body"].read()))
             for row in table.to_pylist():
                 if row["entity_id"] != entity_id:

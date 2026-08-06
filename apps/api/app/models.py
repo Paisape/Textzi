@@ -752,6 +752,20 @@ class PlatformSmtpSettings(Base):
     use_tls: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
+class PlatformR2Settings(Base):
+    """Singleton row. Cloudflare R2 (S3-compatible object storage) credentials for the cold-tier
+    archive promotion in archiving.py -- editable from the admin UI, not just `.env`, same
+    convention as PlatformSmtpSettings above. secret_access_key is write-only (encrypted at rest,
+    never returned by GET); account_id/access_key_id/bucket_name aren't secrets in the same sense
+    (an access key ID is an identifier, not a credential) so they're stored and returned plain."""
+    __tablename__ = "platform_r2_settings"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
+    account_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    access_key_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    secret_access_key_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    bucket_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+
 class PlatformErpNextSettings(Base):
     """Singleton row. Connection details for the customer's self-hosted ERPNext (Frappe) instance
     -- ERPNext is the source of truth for the invoice DOCUMENT itself (services.erpnext creates

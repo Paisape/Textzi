@@ -215,6 +215,11 @@ export const adminNav = [
         to: { name: 'erpnext-sync-log' },
         icon: { icon: 'tabler-list-details' },
       },
+      {
+        title: 'R2 Setting',
+        to: { name: 'platform-r2-settings' },
+        icon: { icon: 'tabler-cloud-cog' },
+      },
     ],
   },
 ]
