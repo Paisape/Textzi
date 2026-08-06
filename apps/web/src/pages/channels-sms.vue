@@ -120,10 +120,16 @@ async function onSubmitTest() {
   }
 }
 
+const TEMPLATE_ALIAS_PATTERN = /^[a-z0-9_-]{2,80}$/
+
 async function onAddTemplate() {
   templateSubmitError.value = ''
   if (!newTemplatePeId.value || !newTemplateHeaderId.value || !newTemplateAlias.value.trim() || !newTemplateDltId.value.trim() || !newTemplateBody.value.trim()) {
     templateSubmitError.value = 'Fill in every field.'
+    return
+  }
+  if (!TEMPLATE_ALIAS_PATTERN.test(newTemplateAlias.value.trim())) {
+    templateSubmitError.value = 'Alias can only contain lowercase letters, numbers, underscores, and hyphens (e.g. order_confirmation) -- this is what you\'ll pick the template by when sending.'
     return
   }
   templateSubmitting.value = true
@@ -1619,6 +1625,8 @@ onMounted(async () => {
                     v-model="newTemplateAlias"
                     label="Alias"
                     placeholder="order_confirmation"
+                    hint="Lowercase letters, numbers, underscores, hyphens only"
+                    persistent-hint
                   />
                 </VCol>
                 <VCol

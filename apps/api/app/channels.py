@@ -582,11 +582,19 @@ def create_my_header(pe_id: str, header_id: str = Form(...), value: str = Form(.
     return {"id": header.id, "value": header.value, "status": header.status}
 
 
+TEMPLATE_ALIAS_PATTERN = r"^[a-z0-9_\-]{2,80}$"
+
+
 @router.post("/templates")
 def create_my_template(
     pe_id: str = Form(...),
     header_id: str = Form(...),
-    alias: str = Form(...),
+    # Must match SmsSendRequest.template's pattern (schemas.py) -- this Form endpoint used to
+    # accept any alias unvalidated, unlike the admin-side TemplateCreate schema, so a customer
+    # could create a template (e.g. "OTP NEW") that saved fine and showed up in their template
+    # list, but could never actually be sent: compose's strict lowercase-only regex rejected it
+    # with a 422 the customer had no way to explain or fix themselves.
+    alias: str = Form(..., pattern=TEMPLATE_ALIAS_PATTERN),
     dlt_template_id: str = Form(...),
     body: str = Form(...),
     category: str = Form(default="transactional"),
