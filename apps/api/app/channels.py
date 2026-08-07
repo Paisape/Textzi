@@ -36,7 +36,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity
+from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, normalize_template_alias, require_channel_active, resolve_channel_fees, resolve_user_entity
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -582,19 +582,18 @@ def create_my_header(pe_id: str, header_id: str = Form(...), value: str = Form(.
     return {"id": header.id, "value": header.value, "status": header.status}
 
 
-TEMPLATE_ALIAS_PATTERN = r"^[a-z0-9_\-]{2,80}$"
-
-
 @router.post("/templates")
 def create_my_template(
     pe_id: str = Form(...),
     header_id: str = Form(...),
-    # Must match SmsSendRequest.template's pattern (schemas.py) -- this Form endpoint used to
-    # accept any alias unvalidated, unlike the admin-side TemplateCreate schema, so a customer
-    # could create a template (e.g. "OTP NEW") that saved fine and showed up in their template
-    # list, but could never actually be sent: compose's strict lowercase-only regex rejected it
-    # with a 422 the customer had no way to explain or fix themselves.
-    alias: str = Form(..., pattern=TEMPLATE_ALIAS_PATTERN),
+    # Not pattern-restricted -- normalize_template_alias (services.py) turns whatever's typed
+    # (often the DLT-portal-registered template name verbatim, e.g. "OTP NEW", which telecom
+    # operator portals place no such format restriction on) into the lowercase slug
+    # SmsSendRequest.template's pattern requires, rather than rejecting it. This endpoint used to
+    # accept any alias completely unvalidated, which was the actual original bug: a customer
+    # could create a template that saved fine and showed up in their list, but could never be
+    # sent -- compose's regex rejected it with a 422 the customer had no way to explain or fix.
+    alias: str = Form(...),
     dlt_template_id: str = Form(...),
     body: str = Form(...),
     category: str = Form(default="transactional"),
@@ -609,13 +608,17 @@ def create_my_template(
     pe, header = db.get(PeId, pe_id), db.get(Header, header_id)
     if not pe or pe.entity_id != entity.id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
-    item = Template(entity_id=entity.id, pe_id=pe_id, header_id=header_id, alias=alias, dlt_template_id=dlt_template_id, body=body, category=category, status=Status.active)
+    try:
+        normalized_alias = normalize_template_alias(alias)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    item = Template(entity_id=entity.id, pe_id=pe_id, header_id=header_id, alias=normalized_alias, dlt_template_id=dlt_template_id, body=body, category=category, status=Status.active)
     db.add(item)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{dlt_template_id}' already exists for this entity")
+        raise HTTPException(status_code=409, detail=f"A template with alias '{normalized_alias}' or DLT template id '{dlt_template_id}' already exists for this entity")
     db.refresh(item)
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
 

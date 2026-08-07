@@ -219,6 +219,14 @@ const templateSubmitting = ref(false)
 const templateError = ref('')
 const headersForNewTemplatePe = computed(() => headers.value.filter(h => h.pe_id === newTemplatePeId.value))
 watch(newTemplatePeId, () => { newTemplateHeaderId.value = null })
+
+// Mirrors services.normalize_template_alias -- just a live preview so whoever's typing sees what
+// their input becomes before submitting (e.g. the DLT-portal template name "OTP NEW" typed
+// verbatim shows "otp_new"); the server does the real normalization regardless of this preview.
+const newTemplateAliasPreview = computed(() => {
+  const slug = newTemplateAlias.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '')
+  return slug.slice(0, 80)
+})
 async function onCreateTemplate() {
   templateError.value = ''
   if (!selectedEntityId.value)
@@ -724,7 +732,9 @@ onMounted(load)
                     <AppTextField
                       v-model="newTemplateAlias"
                       label="Alias"
-                      placeholder="order_confirmation"
+                      placeholder="e.g. the customer's DLT template name, OTP NEW"
+                      :hint="newTemplateAliasPreview ? `Will be saved as: ${newTemplateAliasPreview}` : 'This is what the customer picks the template by when sending'"
+                      persistent-hint
                     />
                   </VCol>
                   <VCol

@@ -38,7 +38,7 @@ from .schemas import (
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
-from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, normalize_template_alias, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -197,13 +197,17 @@ def create_template(entity_id: str, payload: TemplateCreate, db: Session = Depen
     pe, header = db.get(PeId, payload.pe_id), db.get(HeaderModel, payload.header_id)
     if not pe or pe.entity_id != entity_id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
-    item = Template(entity_id=entity_id, pe_id=payload.pe_id, header_id=payload.header_id, alias=payload.alias, dlt_template_id=payload.dlt_template_id, body=payload.body, category=payload.category.value, status=StatusEnum.active)
+    try:
+        alias = normalize_template_alias(payload.alias)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    item = Template(entity_id=entity_id, pe_id=payload.pe_id, header_id=payload.header_id, alias=alias, dlt_template_id=payload.dlt_template_id, body=payload.body, category=payload.category.value, status=StatusEnum.active)
     db.add(item)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"A template with alias '{payload.alias}' or DLT template id '{payload.dlt_template_id}' already exists for this entity")
+        raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{payload.dlt_template_id}' already exists for this entity")
     db.refresh(item)
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
 

@@ -97,7 +97,10 @@ class HeaderCreate(BaseModel):
 class TemplateCreate(BaseModel):
     pe_id: str
     header_id: str
-    alias: str = Field(pattern=r"^[a-z0-9_\-]{2,80}$")
+    # Not pattern-restricted here -- normalize_template_alias (services.py) turns whatever's
+    # typed (often the DLT-portal-registered template name verbatim, e.g. "OTP NEW") into a valid
+    # slug server-side, rather than rejecting input that doesn't already match compose's format.
+    alias: str = Field(min_length=1, max_length=200)
     dlt_template_id: str = Field(min_length=3, max_length=80)
     body: str = Field(min_length=1, max_length=1600)
     category: MessageCategory = MessageCategory.transactional

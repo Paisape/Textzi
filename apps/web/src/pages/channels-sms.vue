@@ -120,16 +120,18 @@ async function onSubmitTest() {
   }
 }
 
-const TEMPLATE_ALIAS_PATTERN = /^[a-z0-9_-]{2,80}$/
+// Mirrors services.normalize_template_alias -- just a live preview so the customer sees what
+// their input becomes before submitting (e.g. typing their DLT-portal template name "OTP NEW"
+// verbatim shows "otp_new"); the server does the real normalization regardless of this preview.
+const newTemplateAliasPreview = computed(() => {
+  const slug = newTemplateAlias.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '')
+  return slug.slice(0, 80)
+})
 
 async function onAddTemplate() {
   templateSubmitError.value = ''
   if (!newTemplatePeId.value || !newTemplateHeaderId.value || !newTemplateAlias.value.trim() || !newTemplateDltId.value.trim() || !newTemplateBody.value.trim()) {
     templateSubmitError.value = 'Fill in every field.'
-    return
-  }
-  if (!TEMPLATE_ALIAS_PATTERN.test(newTemplateAlias.value.trim())) {
-    templateSubmitError.value = 'Alias can only contain lowercase letters, numbers, underscores, and hyphens (e.g. order_confirmation) -- this is what you\'ll pick the template by when sending.'
     return
   }
   templateSubmitting.value = true
@@ -1656,8 +1658,8 @@ onMounted(async () => {
                   <AppTextField
                     v-model="newTemplateAlias"
                     label="Alias"
-                    placeholder="order_confirmation"
-                    hint="Lowercase letters, numbers, underscores, hyphens only"
+                    placeholder="e.g. your DLT template name, OTP NEW"
+                    :hint="newTemplateAliasPreview ? `Will be saved as: ${newTemplateAliasPreview}` : 'This is what you\'ll pick the template by when sending'"
                     persistent-hint
                   />
                 </VCol>
