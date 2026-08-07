@@ -87,16 +87,21 @@ def _same_org_user_id(db: Session, entity: Entity, x_user_id: str | None) -> str
     verified JWT. This external, X-Api-Key-authenticated endpoint has no per-user identity of its
     own, so a caller-supplied X-User-Id header is otherwise just an unverified string -- passing
     it straight into resolve_routes would let any entity select ANY organization's per-user route
-    policy by guessing/knowing another org's user id. Only honor it when the referenced user
-    actually belongs to the calling entity's own organization; there's no equivalent check
-    possible for X-User-Group (no Group model/ownership concept exists anywhere in the schema),
-    so that header is accepted for logging only and never reaches resolve_routes."""
+    policy by guessing/knowing another org's user id.
+
+    Rejects outright (403) rather than silently falling back to the default route when a
+    caller-supplied user_id doesn't resolve to a real user in the calling entity's own
+    organization -- a mismatch here almost always means a misconfigured integration (stale/typo'd
+    id, or an id copied from the wrong account), and silently degrading to the default route hid
+    that misconfiguration behind what looked like a normal successful send. There's no equivalent
+    check possible for X-User-Group (no Group model/ownership concept exists anywhere in the
+    schema), so that header is still accepted for logging only and never reaches resolve_routes."""
     if not x_user_id:
         return None
     candidate = db.get(User, x_user_id)
-    if candidate and candidate.organization_id == entity.organization_id:
-        return x_user_id
-    return None
+    if not candidate or candidate.organization_id != entity.organization_id:
+        raise AuthorizationError("user_id does not belong to this account")
+    return x_user_id
 
 
 @app.post("/v1/sms/send", response_model=ApiSmsSendResponse, tags=["sms"])

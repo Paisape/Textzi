@@ -885,7 +885,7 @@ const bulkRecipientShapeExample = '{ mobile, message }'
 
 const errorCodesReference = [
   { code: 401, meaning: 'Invalid or missing X-Api-Key.' },
-  { code: 403, meaning: 'This entity/channel is not active.' },
+  { code: 403, meaning: 'This entity/channel is not active, the caller IP isn\'t on this key\'s IP allow-list, or X-User-Id/user_id was set to an id that doesn\'t belong to your own account.' },
   { code: 422, meaning: 'Validation failure -- unknown/unapproved template_id, recipient on your opt-out list, or a malformed request body.' },
   { code: 429, meaning: 'Rate limit exceeded for this account. See Rate Limits below.' },
   { code: 409, meaning: 'Duplicate Idempotency-Key reused with a different request.' },
@@ -2405,7 +2405,8 @@ onMounted(async () => {
                     <td>No</td>
                     <td>
                       Route a send through a per-user route policy set up for someone in your own
-                      organization. Ignored if the id doesn't belong to your organization. Find a
+                      organization. <strong>Rejected with 403 if the id doesn't belong to your
+                      organization</strong> — leave it out entirely rather than guessing. Find a
                       teammate's id (and copy it) on the
                       <RouterLink to="/team">Team</RouterLink> page. Not needed at all if your
                       account has an account-wide (Entity) route policy set up instead — ask
@@ -2534,7 +2535,7 @@ onMounted(async () => {
                   <tr>
                     <td><code>user_id</code></td>
                     <td>No</td>
-                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — only needed for a per-user Route Policy; not required if your account has an account-wide (Entity) route policy set up instead.</td>
+                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — only needed for a per-user Route Policy, rejected with 403 if it doesn't belong to your account, and not required at all if your account has an account-wide (Entity) route policy set up instead.</td>
                   </tr>
                 </tbody>
               </VTable>
