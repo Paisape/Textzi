@@ -208,6 +208,27 @@ def create_template(entity_id: str, payload: TemplateCreate, db: Session = Depen
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
 
 
+@router.delete("/entities/{entity_id}/templates/{template_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def delete_template(entity_id: str, template_id: str, db: Session = Depends(get_db)):
+    """Permanent delete -- only allowed while the template has never been used to send anything.
+    Message.template_id is a required (non-nullable) foreign key, so a template with real send
+    history can't be hard-deleted without either breaking that history's referential integrity or
+    orphaning old Message rows; blocking deletion here keeps every past message's template
+    reference intact for reporting/archiving, same conservative stance this codebase takes
+    everywhere else (archiving.py never deletes a Message row either). A template that was created
+    by mistake and never actually used has zero such history, so deleting it is unconditionally
+    safe."""
+    template = db.get(Template, template_id)
+    if not template or template.entity_id != entity_id:
+        raise HTTPException(status_code=404, detail="Template not found")
+    used_count = db.scalar(select(func.count()).select_from(Message).where(Message.template_id == template_id))
+    if used_count:
+        raise HTTPException(status_code=409, detail=f"This template has been used to send {used_count} message(s) and can't be permanently deleted -- its history needs to stay intact for reporting.")
+    db.delete(template)
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/entities/{entity_id}/api-keys", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_api_keys(entity_id: str, db: Session = Depends(get_db)):
     keys = db.scalars(select(ApiKey).where(ApiKey.entity_id == entity_id)).all()

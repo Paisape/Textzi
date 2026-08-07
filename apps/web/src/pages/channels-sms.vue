@@ -153,6 +153,38 @@ async function onAddTemplate() {
   }
 }
 
+const deleteTemplateTarget = ref<TemplateSummary | null>(null)
+const deletingTemplate = ref(false)
+const deleteTemplateError = ref('')
+
+function onOpenDeleteTemplateDialog(template: TemplateSummary) {
+  deleteTemplateTarget.value = template
+  deleteTemplateError.value = ''
+}
+
+function closeDeleteTemplateDialog() {
+  deleteTemplateTarget.value = null
+  deleteTemplateError.value = ''
+}
+
+async function onConfirmDeleteTemplate() {
+  if (!deleteTemplateTarget.value)
+    return
+  deleteTemplateError.value = ''
+  deletingTemplate.value = true
+  try {
+    await $api(`/v1/channels/sms/templates/${deleteTemplateTarget.value.id}`, { method: 'DELETE' })
+    closeDeleteTemplateDialog()
+    await loadTemplates()
+  }
+  catch (error: any) {
+    deleteTemplateError.value = extractErrorMessage(error, 'Could not delete this template.')
+  }
+  finally {
+    deletingTemplate.value = false
+  }
+}
+
 // ---- Sender ID tab: channel status ----
 const status = ref<ChannelStatus | null>(null)
 const statusError = ref('')
@@ -1695,14 +1727,24 @@ onMounted(async () => {
                 </td>
                 <td>{{ template.body }}</td>
                 <td>
-                  <VBtn
-                    size="small"
-                    variant="outlined"
-                    :disabled="!status?.channel_active"
-                    @click="onOpenTestDialog(template)"
-                  >
-                    Test
-                  </VBtn>
+                  <div class="d-flex gap-2">
+                    <VBtn
+                      size="small"
+                      variant="outlined"
+                      :disabled="!status?.channel_active"
+                      @click="onOpenTestDialog(template)"
+                    >
+                      Test
+                    </VBtn>
+                    <VBtn
+                      size="small"
+                      variant="text"
+                      color="error"
+                      @click="onOpenDeleteTemplateDialog(template)"
+                    >
+                      Delete
+                    </VBtn>
+                  </div>
                 </td>
               </tr>
               <tr v-if="!templatesLoading && !templates.length">
@@ -1783,6 +1825,41 @@ onMounted(async () => {
               Test
             </VBtn>
           </VCardText>
+        </VCard>
+      </VDialog>
+
+      <VDialog
+        :model-value="!!deleteTemplateTarget"
+        max-width="480"
+        @update:model-value="value => { if (!value) closeDeleteTemplateDialog() }"
+      >
+        <VCard v-if="deleteTemplateTarget">
+          <VCardTitle class="text-error">
+            Delete this template permanently
+          </VCardTitle>
+          <VCardText>
+            <VAlert type="error" variant="tonal" density="compact" class="mb-4">
+              This permanently deletes <strong>{{ deleteTemplateTarget.alias }}</strong>. There is no undo.
+              Only allowed while this template has never been used to send a message -- if it
+              has, the delete is blocked to keep that message history intact.
+            </VAlert>
+            <VAlert v-if="deleteTemplateError" type="error" variant="tonal" density="compact">
+              {{ deleteTemplateError }}
+            </VAlert>
+          </VCardText>
+          <VCardActions>
+            <VSpacer />
+            <VBtn variant="tonal" @click="closeDeleteTemplateDialog">
+              Cancel
+            </VBtn>
+            <VBtn
+              color="error"
+              :loading="deletingTemplate"
+              @click="onConfirmDeleteTemplate"
+            >
+              Delete Permanently
+            </VBtn>
+          </VCardActions>
         </VCard>
       </VDialog>
 

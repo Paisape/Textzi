@@ -255,6 +255,38 @@ async function onCreateTemplate() {
   }
 }
 
+const deleteTemplateTarget = ref<TemplateRow | null>(null)
+const deletingTemplate = ref(false)
+const deleteTemplateError = ref('')
+
+function onOpenDeleteTemplateDialog(template: TemplateRow) {
+  deleteTemplateTarget.value = template
+  deleteTemplateError.value = ''
+}
+
+function closeDeleteTemplateDialog() {
+  deleteTemplateTarget.value = null
+  deleteTemplateError.value = ''
+}
+
+async function onConfirmDeleteTemplate() {
+  if (!deleteTemplateTarget.value || !selectedEntityId.value)
+    return
+  deleteTemplateError.value = ''
+  deletingTemplate.value = true
+  try {
+    await $api(`/v1/admin/entities/${selectedEntityId.value}/templates/${deleteTemplateTarget.value.id}`, { method: 'DELETE' })
+    closeDeleteTemplateDialog()
+    await loadDltAssets()
+  }
+  catch (error: any) {
+    deleteTemplateError.value = extractErrorMessage(error, 'Could not delete this template.')
+  }
+  finally {
+    deletingTemplate.value = false
+  }
+}
+
 // API key create
 const keySubmitting = ref(false)
 const keyError = ref('')
@@ -748,6 +780,7 @@ onMounted(load)
                     <th>Header</th>
                     <th>Category</th>
                     <th>Status</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -765,10 +798,20 @@ onMounted(load)
                     <td class="text-capitalize">
                       {{ template.status }}
                     </td>
+                    <td>
+                      <VBtn
+                        size="small"
+                        variant="text"
+                        color="error"
+                        @click="onOpenDeleteTemplateDialog(template)"
+                      >
+                        Delete
+                      </VBtn>
+                    </td>
                   </tr>
                   <tr v-if="!templates.length">
                     <td
-                      colspan="6"
+                      colspan="7"
                       class="text-center text-medium-emphasis"
                     >
                       No templates registered yet.
@@ -850,4 +893,39 @@ onMounted(load)
       </VWindow>
     </VCard>
   </template>
+
+  <VDialog
+    :model-value="!!deleteTemplateTarget"
+    max-width="480"
+    @update:model-value="value => { if (!value) closeDeleteTemplateDialog() }"
+  >
+    <VCard v-if="deleteTemplateTarget">
+      <VCardTitle class="text-error">
+        Delete this template permanently
+      </VCardTitle>
+      <VCardText>
+        <VAlert type="error" variant="tonal" density="compact" class="mb-4">
+          This permanently deletes <strong>{{ deleteTemplateTarget.alias }}</strong>. There is no
+          undo. Only allowed while this template has never been used to send a message -- if it
+          has, the delete is blocked to keep that message history intact.
+        </VAlert>
+        <VAlert v-if="deleteTemplateError" type="error" variant="tonal" density="compact">
+          {{ deleteTemplateError }}
+        </VAlert>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="tonal" @click="closeDeleteTemplateDialog">
+          Cancel
+        </VBtn>
+        <VBtn
+          color="error"
+          :loading="deletingTemplate"
+          @click="onConfirmDeleteTemplate"
+        >
+          Delete Permanently
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
 </template>

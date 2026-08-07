@@ -620,6 +620,27 @@ def create_my_template(
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
 
 
+@router.delete("/templates/{template_id}")
+def delete_my_template(template_id: str, user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
+    """Permanent delete -- only allowed while the template has never been used to send anything,
+    same rule and reasoning as admin.delete_template. A template created by mistake and never
+    used has zero send history, so removing it entirely is unconditionally safe; one that's
+    actually been sent with must keep its Message.template_id reference intact for reporting."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    template = db.get(Template, template_id)
+    if not template or template.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Template not found")
+    used_count = db.scalar(select(func.count()).select_from(Message).where(Message.template_id == template_id))
+    if used_count:
+        raise HTTPException(status_code=409, detail=f"This template has been used to send {used_count} message(s) and can't be permanently deleted -- its history needs to stay intact for reporting.")
+    db.delete(template)
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/api-keys", response_model=list[ApiKeyOut])
 def list_my_api_keys(user: User = Depends(require_recent_2fa), db: Session = Depends(get_db)):
     try:
