@@ -31,8 +31,11 @@ type RoutePolicy = {
   id: string
   subject_type: string
   subject_id: string
+  subject_label: string | null
   routes: string[]
 }
+
+type CustomerUserOption = { id: string, email: string, full_name: string }
 
 const loadError = ref('')
 const routes = ref<ProviderRoute[]>([])
@@ -322,17 +325,56 @@ async function onDeleteRoute(routeName: string) {
 
 // Route policy create
 const newSubjectType = ref<'user' | 'group'>('user')
+// "user" subjects are picked from a search dropdown (subject_id must be the real internal
+// User.id for resolve_routes to ever match it -- a free-typed email/name looked plausible but
+// silently never matched anything, so policies quietly fell back to the default route). "group"
+// has no backing data source in this app yet (resolve_routes is never actually called with a
+// group value from anywhere), so it stays a free-text field.
+const newSubjectUserId = ref<string | null>(null)
 const newSubjectId = ref('')
 const newPolicyRoutes = ref<string[]>([])
 const policySubmitting = ref(false)
 const policyError = ref('')
 
+const subjectUserOptions = ref<CustomerUserOption[]>([])
+const subjectUserSearch = ref('')
+const subjectUserSearchLoading = ref(false)
+let subjectUserSearchTimer: ReturnType<typeof setTimeout> | undefined
+
+function subjectUserLabel(u: CustomerUserOption) {
+  return `${u.full_name} (${u.email})`
+}
+
+async function searchSubjectUsers(query: string) {
+  subjectUserSearchLoading.value = true
+  try {
+    subjectUserOptions.value = await $api<CustomerUserOption[]>('/v1/admin/customer-users', { query: query ? { search: query } : {} })
+  }
+  catch (error: any) {
+    policyError.value = extractErrorMessage(error, 'Could not search customers.')
+  }
+  finally {
+    subjectUserSearchLoading.value = false
+  }
+}
+
+watch(subjectUserSearch, query => {
+  clearTimeout(subjectUserSearchTimer)
+  subjectUserSearchTimer = setTimeout(() => searchSubjectUsers(query), 300)
+})
+
+watch(newSubjectType, () => {
+  newSubjectUserId.value = null
+  newSubjectId.value = ''
+})
+
 const availableRouteNames = computed(() => [...routes.value.map(r => r.route_name), 'default-simulated-route'])
 
 async function onCreatePolicy() {
   policyError.value = ''
-  if (!newSubjectId.value.trim()) {
-    policyError.value = 'Enter the user id or group name this policy applies to.'
+  const subjectId = newSubjectType.value === 'user' ? newSubjectUserId.value : newSubjectId.value.trim()
+  if (!subjectId) {
+    policyError.value = newSubjectType.value === 'user' ? 'Search for and select the customer this policy applies to.' : 'Enter the group name this policy applies to.'
     return
   }
   if (!newPolicyRoutes.value.length) {
@@ -345,11 +387,11 @@ async function onCreatePolicy() {
       method: 'POST',
       body: {
         subject_type: newSubjectType.value,
-        subject_id: newSubjectId.value.trim(),
+        subject_id: subjectId,
         routes: newPolicyRoutes.value,
       },
     })
-    newSubjectId.value = ''; newPolicyRoutes.value = []
+    newSubjectUserId.value = null; newSubjectId.value = ''; newPolicyRoutes.value = []
     await loadPolicies()
   }
   catch (error: any) {
@@ -745,10 +787,23 @@ onMounted(load)
               cols="12"
               sm="4"
             >
+              <VAutocomplete
+                v-if="newSubjectType === 'user'"
+                v-model="newSubjectUserId"
+                v-model:search="subjectUserSearch"
+                :items="subjectUserOptions"
+                :item-title="subjectUserLabel"
+                item-value="id"
+                label="Customer"
+                placeholder="Search by name or email"
+                :loading="subjectUserSearchLoading"
+                no-filter
+              />
               <AppTextField
+                v-else
                 v-model="newSubjectId"
-                label="Subject id"
-                placeholder="user id, or group name"
+                label="Group name"
+                placeholder="group name"
               />
             </VCol>
             <VCol
@@ -791,7 +846,7 @@ onMounted(load)
               <td class="text-capitalize">
                 {{ policy.subject_type }}
               </td>
-              <td>{{ policy.subject_id }}</td>
+              <td>{{ policy.subject_label ?? policy.subject_id }}</td>
               <td>{{ policy.routes.join(' → ') }}</td>
               <td>
                 <VBtn

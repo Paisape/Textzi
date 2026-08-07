@@ -282,8 +282,20 @@ def dispatch_message(message_id: str, db: Session = Depends(get_db)):
 
 @app.get("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin)])
 def list_route_policies(db: Session = Depends(get_db)):
+    """subject_id for a "user" policy is the real internal User.id (a UUID) -- meaningless on its
+    own in the admin UI, so this batch-resolves a human label (name + email) for every user-type
+    policy in one query, rather than the frontend needing its own N+1 lookup or a separate
+    unbounded fetch just to make the table readable."""
     policies = db.scalars(select(RoutePolicy).where(RoutePolicy.active == True)).all()  # noqa: E712
-    return [{"id": p.id, "subject_type": p.subject_type, "subject_id": p.subject_id, "routes": p.routes} for p in policies]
+    user_ids = {p.subject_id for p in policies if p.subject_type == "user"}
+    labels: dict[str, str] = {}
+    if user_ids:
+        for u in db.scalars(select(User).where(User.id.in_(user_ids))).all():
+            labels[u.id] = f"{u.full_name} ({u.email})"
+    return [
+        {"id": p.id, "subject_type": p.subject_type, "subject_id": p.subject_id, "subject_label": labels.get(p.subject_id), "routes": p.routes}
+        for p in policies
+    ]
 
 
 @app.post("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin)])
