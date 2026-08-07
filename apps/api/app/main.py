@@ -2,8 +2,9 @@ import hmac
 import time
 import uuid
 from contextlib import asynccontextmanager
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -189,6 +190,38 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
             user_agent=request.headers.get("user-agent", "")[:300],
         ))
         db.commit()
+
+
+@app.get("/v1/sms/send-url", response_model=SmsSendResponse, tags=["sms"])
+def send_sms_via_url(
+    request: Request,
+    api_key: str = Query(min_length=20),
+    mobile: str = Query(...),
+    template_id: str = Query(...),
+    message: str = Query(...),
+    idempotency_key: str | None = Query(default=None, max_length=120),
+    x_user_id: str | None = Query(default=None),
+    x_user_group: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    """Query-string twin of POST /v1/sms/send, for integrations that can only fire a plain HTTP
+    GET -- e.g. a system migrating off a raw carrier gateway URL like TTBS's own
+    `.../campaigns/qs?recipient=...&msg=...&user=...&pswd=...`, which has no concept of a JSON
+    body or custom headers. Delegates to send_sms itself (same auth, rate limit, opt-out check,
+    template resolution, wallet debit, dispatch, ApiLog entry) rather than duplicating that logic.
+
+    Putting api_key in the URL is inherently less safe than a header: it can end up logged along
+    the way. Textzi's own side is covered -- ApiLog only ever stores request.url.path, never the
+    query string (see the finally block in send_sms above), and uvicorn's access log is disabled
+    in production (Dockerfile) so the key never hits container/Coolify logs either. Cloudflare's
+    own edge request logs are outside Textzi's control, though, and will still show the full URL
+    including this key -- scrubbing those is a Cloudflare-dashboard setting, not something this
+    endpoint can affect."""
+    try:
+        payload = ApiSmsSendRequest(template_id=template_id, mobile=mobile, message=message)
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    return send_sms(payload, request, x_api_key=api_key, idempotency_key=idempotency_key, x_user_id=x_user_id, x_user_group=x_user_group, db=db)
 
 
 @app.post("/v1/sms/send-bulk", response_model=BulkSmsSendResponse, tags=["sms"])
