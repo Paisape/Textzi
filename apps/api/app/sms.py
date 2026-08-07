@@ -40,7 +40,7 @@ def compose_sms(payload: SmsSendRequest, user: User = Depends(require_user), db:
         require_channel_active(db, entity.id, "sms")
         assert_not_opted_out(db, entity.id, payload.mobile)
         template = resolve_template(db, entity.id, payload.template)
-        route_plan = resolve_routes(db, user.id, None)
+        route_plan = resolve_routes(db, user.id, None, entity.id)
         rendered_body = render_template(template.body, payload.variables)
         encrypted = is_encryption_enabled(db, entity.id, "sms")
         credits = sms_segment_credits(rendered_body)

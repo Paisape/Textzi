@@ -2407,7 +2407,9 @@ onMounted(async () => {
                       Route a send through a per-user route policy set up for someone in your own
                       organization. Ignored if the id doesn't belong to your organization. Find a
                       teammate's id (and copy it) on the
-                      <RouterLink to="/team">Team</RouterLink> page.
+                      <RouterLink to="/team">Team</RouterLink> page. Not needed at all if your
+                      account has an account-wide (Entity) route policy set up instead — ask
+                      support if you're not sure which applies to you.
                     </td>
                   </tr>
                 </tbody>
@@ -2532,7 +2534,7 @@ onMounted(async () => {
                   <tr>
                     <td><code>user_id</code></td>
                     <td>No</td>
-                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — required if you want this send to pick up a per-user Route Policy instead of the default route.</td>
+                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — only needed for a per-user Route Policy; not required if your account has an account-wide (Entity) route policy set up instead.</td>
                   </tr>
                 </tbody>
               </VTable>

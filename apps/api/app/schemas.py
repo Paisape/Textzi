@@ -90,7 +90,11 @@ class PublicApiBaseUrlOut(BaseModel):
 
 
 class RoutePolicyRequest(BaseModel):
-    subject_type: str = Field(pattern="^(group|user)$")
+    # "entity" applies to every send from that whole account (matched by the caller's entity_id,
+    # which api_key alone always resolves to) -- for a customer who wants all their sends on one
+    # route without needing to pass user_id on every call. "user"/"group" stay for finer-grained
+    # per-team-member routing when that's actually needed.
+    subject_type: str = Field(pattern="^(group|user|entity)$")
     subject_id: str = Field(min_length=1, max_length=64)
     routes: list[str] = Field(min_length=1, max_length=5)
 

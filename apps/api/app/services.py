@@ -655,13 +655,21 @@ def redact_payload_values(payload: dict | None, redactions: dict[str, str]) -> d
     return walk(payload)
 
 
-def resolve_routes(db: Session, user_id: str | None, user_group: str | None) -> list[str]:
+def resolve_routes(db: Session, user_id: str | None, user_group: str | None, entity_id: str | None = None) -> list[str]:
+    """Checks policies from most to least specific: a named user, then a group, then the whole
+    entity/account -- falling through each tier only if the more specific one has no policy set,
+    not merely no ID supplied (a caller with no user_id at all, e.g. a backend integration with
+    no per-user concept, still gets the entity-level policy applied via entity_id alone)."""
     if user_id:
         policy = db.scalar(select(RoutePolicy).where(RoutePolicy.subject_type == "user", RoutePolicy.subject_id == user_id, RoutePolicy.active == True))  # noqa: E712
         if policy:
             return policy.routes
     if user_group:
         policy = db.scalar(select(RoutePolicy).where(RoutePolicy.subject_type == "group", RoutePolicy.subject_id == user_group, RoutePolicy.active == True))  # noqa: E712
+        if policy:
+            return policy.routes
+    if entity_id:
+        policy = db.scalar(select(RoutePolicy).where(RoutePolicy.subject_type == "entity", RoutePolicy.subject_id == entity_id, RoutePolicy.active == True))  # noqa: E712
         if policy:
             return policy.routes
     return ["default-simulated-route"]

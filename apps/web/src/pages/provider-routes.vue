@@ -36,6 +36,8 @@ type RoutePolicy = {
 }
 
 type CustomerUserOption = { id: string, email: string, full_name: string }
+type CustomerOption = { organization_id: string, organization_name: string, primary_contact_name: string | null, primary_contact_email: string | null }
+type EntityOption = { id: string, organization_id: string, name: string, status: string }
 
 const loadError = ref('')
 const routes = ref<ProviderRoute[]>([])
@@ -324,12 +326,14 @@ async function onDeleteRoute(routeName: string) {
 }
 
 // Route policy create
-const newSubjectType = ref<'user' | 'group'>('user')
+const newSubjectType = ref<'user' | 'group' | 'entity'>('user')
 // "user" subjects are picked from a search dropdown (subject_id must be the real internal
 // User.id for resolve_routes to ever match it -- a free-typed email/name looked plausible but
-// silently never matched anything, so policies quietly fell back to the default route). "group"
-// has no backing data source in this app yet (resolve_routes is never actually called with a
-// group value from anywhere), so it stays a free-text field.
+// silently never matched anything, so policies quietly fell back to the default route). "entity"
+// applies to every send from that whole account regardless of which user/api-key triggered it --
+// the only option that requires no per-call user_id at all, picked the same way (search, don't
+// type a raw id). "group" has no backing data source in this app yet (resolve_routes is never
+// actually called with a group value from anywhere), so it stays a free-text field.
 const newSubjectUserId = ref<string | null>(null)
 const newSubjectId = ref('')
 const newPolicyRoutes = ref<string[]>([])
@@ -363,18 +367,74 @@ watch(subjectUserSearch, query => {
   subjectUserSearchTimer = setTimeout(() => searchSubjectUsers(query), 300)
 })
 
+// "entity" picker: search organizations, then pick which of that org's entities (almost always
+// just one) the policy applies to -- same two-step pattern as admin-wallet-credits.vue.
+const subjectOrgOptions = ref<CustomerOption[]>([])
+const subjectOrgSearch = ref('')
+const subjectOrgSearchLoading = ref(false)
+let subjectOrgSearchTimer: ReturnType<typeof setTimeout> | undefined
+const selectedSubjectOrgId = ref<string | null>(null)
+const subjectEntityOptions = ref<EntityOption[]>([])
+const selectedSubjectEntityId = ref<string | null>(null)
+
+function subjectOrgLabel(c: CustomerOption) {
+  const who = c.primary_contact_name || c.primary_contact_email || 'Unknown contact'
+  return `${who} — ${c.organization_name}`
+}
+
+async function searchSubjectOrgs(query: string) {
+  subjectOrgSearchLoading.value = true
+  try {
+    subjectOrgOptions.value = await $api<CustomerOption[]>('/v1/admin/customers', { query: query ? { search: query } : {} })
+  }
+  catch (error: any) {
+    policyError.value = extractErrorMessage(error, 'Could not search customers.')
+  }
+  finally {
+    subjectOrgSearchLoading.value = false
+  }
+}
+
+watch(subjectOrgSearch, query => {
+  clearTimeout(subjectOrgSearchTimer)
+  subjectOrgSearchTimer = setTimeout(() => searchSubjectOrgs(query), 300)
+})
+
+watch(selectedSubjectOrgId, async orgId => {
+  selectedSubjectEntityId.value = null
+  subjectEntityOptions.value = []
+  if (!orgId)
+    return
+  try {
+    subjectEntityOptions.value = await $api<EntityOption[]>('/v1/admin/entities', { query: { organization_id: orgId } })
+    if (subjectEntityOptions.value.length === 1)
+      selectedSubjectEntityId.value = subjectEntityOptions.value[0].id
+  }
+  catch (error: any) {
+    policyError.value = extractErrorMessage(error, 'Could not load this customer\'s entities.')
+  }
+})
+
 watch(newSubjectType, () => {
   newSubjectUserId.value = null
   newSubjectId.value = ''
+  selectedSubjectOrgId.value = null
+  selectedSubjectEntityId.value = null
 })
 
 const availableRouteNames = computed(() => [...routes.value.map(r => r.route_name), 'default-simulated-route'])
 
 async function onCreatePolicy() {
   policyError.value = ''
-  const subjectId = newSubjectType.value === 'user' ? newSubjectUserId.value : newSubjectId.value.trim()
+  let subjectId: string | null
+  if (newSubjectType.value === 'user')
+    subjectId = newSubjectUserId.value
+  else if (newSubjectType.value === 'entity')
+    subjectId = selectedSubjectEntityId.value
+  else
+    subjectId = newSubjectId.value.trim()
   if (!subjectId) {
-    policyError.value = newSubjectType.value === 'user' ? 'Search for and select the customer this policy applies to.' : 'Enter the group name this policy applies to.'
+    policyError.value = newSubjectType.value === 'group' ? 'Enter the group name this policy applies to.' : 'Search for and select the customer this policy applies to.'
     return
   }
   if (!newPolicyRoutes.value.length) {
@@ -391,7 +451,7 @@ async function onCreatePolicy() {
         routes: newPolicyRoutes.value,
       },
     })
-    newSubjectUserId.value = null; newSubjectId.value = ''; newPolicyRoutes.value = []
+    newSubjectUserId.value = null; newSubjectId.value = ''; selectedSubjectOrgId.value = null; selectedSubjectEntityId.value = null; newPolicyRoutes.value = []
     await loadPolicies()
   }
   catch (error: any) {
@@ -755,7 +815,11 @@ onMounted(load)
           Route policies
         </h6>
         <p class="text-body-2 text-medium-emphasis mb-4">
-          Decides which route a user or group's messages go through. Without a policy, a subject always uses "default-simulated-route".
+          Decides which route a send goes through. Checked most to least specific: a named user,
+          then a group, then the whole entity/account — an Entity policy is the simplest option
+          for "route everything for this customer through X," since it applies to every API/
+          dashboard send from their account with no per-call user id needed. Without any matching
+          policy, a send always uses "default-simulated-route".
         </p>
         <VAlert
           v-if="policyError"
@@ -777,7 +841,7 @@ onMounted(load)
             >
               <VSelect
                 v-model="newSubjectType"
-                :items="[{ value: 'user', title: 'User id' }, { value: 'group', title: 'Group' }]"
+                :items="[{ value: 'entity', title: 'Entity (whole account)' }, { value: 'user', title: 'User id' }, { value: 'group', title: 'Group' }]"
                 item-title="title"
                 item-value="value"
                 label="Subject type"
@@ -799,6 +863,28 @@ onMounted(load)
                 :loading="subjectUserSearchLoading"
                 no-filter
               />
+              <template v-else-if="newSubjectType === 'entity'">
+                <VAutocomplete
+                  v-model="selectedSubjectOrgId"
+                  v-model:search="subjectOrgSearch"
+                  :items="subjectOrgOptions"
+                  :item-title="subjectOrgLabel"
+                  item-value="organization_id"
+                  label="Customer"
+                  placeholder="Search by name, email, or organization"
+                  :loading="subjectOrgSearchLoading"
+                  no-filter
+                  class="mb-2"
+                />
+                <VSelect
+                  v-if="subjectEntityOptions.length > 1"
+                  v-model="selectedSubjectEntityId"
+                  :items="subjectEntityOptions"
+                  item-title="name"
+                  item-value="id"
+                  label="Entity"
+                />
+              </template>
               <AppTextField
                 v-else
                 v-model="newSubjectId"

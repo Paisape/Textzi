@@ -15,7 +15,7 @@ from .channels import router as channels_router
 from .database import Base, engine, get_db
 from .dispatch import dispatch_message as run_dispatch
 from .invoices import router as invoices_router
-from .models import ApiLog, Entity, Message, RoutePolicy, User
+from .models import ApiLog, Entity, Message, Organization, RoutePolicy, User
 from .onboarding import router as onboarding_router
 from .payments import router as payments_router
 from .platform_admin import router as platform_admin_router
@@ -123,7 +123,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         # still verifies it's one of this entity's own approved templates and resolves the
         # header/PE_ID/route mapping registered for it.
         template = resolve_template_by_dlt_id(db, entity.id, payload.template_id)
-        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None)
+        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None, entity.id)
         route = route_plan[0]
         rendered_body = payload.message
         encrypted = is_encryption_enabled(db, entity.id, "sms")
@@ -250,7 +250,7 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
         enforce_rate_limit(f"ratelimit:sms:{entity.id}", settings.sms_rate_limit_max_requests, settings.sms_rate_limit_window_seconds, amount=len(payload.recipients))
         require_channel_active(db, entity.id, "sms")
         template = resolve_template_by_dlt_id(db, entity.id, payload.template_id)
-        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None)
+        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None, entity.id)
         route = route_plan[0]
         encrypted = is_encryption_enabled(db, entity.id, "sms")
     except AuthenticationError as exc:
@@ -321,16 +321,24 @@ def dispatch_message(message_id: str, db: Session = Depends(get_db)):
 
 @app.get("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin)])
 def list_route_policies(db: Session = Depends(get_db)):
-    """subject_id for a "user" policy is the real internal User.id (a UUID) -- meaningless on its
-    own in the admin UI, so this batch-resolves a human label (name + email) for every user-type
-    policy in one query, rather than the frontend needing its own N+1 lookup or a separate
-    unbounded fetch just to make the table readable."""
+    """subject_id for a "user"/"entity" policy is the real internal User.id/Entity.id (a UUID)
+    -- meaningless on its own in the admin UI, so this batch-resolves a human label for every
+    such policy in one query per type, rather than the frontend needing its own N+1 lookup or a
+    separate unbounded fetch just to make the table readable."""
     policies = db.scalars(select(RoutePolicy).where(RoutePolicy.active == True)).all()  # noqa: E712
     user_ids = {p.subject_id for p in policies if p.subject_type == "user"}
+    entity_ids = {p.subject_id for p in policies if p.subject_type == "entity"}
     labels: dict[str, str] = {}
     if user_ids:
         for u in db.scalars(select(User).where(User.id.in_(user_ids))).all():
             labels[u.id] = f"{u.full_name} ({u.email})"
+    if entity_ids:
+        entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()}
+        org_ids = {e.organization_id for e in entities.values()}
+        orgs = {o.id: o for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
+        for entity_id, entity in entities.items():
+            org = orgs.get(entity.organization_id)
+            labels[entity_id] = f"{org.name} — {entity.name}" if org else entity.name
     return [
         {"id": p.id, "subject_type": p.subject_type, "subject_id": p.subject_id, "subject_label": labels.get(p.subject_id), "routes": p.routes}
         for p in policies
