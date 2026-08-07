@@ -28,7 +28,7 @@ from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
 from .wallet import router as wallet_router
 from .webhooks import router as webhooks_router
-from .schemas import ApiSmsSendRequest, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
+from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
 from .security import encrypt_secret
 from .services import (
     AuthenticationError, AuthorizationError, DomainError, RateLimitError, assert_not_opted_out, available_balance, client_ip,
@@ -99,7 +99,7 @@ def _same_org_user_id(db: Session, entity: Entity, x_user_id: str | None) -> str
     return None
 
 
-@app.post("/v1/sms/send", response_model=SmsSendResponse, tags=["sms"])
+@app.post("/v1/sms/send", response_model=ApiSmsSendResponse, tags=["sms"])
 def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Header(min_length=20), idempotency_key: str | None = Header(default=None, max_length=120), x_user_id: str | None = Header(default=None), x_user_group: str | None = Header(default=None), db: Session = Depends(get_db)):
     started, request_id, entity_id = time.perf_counter(), str(uuid.uuid4()), None
     # Whatever the try block sets these to by the time it exits (success or any except clause
@@ -192,7 +192,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         db.commit()
 
 
-@app.get("/v1/sms/send-url", response_model=SmsSendResponse, tags=["sms"])
+@app.get("/v1/sms/send-url", response_model=ApiSmsSendResponse, tags=["sms"])
 def send_sms_via_url(
     request: Request,
     api_key: str = Query(min_length=20),
@@ -200,8 +200,8 @@ def send_sms_via_url(
     template_id: str = Query(...),
     message: str = Query(...),
     idempotency_key: str | None = Query(default=None, max_length=120),
-    x_user_id: str | None = Query(default=None),
-    x_user_group: str | None = Query(default=None),
+    user_id: str | None = Query(default=None),
+    user_group: str | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     """Query-string twin of POST /v1/sms/send, for integrations that can only fire a plain HTTP
@@ -209,6 +209,12 @@ def send_sms_via_url(
     `.../campaigns/qs?recipient=...&msg=...&user=...&pswd=...`, which has no concept of a JSON
     body or custom headers. Delegates to send_sms itself (same auth, rate limit, opt-out check,
     template resolution, wallet debit, dispatch, ApiLog entry) rather than duplicating that logic.
+
+    user_id (query param here, X-User-Id header on POST /v1/sms/send) is what makes a per-user
+    Route Policy (Provider Routes admin page) actually apply -- without it, resolve_routes has no
+    subject to match a policy against and always falls back to "default-simulated-route",
+    regardless of any policy configured in the admin panel. Must be the recipient's real internal
+    User.id (found on the Team page), not their email.
 
     Putting api_key in the URL is inherently less safe than a header: it can end up logged along
     the way. Textzi's own side is covered -- ApiLog only ever stores request.url.path, never the
@@ -221,7 +227,7 @@ def send_sms_via_url(
         payload = ApiSmsSendRequest(template_id=template_id, mobile=mobile, message=message)
     except ValidationError as exc:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
-    return send_sms(payload, request, x_api_key=api_key, idempotency_key=idempotency_key, x_user_id=x_user_id, x_user_group=x_user_group, db=db)
+    return send_sms(payload, request, x_api_key=api_key, idempotency_key=idempotency_key, x_user_id=user_id, x_user_group=user_group, db=db)
 
 
 @app.post("/v1/sms/send-bulk", response_model=BulkSmsSendResponse, tags=["sms"])

@@ -846,7 +846,6 @@ const sendCurlExample = computed(() => `curl -X POST "${apiBaseUrl.value}/v1/sms
 const sendResponseExample = `{
   "status": "submitted",
   "message_id": "8d7734f6-99e6-41a3-bfdd-35c52bd5ea15",
-  "route": "default-route",
   "balance": 4321.5,
   "credits_charged": 1
 }`
@@ -2529,6 +2528,11 @@ onMounted(async () => {
                     <td><code>idempotency_key</code></td>
                     <td>No</td>
                     <td>Same behavior as the <code>Idempotency-Key</code> header on <code>POST /v1/sms/send</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>user_id</code></td>
+                    <td>No</td>
+                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — required if you want this send to pick up a per-user Route Policy instead of the default route.</td>
                   </tr>
                 </tbody>
               </VTable>

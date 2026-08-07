@@ -25,6 +25,19 @@ class SmsSendResponse(BaseModel):
     credits_charged: int = 1
 
 
+class ApiSmsSendResponse(BaseModel):
+    """Same as SmsSendResponse minus route -- used as the response_model for the external-facing
+    send endpoints (main.py's send_sms/send_sms_via_url) so the internal route/provider name
+    never appears in an API response, even though the underlying send still returns a full
+    SmsSendResponse internally. The dashboard's own Compose (sms.py's compose_sms) keeps using
+    SmsSendResponse directly -- showing a customer which route their own dashboard test/send took
+    is a reasonable in-app debugging aid, distinct from exposing it in a raw API response."""
+    status: str
+    message_id: str
+    balance: float
+    credits_charged: int = 1
+
+
 class ApiSmsSendRequest(BaseModel):
     """POST /v1/sms/send -- template_id is your DLT-registered template id (not Textzi's own
     alias), and message is the complete, already-rendered text to send exactly as-is. Textzi
