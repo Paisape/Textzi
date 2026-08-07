@@ -898,7 +898,7 @@ const errorCodesReference = [
   { code: 403, meaning: 'This entity/channel is not active, the caller IP isn\'t on this key\'s IP allow-list, or X-User-Id/user_id was set to an id that doesn\'t belong to your own account.' },
   { code: 422, meaning: 'Validation failure -- unknown/unapproved template_id, recipient on your opt-out list, or a malformed request body.' },
   { code: 429, meaning: 'Rate limit exceeded for this account. See Rate Limits below.' },
-  { code: 409, meaning: 'Duplicate Idempotency-Key reused with a different request.' },
+  { code: 409, meaning: 'This Idempotency-Key has already been used. Each key works once -- send a new one, or omit the header entirely.' },
 ]
 
 function buildPostmanCollection(baseUrl: string) {
@@ -2431,7 +2431,12 @@ onMounted(async () => {
                   <tr>
                     <td><code>Idempotency-Key</code></td>
                     <td>No</td>
-                    <td>Replaying the same key returns the original result instead of sending twice. Max 120 characters.</td>
+                    <td>
+                      Optional replay protection. Each key may only be used <strong>once</strong> —
+                      reusing one is rejected with <code>409</code> and never charged, it does not
+                      resend or return the original result. Use a new, unique key per message, or
+                      leave this header out entirely if you don't need it. Max 120 characters.
+                    </td>
                   </tr>
                   <tr>
                     <td><code>X-User-Id</code></td>
@@ -2563,7 +2568,7 @@ onMounted(async () => {
                   <tr>
                     <td><code>idempotency_key</code></td>
                     <td>No</td>
-                    <td>Same behavior as the <code>Idempotency-Key</code> header on <code>POST /v1/sms/send</code>.</td>
+                    <td>Same behavior as the <code>Idempotency-Key</code> header on <code>POST /v1/sms/send</code> — each key works only once; reusing one is rejected (<code>409</code>), never charged.</td>
                   </tr>
                   <tr>
                     <td><code>user_id</code></td>

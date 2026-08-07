@@ -118,10 +118,14 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         enforce_rate_limit(f"ratelimit:sms:{entity.id}", settings.sms_rate_limit_max_requests, settings.sms_rate_limit_window_seconds)
         require_channel_active(db, entity.id, "sms")
         if idempotency_key:
+            # Rejects outright rather than silently returning the original result -- each
+            # Idempotency-Key must be used exactly once. No Message row is created and no wallet
+            # debit happens on this path (both only occur further down), so a rejected reuse is
+            # never charged.
             existing = db.scalar(select(Message).where(Message.entity_id == entity.id, Message.idempotency_key == idempotency_key))
             if existing:
-                message_id = existing.id
-                return SmsSendResponse(status=existing.status, message_id=existing.id, route=existing.route or "default", balance=available_balance(db, entity.id), credits_charged=existing.credits_charged)
+                status_code, error_detail = 409, "Idempotency-Key already used"
+                raise HTTPException(status_code=409, detail="This Idempotency-Key has already been used -- each key may only be used once. Send a new, unique key for a new message, or omit it entirely if you don't need replay protection.")
         assert_not_opted_out(db, entity.id, payload.mobile)
         # No render_template call here -- the caller sends the complete, already-composed
         # message (payload.message) exactly as it should go out. resolve_template_by_dlt_id
@@ -178,8 +182,11 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         status_code, error_detail = 422, str(exc)
         db.rollback(); message_id = None; raise HTTPException(status_code=422, detail=str(exc)) from exc
     except IntegrityError as exc:
-        status_code, error_detail = 409, "Duplicate idempotency key"
-        db.rollback(); message_id = None; raise HTTPException(status_code=409, detail="Duplicate idempotency key") from exc
+        # Same outcome as the explicit check above, for the rare race where two requests with the
+        # same not-yet-used key both pass that check before either commits -- the database's own
+        # unique constraint is what actually catches this one.
+        status_code, error_detail = 409, "Idempotency-Key already used"
+        db.rollback(); message_id = None; raise HTTPException(status_code=409, detail="This Idempotency-Key has already been used -- each key may only be used once.") from exc
     finally:
         metadata = {"method": request.method}
         if error_detail:
