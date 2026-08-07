@@ -33,13 +33,13 @@ from .schemas import (
     PlatformMessageTelemetryOut, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
-    UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse, WalletTopupReportRowOut,
+    UserRoleUpdateRequest, UserStatusUpdateRequest, WalletAdjustmentQuoteOut, WalletCreditRequest, WalletCreditResponse, WalletDebitRequest, WalletDebitResponse, WalletTopupReportRowOut, EntityWalletSummaryOut,
     ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoRetryResponse,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
-from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -975,7 +975,17 @@ def _invoice_admin_out(db: Session, invoice: Invoice) -> InvoiceAdminOut:
     entity = db.get(Entity, invoice.entity_id)
     org = db.get(Organization, entity.organization_id) if entity else None
     base = _invoice_out(invoice)
-    return InvoiceAdminOut(**base.model_dump(), entity_name=entity.name if entity else "(deleted entity)", organization_name=org.name if org else "(deleted organization)")
+    return InvoiceAdminOut(
+        **base.model_dump(), entity_name=entity.name if entity else "(deleted entity)", organization_name=org.name if org else "(deleted organization)",
+        organization_zoho_linked=bool(org and org.zoho_contact_id),
+        # Historical invoices predating the Zoho migration have NULL here (the column was added
+        # additively, with no backfill) -- coalesce to the same defaults the ORM applies to new
+        # rows, so serializing an old invoice never 500s.
+        zoho_sync_status=invoice.zoho_sync_status or "pending",
+        zoho_invoice_id=invoice.zoho_invoice_id, zoho_payment_id=invoice.zoho_payment_id,
+        zoho_mark_paid=invoice.zoho_mark_paid if invoice.zoho_mark_paid is not None else True,
+        zoho_sync_error=invoice.zoho_sync_error,
+    )
 
 
 @router.get("/invoices", response_model=list[InvoiceAdminOut], dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
@@ -1002,11 +1012,30 @@ def issue_invoice_admin(invoice_id: str, request: Request, authorization: str | 
     invoice = db.get(Invoice, invoice_id)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    if invoice.status == "issued":
-        raise HTTPException(status_code=409, detail="This invoice has already been issued")
+    if invoice.status != "draft":
+        raise HTTPException(status_code=409, detail="This invoice is not a draft (already issued, or rejected)")
     issue_invoice(db, invoice)
     entity = db.get(Entity, invoice.entity_id)
     log_activity(db, entity.organization_id if entity else None, "invoice_issued_by_admin", f"Invoice for entity issued (Rs.{float(invoice.total_amount):.2f}).", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    db.refresh(invoice)
+    return _invoice_admin_out(db, invoice)
+
+
+@router.post("/invoices/{invoice_id}/reject", response_model=InvoiceAdminOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def reject_invoice_admin(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Rejects a still-draft invoice -- no invoice number, no PDF, no email, no Zoho call, and no
+    change to the wallet credit that already happened when the admin submitted it (that's a
+    separate, already-final action). Used for a manual admin credit that turns out to be a test or
+    a mistake and should never become a real GST invoice."""
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status != "draft":
+        raise HTTPException(status_code=409, detail="This invoice is not a draft (already issued, or already rejected)")
+    invoice.status = "cancelled"
+    entity = db.get(Entity, invoice.entity_id)
+    log_activity(db, entity.organization_id if entity else None, "invoice_rejected", f"Invoice for entity rejected (Rs.{float(invoice.total_amount):.2f}).", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     db.refresh(invoice)
     return _invoice_admin_out(db, invoice)
@@ -1107,13 +1136,90 @@ def sync_organization_to_zoho(organization_id: str, request: Request, authorizat
     return ZohoOrganizationLinkResponse(organization_id=organization.id, zoho_contact_id=contact_id)
 
 
+@router.get("/entities/{entity_id}/wallet-summary", response_model=EntityWalletSummaryOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def get_entity_wallet_summary(entity_id: str, db: Session = Depends(get_db)):
+    """Current SMS wallet standing for one entity -- fed to the admin wallet-credit/debit form the
+    moment a customer is selected, so the admin can see the balance they're about to adjust before
+    typing an amount."""
+    wallet = db.get(Wallet, entity_id)
+    if not wallet:
+        raise HTTPException(status_code=404, detail="Wallet not found for this entity")
+    available = float(wallet.prepaid_balance) + max(0, float(wallet.credit_limit) - float(wallet.credit_used))
+    return EntityWalletSummaryOut(
+        entity_id=entity_id, prepaid_balance=float(wallet.prepaid_balance),
+        credit_limit=float(wallet.credit_limit), credit_used=float(wallet.credit_used), available_balance=available,
+    )
+
+
+@router.get("/wallet-credits/quote", response_model=WalletAdjustmentQuoteOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def quote_wallet_adjustment(entity_id: str, amount: float, db: Session = Depends(get_db)):
+    """Live preview of how many SMS credits `amount` rupees converts to under the entity's own
+    rate card -- same conversion `create_wallet_credit`/`debit_wallet_admin` actually use, called
+    as the admin types so the form can show the real number before they submit, for both credit
+    and debit (the rate-card math is identical either direction, only the sign differs)."""
+    entity = db.get(Entity, entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+    primary_user = resolve_primary_user(db, entity.organization_id)
+    try:
+        rate_card = resolve_rate_card(db, primary_user) if primary_user else None
+        if rate_card is None:
+            raise DomainError("No default rate card is configured")
+        credits, slab = quote_credits(db, rate_card, amount)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return WalletAdjustmentQuoteOut(credits=round(credits, 2), price_per_sms=float(slab.price_per_sms))
+
+
+@router.post("/wallet-debits", response_model=WalletDebitResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def debit_wallet_admin(payload: WalletDebitRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Admin manual SMS debit -- a correction, not a sale, so unlike a credit this creates no
+    invoice and never touches Zoho: just a direct wallet deduction (via the existing
+    services.debit_wallet, which already blocks the request with a 422 if the entity's available
+    balance/credit headroom is less than the requested amount) plus an audit-log entry."""
+    entity = db.get(Entity, payload.entity_id)
+    if not entity:
+        raise HTTPException(status_code=404, detail="Entity not found")
+
+    admin_user = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
+            admin_user = db.get(User, claims.get("sub"))
+        except jwt.PyJWTError:
+            admin_user = None
+
+    primary_user = resolve_primary_user(db, entity.organization_id)
+    try:
+        rate_card = resolve_rate_card(db, primary_user) if primary_user else None
+        if rate_card is None:
+            raise DomainError("No default rate card is configured")
+        credits, _slab = quote_credits(db, rate_card, payload.amount)
+        wallet = debit_wallet(db, entity.id, credits, reference=payload.notes or "Admin manual debit")
+    except DomainError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    log_activity(
+        db, entity.organization_id, "wallet_debited_by_admin", f"Admin debited Rs.{payload.amount:.2f} ({round(credits, 2)} credits) from entity '{entity.name}'.",
+        actor_email=admin_user.email if admin_user else "admin (bootstrap key)", request=request,
+    )
+    db.commit()
+    available = float(wallet.prepaid_balance) + max(0, float(wallet.credit_limit) - float(wallet.credit_used))
+    return WalletDebitResponse(entity_id=entity.id, credits_debited=round(credits, 2), available_balance=available)
+
+
 @router.post("/wallet-credits", response_model=WalletCreditResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
 def create_wallet_credit(payload: WalletCreditRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Admin manual SMS credit. `amount` is rupees, converted to credits via the target entity's
-    own assigned rate card (same conversion as self-service recharge). Always creates a draft
-    invoice for accounting/GST traceability -- issued immediately only if `generate_invoice` is
-    true, otherwise it stays a draft record. There used to be a bypass here that skipped invoice
-    creation entirely whenever the calling admin's own organization_id happened to match the
+    own assigned rate card (same conversion as self-service recharge). The wallet credit itself is
+    applied immediately below, unconditionally, regardless of what happens to the invoice.
+    Always creates a draft invoice for accounting/GST traceability; `generate_invoice=True` issues
+    (and Zoho-syncs, if the organization is linked) it immediately, otherwise it stays a draft
+    requiring an explicit admin decision afterward (POST .../issue to approve, or POST .../reject
+    to cancel it -- see admin-invoices.vue) before it can ever reach Zoho. There used to be a
+    bypass here that skipped invoice creation entirely whenever the calling admin's own
+    organization_id happened to match the
     target entity's organization -- nothing prevents an admin-tier account from carrying a
     non-null organization_id, so that bypass let any admin who also owned/controlled a tenant
     organization credit its wallet with real, spendable balance and zero invoice/GST record. There

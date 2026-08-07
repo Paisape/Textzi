@@ -23,6 +23,27 @@ type InvoiceAdminRow = {
   issued_at: string | null
   entity_name: string
   organization_name: string
+  organization_zoho_linked: boolean
+  zoho_sync_status: string
+  zoho_invoice_id: string | null
+  zoho_payment_id: string | null
+  zoho_mark_paid: boolean
+  zoho_sync_error: string | null
+}
+
+function zohoStatus(invoice: InvoiceAdminRow): { label: string, color: string, hint: string } {
+  if (invoice.status !== 'issued')
+    return { label: '—', color: 'default', hint: '' }
+  if (!invoice.organization_zoho_linked)
+    return { label: 'Not linked', color: 'default', hint: 'This customer has not been linked to Zoho Books yet.' }
+  if (invoice.zoho_sync_status === 'synced')
+    return { label: 'Synced', color: 'success', hint: invoice.zoho_invoice_id ? `Zoho invoice ${invoice.zoho_invoice_id}` : '' }
+  if (invoice.zoho_sync_status === 'failed') {
+    return invoice.zoho_invoice_id
+      ? { label: 'Invoice created, payment pending', color: 'warning', hint: invoice.zoho_sync_error || '' }
+      : { label: 'Failed', color: 'error', hint: invoice.zoho_sync_error || '' }
+  }
+  return { label: 'Pending', color: 'warning', hint: 'Linked, but not yet pushed to Zoho Books.' }
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -116,6 +137,22 @@ async function onIssue(invoice: InvoiceAdminRow) {
   }
 }
 
+const rejectingId = ref<string | null>(null)
+
+async function onReject(invoice: InvoiceAdminRow) {
+  rejectingId.value = invoice.id
+  try {
+    const updated = await $api<InvoiceAdminRow>(`/v1/admin/invoices/${invoice.id}/reject`, { method: 'POST' })
+    Object.assign(invoice, updated)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not reject this invoice.')
+  }
+  finally {
+    rejectingId.value = null
+  }
+}
+
 const draftCount = computed(() => invoices.value.filter(i => i.status === 'draft').length)
 const bulkIssuing = ref(false)
 
@@ -159,8 +196,13 @@ onMounted(loadInvoices)
     Invoices
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Every recharge, fee, and admin credit across every customer, in one place. Draft invoices are
-    manual credits an admin chose not to issue immediately — issue them from here whenever ready.
+    Every recharge, fee, and admin credit across every customer, in one place. Every manual admin
+    credit always starts as a draft — Issue (approve) it here once you've reviewed it, or Reject
+    it if it was a test or a mistake; a rejected invoice never reaches Zoho Books and never gets
+    an invoice number. The Zoho column shows whether an issued invoice has actually synced (and,
+    if applicable, whether its payment was recorded there) — see
+    <RouterLink to="/zoho-sync-log">Zoho Sync Log</RouterLink> for the full call history and to
+    retry a failed one.
   </p>
 
   <VAlert
@@ -208,6 +250,7 @@ onMounted(loadInvoices)
           <th>Description</th>
           <th>Total</th>
           <th>Status</th>
+          <th>Zoho</th>
           <th>Issued</th>
           <th />
         </tr>
@@ -239,16 +282,39 @@ onMounted(loadInvoices)
               {{ invoice.status }}
             </VChip>
           </td>
+          <td>
+            <VTooltip v-if="zohoStatus(invoice).hint" location="top">
+              <template #activator="{ props }">
+                <VChip v-bind="props" :color="zohoStatus(invoice).color" size="small">
+                  {{ zohoStatus(invoice).label }}
+                </VChip>
+              </template>
+              {{ zohoStatus(invoice).hint }}
+            </VTooltip>
+            <VChip v-else :color="zohoStatus(invoice).color" size="small">
+              {{ zohoStatus(invoice).label }}
+            </VChip>
+          </td>
           <td>{{ invoice.issued_at ? new Date(invoice.issued_at).toLocaleDateString('en-IN') : '—' }}</td>
           <td class="d-flex gap-2">
-            <VBtn
-              v-if="invoice.status === 'draft'"
-              size="small"
-              :loading="issuingId === invoice.id"
-              @click="onIssue(invoice)"
-            >
-              Issue
-            </VBtn>
+            <template v-if="invoice.status === 'draft'">
+              <VBtn
+                size="small"
+                :loading="issuingId === invoice.id"
+                @click="onIssue(invoice)"
+              >
+                Issue
+              </VBtn>
+              <VBtn
+                size="small"
+                variant="text"
+                color="error"
+                :loading="rejectingId === invoice.id"
+                @click="onReject(invoice)"
+              >
+                Reject
+              </VBtn>
+            </template>
             <template v-if="invoice.status === 'issued'">
               <VBtn
                 size="small"
@@ -271,7 +337,7 @@ onMounted(loadInvoices)
         </tr>
         <tr v-if="!invoices.length">
           <td
-            colspan="7"
+            colspan="8"
             class="text-center text-medium-emphasis"
           >
             No invoices yet.

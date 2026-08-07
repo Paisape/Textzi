@@ -795,6 +795,17 @@ class InvoiceOut(BaseModel):
 class InvoiceAdminOut(InvoiceOut):
     entity_name: str
     organization_name: str
+    # Zoho reconciliation status -- not exposed on the customer-facing InvoiceOut this extends,
+    # since it's purely an internal accounting-sync concern. organization_zoho_linked distinguishes
+    # "never attempted because the org isn't linked yet" from "linked, but not pushed/failed" --
+    # both leave zoho_sync_status="pending"/"failed" the same way, so the linked flag is what lets
+    # the admin UI tell those apart.
+    organization_zoho_linked: bool
+    zoho_sync_status: str
+    zoho_invoice_id: str | None
+    zoho_payment_id: str | None
+    zoho_mark_paid: bool
+    zoho_sync_error: str | None
 
 
 class WalletLedgerEntryOut(BaseModel):
@@ -971,7 +982,10 @@ class AdminApiLogOut(BaseModel):
 class WalletCreditRequest(BaseModel):
     entity_id: str
     amount: float = Field(gt=0, le=1_000_000)
-    generate_invoice: bool = True
+    # False (default) leaves the invoice as a draft requiring admin Approve/Reject review before
+    # it can ever reach Zoho -- true skips that review and issues (and Zoho-syncs) immediately, for
+    # when the admin already knows this credit is legitimate and doesn't need a second look.
+    generate_invoice: bool = False
     # Every other invoice type (wallet_recharge, dlt_fee, channel_subscription) is only ever
     # created after a payment is already confirmed one way or another, so those always reconcile
     # as paid in Zoho Books. An admin manual credit is the one case with no such guarantee -- it
@@ -979,6 +993,31 @@ class WalletCreditRequest(BaseModel):
     # no money changing hands -- so the admin decides explicitly per credit.
     paid: bool = True
     notes: str | None = Field(default=None, max_length=300)
+
+
+class WalletDebitRequest(BaseModel):
+    entity_id: str
+    amount: float = Field(gt=0, le=1_000_000)
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class WalletDebitResponse(BaseModel):
+    entity_id: str
+    credits_debited: float
+    available_balance: float
+
+
+class EntityWalletSummaryOut(BaseModel):
+    entity_id: str
+    prepaid_balance: float
+    credit_limit: float
+    credit_used: float
+    available_balance: float
+
+
+class WalletAdjustmentQuoteOut(BaseModel):
+    credits: float
+    price_per_sms: float
 
 
 class WalletCreditResponse(BaseModel):
