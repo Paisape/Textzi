@@ -36,7 +36,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity
+from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -604,6 +604,10 @@ def create_my_template(
     pe, header = db.get(PeId, pe_id), db.get(Header, header_id)
     if not pe or pe.entity_id != entity.id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    try:
+        validate_template_body(body)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     alias = alias.strip()
     item = Template(entity_id=entity.id, pe_id=pe_id, header_id=header_id, alias=alias, dlt_template_id=dlt_template_id, body=body, category=category, status=Status.active)
     db.add(item)
@@ -642,6 +646,10 @@ def update_my_template(
     pe, header = db.get(PeId, pe_id), db.get(Header, header_id)
     if not pe or pe.entity_id != entity.id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    try:
+        validate_template_body(body)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     alias = alias.strip()
     template.pe_id = pe_id
     template.header_id = header_id

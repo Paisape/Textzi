@@ -23,7 +23,7 @@ from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction,
+    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction,
 )
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
@@ -38,10 +38,24 @@ from .schemas import (
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
-from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
+
+
+def _session_revoked(claims: dict, db: Session) -> bool:
+    """Same check auth.require_user makes for ordinary customer sessions -- a Bearer token's
+    signature/expiry being valid doesn't mean the session it was issued for is still live.
+    Without this, require_admin/require_staff never looked at the sid claim at all, so logging
+    out or explicitly revoking a session from Account Security had zero effect on admin-tier
+    access -- a leaked/stolen admin token kept working for every admin endpoint until its natural
+    JWT expiry, even after the real admin revoked it."""
+    sid = claims.get("sid")
+    if not sid:
+        return False
+    session = db.get(UserSession, sid)
+    return not session or session.revoked_at is not None
 
 
 def require_admin(x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
@@ -58,7 +72,7 @@ def require_admin(x_admin_key: str | None = Header(default=None), authorization:
         try:
             claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
             user = db.get(User, claims.get("sub"))
-            if user and user.role in ADMIN_ROLES and user.status == UserStatus.active:
+            if user and user.role in ADMIN_ROLES and user.status == UserStatus.active and not _session_revoked(claims, db):
                 return
         except jwt.PyJWTError:
             pass
@@ -89,7 +103,7 @@ def require_staff(area: str):
             try:
                 claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
                 user = db.get(User, claims.get("sub"))
-                if user and user.role in STAFF_AREA_ROLES[area] and user.status == UserStatus.active:
+                if user and user.role in STAFF_AREA_ROLES[area] and user.status == UserStatus.active and not _session_revoked(claims, db):
                     return
             except jwt.PyJWTError:
                 pass
@@ -201,6 +215,10 @@ def create_template(entity_id: str, payload: TemplateCreate, db: Session = Depen
     pe, header = db.get(PeId, payload.pe_id), db.get(HeaderModel, payload.header_id)
     if not pe or pe.entity_id != entity_id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    try:
+        validate_template_body(payload.body)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     alias = payload.alias.strip()
     item = Template(entity_id=entity_id, pe_id=payload.pe_id, header_id=payload.header_id, alias=alias, dlt_template_id=payload.dlt_template_id, body=payload.body, category=payload.category.value, status=StatusEnum.active)
     db.add(item)
@@ -225,6 +243,10 @@ def update_template(entity_id: str, template_id: str, payload: TemplateCreate, d
     pe, header = db.get(PeId, payload.pe_id), db.get(HeaderModel, payload.header_id)
     if not pe or pe.entity_id != entity_id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    try:
+        validate_template_body(payload.body)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     alias = payload.alias.strip()
     template.pe_id = payload.pe_id
     template.header_id = payload.header_id

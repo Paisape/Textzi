@@ -6,7 +6,8 @@ own webhook (ChannelSettings.dr_webhook_url) afterward, if they've configured on
 import hmac
 import json
 from datetime import datetime, timezone
-from urllib.request import Request, urlopen
+from urllib.error import HTTPError
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -19,6 +20,20 @@ from .security import assert_safe_webhook_url, decrypt_secret
 from .services import DomainError, credit_wallet, mask_mobile, redact_payload_values
 
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """urlopen's default opener follows HTTP redirects transparently, which would completely
+    defeat assert_safe_webhook_url's SSRF guard below it: a customer's webhook URL passes
+    validation (it's a real public host they control), but that host can respond with a 302 to
+    e.g. http://169.254.169.254/... (cloud metadata) or any private/internal address, and the
+    redirect target is never re-validated. Raising here instead of following means a redirect is
+    just treated as a failed relay attempt (caught below), never an SSRF vector."""
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise HTTPError(req.full_url, code, "Redirects are not followed for outbound webhook relays", headers, fp)
+
+
+_no_redirect_opener = build_opener(_NoRedirect)
 
 
 def _ttbs_reports_failure(payload: TtbsDrWebhookPayload) -> bool:
@@ -51,7 +66,7 @@ def _relay_to_customer(webhook_url: str, payload: dict) -> tuple[str, str | None
     try:
         assert_safe_webhook_url(webhook_url)
         request = Request(webhook_url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
-        with urlopen(request, timeout=5):
+        with _no_redirect_opener.open(request, timeout=5):
             pass
         return "success", None
     except (OSError, ValueError) as exc:

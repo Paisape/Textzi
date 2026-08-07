@@ -62,10 +62,17 @@ const hasAccess = computed(() => authStore.loaded ? (authStore.isAdmin || authSt
 // backend, so the controls that would call them are hidden rather than left visible-but-broken.
 const canManage = computed(() => authStore.isAdmin)
 
+// Guards against a real race: clicking "Load more" then immediately typing a search. Both fire
+// their own request; if the Load-More one resolves after the search one, it would otherwise
+// append its (now-stale, unfiltered) page onto the just-set filtered results. Each call captures
+// the current generation and only applies its result if nothing newer has been issued since.
+let loadGeneration = 0
+
 async function load(reset = true) {
   loadError.value = ''
   if (reset)
     offset.value = 0
+  const generation = ++loadGeneration
   try {
     await authStore.load()
     if (!hasAccess.value)
@@ -74,11 +81,14 @@ async function load(reset = true) {
     if (search.value)
       query.search = search.value
     const page = await $api<AdminUser[]>('/v1/admin/users', { query })
+    if (generation !== loadGeneration)
+      return
     users.value = reset ? page : [...users.value, ...page]
     hasMore.value = page.length === PAGE_SIZE
   }
   catch (error: any) {
-    loadError.value = extractErrorMessage(error, 'Could not load users.')
+    if (generation === loadGeneration)
+      loadError.value = extractErrorMessage(error, 'Could not load users.')
   }
 }
 

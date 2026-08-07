@@ -298,6 +298,21 @@ def resolve_template_by_dlt_id(db: Session, entity_id: str, dlt_template_id: str
     return template
 
 
+def validate_template_body(body: str) -> None:
+    """Rejects a template that mixes Textzi's own {{var}} convention with the DLT platform's own
+    {#...#} convention in the same body. render_template (below) handles each correctly in
+    isolation, but not together: its {#...#} pass pulls positionally from the *entire* variables
+    dict in insertion order, with no awareness of which entries the {{var}} pass already consumed
+    by name -- so a mixed template could silently substitute the wrong value into a real
+    placeholder (e.g. an OTP field getting a name instead of the code), with no error, just wrong
+    content going to the recipient. Enforced at save time so this ambiguous case can never be
+    stored, rather than risking it at send time."""
+    has_named = bool(re.search(r"\{\{\s*\w+\s*\}\}", body))
+    has_dlt = bool(re.search(r"\{#[^{}]*#\}", body))
+    if has_named and has_dlt:
+        raise DomainError("Template body mixes {{var}} and {#...#} placeholder styles -- use exactly one convention, not both.")
+
+
 def render_template(body: str, variables: dict[str, str]) -> str:
     def substitute(match: re.Match) -> str:
         key = match.group(1)
