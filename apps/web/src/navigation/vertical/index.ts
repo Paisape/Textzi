@@ -206,13 +206,13 @@ export const adminNav = [
         icon: { icon: 'tabler-mail-cog' },
       },
       {
-        title: 'ERPNext Integration',
-        to: { name: 'platform-erpnext-settings' },
+        title: 'Zoho Books Integration',
+        to: { name: 'platform-zoho-settings' },
         icon: { icon: 'tabler-building-bank' },
       },
       {
-        title: 'ERPNext Sync Log',
-        to: { name: 'erpnext-sync-log' },
+        title: 'Zoho Sync Log',
+        to: { name: 'zoho-sync-log' },
         icon: { icon: 'tabler-list-details' },
       },
       {

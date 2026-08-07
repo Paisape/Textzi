@@ -205,9 +205,9 @@ onMounted(loadOrgs)
           </VBtn>
         </VBtnToggle>
         <p class="text-caption text-medium-emphasis mb-4" style="margin-block-start: -12px;">
-          Paid reconciles this invoice against a Payment Entry in ERPNext (e.g. money already
-          collected outside Razorpay). Unpaid issues the invoice but leaves it outstanding in
-          ERPNext — use this for a free/promotional credit with no real payment.
+          Paid reconciles this invoice against a Customer Payment in Zoho Books (e.g. money
+          already collected outside Razorpay). Unpaid issues the invoice but leaves it
+          outstanding in Zoho Books — use this for a free/promotional credit with no real payment.
         </p>
         <VBtn
           type="submit"

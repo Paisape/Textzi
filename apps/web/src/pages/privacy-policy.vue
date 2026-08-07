@@ -105,7 +105,7 @@ definePage({
             <li><strong>Telecom operators and the DLT registry</strong> — to register your sender identity/templates and route your messages;</li>
             <li><strong>WhatsApp/Meta</strong> — where you use our WhatsApp Business API channel, subject to Meta's own data handling terms;</li>
             <li><strong>Payment gateway providers</strong> — to process wallet recharges securely;</li>
-            <li><strong>Our accounting system (ERPNext)</strong> — to generate and record invoices for GST/accounting compliance;</li>
+            <li><strong>Our accounting system (Zoho Books)</strong> — to generate and record invoices for GST/accounting compliance;</li>
             <li><strong>Service providers who support our infrastructure</strong> (hosting, email delivery), bound by confidentiality obligations; and</li>
             <li><strong>Law enforcement or regulators</strong>, where required by Indian law or a valid legal process.</li>
           </ul>

@@ -182,10 +182,15 @@ class Organization(Base):
     contact_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     contact_mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
-    # ERPNext's Customer doctype name (its own primary key, not a Textzi id) -- set the first time
-    # any invoice for this organization is pushed to ERPNext (services.erpnext.ensure_customer);
-    # every later invoice reuses it instead of creating a duplicate Customer record.
-    erpnext_customer_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # Zoho Books Contact id -- null until an admin explicitly links this organization (admin.py's
+    # POST .../zoho-sync, zoho_books._ensure_customer), never created automatically. Every later
+    # invoice reuses it instead of creating a duplicate Contact.
+    zoho_contact_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # 2-letter GST jurisdiction state code, only ever used when this org has no GSTIN (otherwise
+    # the GSTIN's own prefix is authoritative -- see services.state_code_from_gstin). Captured via
+    # the State dropdown on onboarding/complete-profile, needed to resolve interstate (IGST) vs
+    # intrastate (CGST+SGST) at Zoho invoice sync time.
+    state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
     # Proof of GST registration, uploaded the first time the company profile is completed --
     # mirrors PeId.certificate_path's storage convention (services.save_upload).
     gst_certificate_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
@@ -398,22 +403,23 @@ class Invoice(Base):
     created_by_admin_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     issued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    # Best-effort push to the customer's self-hosted ERPNext (services.erpnext) -- never blocks
-    # or fails issue_invoice itself over an ERPNext-side problem. "pending" until the first sync
-    # attempt (or forever, if ERPNext isn't configured at all); "failed" keeps erpnext_sync_error
-    # around so an admin can see why without digging through logs.
-    erpnext_invoice_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    erpnext_sync_status: Mapped[str] = mapped_column(String(20), default="pending")
-    erpnext_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Best-effort push to Zoho Books (zoho_books.py) -- never blocks or fails issue_invoice itself
+    # over a Zoho-side problem. "pending" until the organization has been manually linked to Zoho
+    # (admin.py's POST .../zoho-sync) AND a sync has actually been attempted -- an unlinked org's
+    # invoices stay "pending" indefinitely with zero API calls, not an error; "failed" keeps
+    # zoho_sync_error around so an admin can see why without digging through logs.
+    zoho_invoice_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    zoho_sync_status: Mapped[str] = mapped_column(String(20), default="pending")
+    zoho_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     # Decided once at creation time (not re-derived on every sync/retry, so a retry always
     # reconciles the same way it originally would have): wallet_recharge/dlt_fee/channel_subscription
     # are only ever created after a payment is already confirmed one way or another, so they default
     # True; admin_credit is the one case where the admin themselves picks Paid or Unpaid (see
-    # WalletCreditRequest.paid). True creates a matching ERPNext Payment Entry, reconciled against
-    # the Sales Invoice, right after it's submitted -- erpnext_payment_entry_name tracks it the same
-    # way erpnext_invoice_name tracks the invoice, so a retry never creates a duplicate.
-    erpnext_mark_paid: Mapped[bool] = mapped_column(Boolean, default=True)
-    erpnext_payment_entry_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # WalletCreditRequest.paid). True creates a matching Zoho Customer Payment, reconciled against
+    # the invoice, right after it's marked sent -- zoho_payment_id tracks it the same way
+    # zoho_invoice_id tracks the invoice, so a retry never creates a duplicate.
+    zoho_mark_paid: Mapped[bool] = mapped_column(Boolean, default=True)
+    zoho_payment_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
 
 class Invitation(Base):
@@ -784,55 +790,52 @@ class PlatformR2Settings(Base):
     bucket_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
-class PlatformErpNextSettings(Base):
-    """Singleton row. Connection details for the customer's self-hosted ERPNext (Frappe) instance
-    -- ERPNext is the source of truth for the invoice DOCUMENT itself (services.erpnext creates
-    the Customer/Item/Sales Invoice there and fetches the rendered PDF back); Textzi's own fpdf2
-    rendering (invoicing.py) only ever runs as a fallback when ERPNext is unconfigured or a call
-    fails, so a customer is never left with literally no invoice while a failure is retried. The
-    item_code_* fields map each of Textzi's own Invoice.type values to an ERPNext Item code --
-    auto-created there the first time it's needed if it doesn't already exist. gst_tax_template
-    names a real, pre-configured ERPNext "Sales Taxes and Charges Template" (e.g. "Output GST
-    In-state - PTPL") -- confirmed live that referencing one by name is all a Sales Invoice needs
-    for ERPNext to compute and post the correct CGST/SGST lines itself, so Textzi never needs to
-    know the underlying account heads at all."""
-    __tablename__ = "platform_erpnext_settings"
+class PlatformZohoSettings(Base):
+    """Singleton row. Connection details for Zoho Books -- Zoho is the source of truth for the
+    invoice DOCUMENT itself (zoho_books.py creates the Contact/Item/Invoice there and fetches the
+    rendered PDF back); Textzi's own fpdf2 rendering (invoicing.py) only ever runs as a fallback
+    when Zoho is unconfigured, an organization hasn't been linked yet, or a call fails, so a
+    customer is never left with literally no invoice while a failure is retried. Auth is OAuth2
+    self-client (api-console.zoho.com) rather than a static key/secret: client_id/client_secret
+    are entered once, then a one-time grant/authorization code is exchanged (POST
+    /v1/admin/platform/zoho-connect) for a non-expiring refresh token; access_token_encrypted +
+    access_token_expires_at are then maintained automatically by zoho_books._access_token. The
+    item_code_* fields map each of Textzi's own Invoice.type values to a Zoho Item id -- auto
+    resolved/created the first time it's needed. gst_tax_id_intrastate/interstate are real Zoho
+    tax_id GUIDs (fetched via GET .../zoho-tax-rates) -- picked per invoice based on whether the
+    customer's state matches the platform's own home state (services.get_platform_company_info's
+    company_state_code, the same field the invoice PDF's seller block already uses)."""
+    __tablename__ = "platform_zoho_settings"
     id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
-    base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    api_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    api_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    company: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    gst_tax_template: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    # The ERPNext Bank/Cash account a reconciling Payment Entry deposits into (its "Paid To") --
-    # required before any invoice marked erpnext_mark_paid=True can actually sync; picked by the
-    # admin from a real fetched list (GET .../erpnext-accounts), not free text, since it must be a
-    # real leaf (non-group) account.
-    payment_account: Mapped[str | None] = mapped_column(String(160), nullable=True)
-    print_format: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    # Optional -- confirmed live (DocType metadata: reqd=0, and a real Customer create succeeded
-    # with neither field set at all) that ERPNext doesn't require this. Kept as an admin choice
-    # purely for ERPNext-side reporting/segmentation; blank means every Customer Textzi creates
-    # just has no group set, which ERPNext is fine with. Territory was the same story but with no
-    # actual reporting upside identified, so it was dropped entirely rather than kept blank-by-default.
-    customer_group: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    # None = let ERPNext use its own configured default Sales Invoice naming series. Only needs
-    # setting when that default produces a name longer than 16 characters -- confirmed live that
-    # india_compliance (GST) rejects invoice creation outright above that length ("Transaction Name
-    # must be 16 characters or fewer to meet GST requirements"), which a verbose default series
-    # like "ACC-SINV-.YYYY.-" (well over 16 once the running number is appended) will always hit.
-    sales_invoice_naming_series: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    client_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    client_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    refresh_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    access_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    access_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # e.g. "www.zohoapis.in" / "accounts.zoho.in" -- captured from the token-exchange response at
+    # Connect time (Zoho's own source of truth for which data center this org lives on), not
+    # hand-typed, though still editable if it's ever wrong.
+    api_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    accounts_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    organization_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    gst_tax_id_intrastate: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    gst_tax_id_interstate: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # The Zoho Books Bank/Cash account a Customer Payment deposits into -- required before any
+    # invoice marked zoho_mark_paid=True can actually sync; picked by the admin from a real
+    # fetched list (GET .../zoho-accounts), not free text.
+    payment_deposit_account_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_wallet_recharge: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_dlt_fee: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_channel_subscription: Mapped[str | None] = mapped_column(String(140), nullable=True)
     item_code_admin_credit: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
 
-class ErpNextApiCallLog(Base):
-    """Every ERPNext API call Textzi makes, success or failure -- the admin-visible history that
-    lets an admin see exactly what happened and why before retrying (services.erpnext logs one
-    row per HTTP call, not one per invoice, so a single invoice's Customer + Item + Sales
-    Invoice + PDF-fetch chain shows as its own timeline of attempts)."""
-    __tablename__ = "erpnext_api_call_logs"
+class ZohoApiCallLog(Base):
+    """Every Zoho Books API call Textzi makes, success or failure -- the admin-visible history
+    that lets an admin see exactly what happened and why before retrying (zoho_books.py logs one
+    row per HTTP call, not one per invoice, so a single invoice's Contact + Item + Invoice +
+    mark-sent + payment + PDF-fetch chain shows as its own timeline of attempts)."""
+    __tablename__ = "zoho_api_call_logs"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True, index=True)
     method: Mapped[str] = mapped_column(String(10))

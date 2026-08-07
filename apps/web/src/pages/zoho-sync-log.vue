@@ -25,7 +25,7 @@ type CallLogRow = {
 
 const STATUS_COLORS: Record<string, string> = {
   success: 'success',
-  error: 'error',
+  failed: 'error',
 }
 
 const rows = ref<CallLogRow[]>([])
@@ -44,12 +44,12 @@ async function load() {
     await authStore.load()
     if (!authStore.isAdmin)
       return
-    rows.value = await $api<CallLogRow[]>('/v1/admin/erpnext/call-log', {
+    rows.value = await $api<CallLogRow[]>('/v1/admin/zoho/call-log', {
       query: statusFilter.value ? { status_filter: statusFilter.value } : {},
     })
   }
   catch (error: any) {
-    loadError.value = extractErrorMessage(error, 'Could not load the ERPNext call log.')
+    loadError.value = extractErrorMessage(error, 'Could not load the Zoho Books call log.')
   }
   finally {
     loading.value = false
@@ -61,13 +61,13 @@ async function retry(invoiceId: string) {
   retrySuccess.value = ''
   retryingInvoiceId.value = invoiceId
   try {
-    const result = await $api<{ invoice_id: string, erpnext_sync_status: string, erpnext_invoice_name: string | null, erpnext_sync_error: string | null }>(
-      `/v1/admin/invoices/${invoiceId}/retry-erpnext-sync`,
+    const result = await $api<{ invoice_id: string, zoho_sync_status: string, zoho_invoice_id: string | null, zoho_sync_error: string | null }>(
+      `/v1/admin/invoices/${invoiceId}/retry-zoho-sync`,
       { method: 'POST' },
     )
-    retrySuccess.value = result.erpnext_sync_status === 'synced'
-      ? `Synced successfully${result.erpnext_invoice_name ? ` as ${result.erpnext_invoice_name}` : ''}.`
-      : `Still failing: ${result.erpnext_sync_error ?? 'unknown error'}`
+    retrySuccess.value = result.zoho_sync_status === 'synced'
+      ? `Synced successfully${result.zoho_invoice_id ? ` as ${result.zoho_invoice_id}` : ''}.`
+      : `Still failing: ${result.zoho_sync_error ?? 'unknown error'}`
     await load()
   }
   catch (error: any) {
@@ -84,12 +84,15 @@ onMounted(load)
 
 <template>
   <h1 class="text-h4 mb-1">
-    ERPNext Sync Log
+    Zoho Sync Log
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Every request Textzi made to ERPNext when issuing an invoice — Customer/Item lookups, Sales
-    Invoice creation, and PDF fetches — success or failure. If an invoice's ERPNext sync failed,
-    fix the underlying cause in ERPNext (or in <RouterLink to="/platform-erpnext-settings">ERPNext Integration settings</RouterLink>) then retry it from here.
+    Every request Textzi made to Zoho Books when issuing an invoice — Item lookups, Invoice
+    creation, mark-sent, payment recording, and PDF fetches — success or failure. Invoices for
+    organizations that haven't been linked to Zoho yet never appear here at all (no calls are ever
+    made). If a linked organization's invoice sync failed, fix the underlying cause (or in
+    <RouterLink to="/platform-zoho-settings">Zoho Books Integration settings</RouterLink>) then
+    retry it from here.
   </p>
 
   <VAlert
@@ -129,7 +132,7 @@ onMounted(load)
       <VBtn value="success">
         Success
       </VBtn>
-      <VBtn value="error">
+      <VBtn value="failed">
         Failed
       </VBtn>
     </VBtnToggle>
@@ -171,7 +174,7 @@ onMounted(load)
             </td>
             <td>
               <VBtn
-                v-if="row.status === 'error' && row.invoice_id"
+                v-if="row.status === 'failed' && row.invoice_id"
                 size="small"
                 variant="tonal"
                 :loading="retryingInvoiceId === row.invoice_id"
@@ -186,7 +189,7 @@ onMounted(load)
               colspan="7"
               class="text-center text-medium-emphasis"
             >
-              No ERPNext calls recorded yet.
+              No Zoho Books calls recorded yet.
             </td>
           </tr>
         </tbody>

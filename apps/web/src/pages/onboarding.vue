@@ -35,6 +35,7 @@ const form = ref({
   entityName: '',
   industry: '',
   gstin: '',
+  stateCode: '',
   pan: '',
   address: '',
   contactPersonName: '',
@@ -67,6 +68,7 @@ async function onSubmit() {
         entity_name: form.value.entityName || null,
         industry: form.value.industry,
         gstin: noGstin.value ? null : form.value.gstin,
+        state_code: noGstin.value ? form.value.stateCode : null,
         pan: form.value.pan,
         address: form.value.address,
         contact_person_name: form.value.contactPersonName,
@@ -169,10 +171,22 @@ async function onSubmit() {
               />
             </VCol>
             <VCol
+              v-else
               cols="12"
-              :md="noGstin ? 12 : 6"
-              class="d-flex align-center"
-              :class="noGstin ? '' : 'mt-n2'"
+              md="6"
+            >
+              <AppSelect
+                v-model="form.stateCode"
+                :items="GST_STATES"
+                :rules="[requiredValidator]"
+                label="State"
+                placeholder="Select your business's state"
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              md="6"
+              class="d-flex align-center mt-n2"
             >
               <VCheckbox
                 v-model="noGstin"

@@ -255,6 +255,10 @@ class OrganizationOnboardRequest(BaseModel):
     # onboarding (unlike AdminCreateCustomerRequest, which keeps all of these optional since an
     # admin may be provisioning a customer before full KYC details are available).
     gstin: str | None = Field(default=None, min_length=15, max_length=15)
+    # Required whenever gstin is blank (enforced in onboarding.py, not here, same convention as
+    # the endpoint-level PAN regex check) -- when a GSTIN is given, its own prefix is authoritative
+    # for GST state/place-of-supply and this is ignored.
+    state_code: str | None = Field(default=None, min_length=2, max_length=2)
     pan: str = Field(min_length=10, max_length=10)
     industry: str = Field(min_length=1, max_length=80)
     address: str = Field(min_length=1, max_length=300)
@@ -268,6 +272,7 @@ class CompanyProfileOut(BaseModel):
     company_name: str
     pan: str | None
     gstin: str | None
+    state_code: str | None
     address: str | None
     contact_email: str | None
     contact_mobile: str | None
@@ -969,7 +974,7 @@ class WalletCreditRequest(BaseModel):
     generate_invoice: bool = True
     # Every other invoice type (wallet_recharge, dlt_fee, channel_subscription) is only ever
     # created after a payment is already confirmed one way or another, so those always reconcile
-    # as paid in ERPNext. An admin manual credit is the one case with no such guarantee -- it
+    # as paid in Zoho Books. An admin manual credit is the one case with no such guarantee -- it
     # could be a real bank transfer collected outside Razorpay, or a free/promotional credit with
     # no money changing hands -- so the admin decides explicitly per credit.
     paid: bool = True
@@ -1070,59 +1075,65 @@ class PlatformR2SettingsUpdate(BaseModel):
     bucket_name: str | None = None
 
 
-class PlatformErpNextSettingsOut(BaseModel):
-    base_url: str | None
-    api_key: str | None
-    company: str | None
-    gst_tax_template: str | None
-    payment_account: str | None
-    print_format: str | None
-    customer_group: str | None
-    sales_invoice_naming_series: str | None
+class PlatformZohoSettingsOut(BaseModel):
+    client_id: str | None
+    accounts_domain: str | None
+    api_domain: str | None
+    organization_id: str | None
+    gst_tax_id_intrastate: str | None
+    gst_tax_id_interstate: str | None
+    payment_deposit_account_id: str | None
     item_code_wallet_recharge: str | None
     item_code_dlt_fee: str | None
     item_code_channel_subscription: str | None
     item_code_admin_credit: str | None
     configured: bool
+    connected: bool
 
 
-class PlatformErpNextSettingsUpdate(BaseModel):
-    base_url: str | None = None
-    api_key: str | None = None
-    api_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password
-    company: str | None = None
-    gst_tax_template: str | None = None
-    payment_account: str | None = None
-    print_format: str | None = None
-    customer_group: str | None = None
-    # None/blank = use ERPNext's own default Sales Invoice naming series -- only set this if that
-    # default produces a name over 16 characters, which india_compliance (GST) rejects outright.
-    sales_invoice_naming_series: str | None = None
+class PlatformZohoSettingsUpdate(BaseModel):
+    client_id: str | None = None
+    client_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password
+    accounts_domain: str | None = None
+    organization_id: str | None = None
+    gst_tax_id_intrastate: str | None = None
+    gst_tax_id_interstate: str | None = None
+    payment_deposit_account_id: str | None = None
     item_code_wallet_recharge: str | None = None
     item_code_dlt_fee: str | None = None
     item_code_channel_subscription: str | None = None
     item_code_admin_credit: str | None = None
 
 
-class ErpNextRetryResponse(BaseModel):
+class ZohoConnectRequest(BaseModel):
+    grant_code: str
+
+
+class ZohoRetryResponse(BaseModel):
     invoice_id: str
-    erpnext_sync_status: str
-    erpnext_invoice_name: str | None
-    erpnext_sync_error: str | None
+    zoho_sync_status: str
+    zoho_invoice_id: str | None
+    zoho_sync_error: str | None
 
 
-class ErpNextAccountOut(BaseModel):
-    name: str
+class ZohoOrganizationLinkResponse(BaseModel):
+    organization_id: str
+    zoho_contact_id: str
+
+
+class ZohoAccountOut(BaseModel):
+    account_id: str
     account_name: str
     account_type: str
 
 
-class ErpNextTaxTemplateOut(BaseModel):
-    name: str
-    is_default: bool
+class ZohoTaxRateOut(BaseModel):
+    tax_id: str
+    tax_name: str
+    tax_percentage: float | None = None
 
 
-class ErpNextCallLogOut(BaseModel):
+class ZohoCallLogOut(BaseModel):
     id: str
     invoice_id: str | None
     invoice_number: str | None
@@ -1313,6 +1324,7 @@ class OrganizationOverviewResponse(BaseModel):
     pan: str | None
     industry: str | None
     address: str | None
+    zoho_contact_id: str | None
     created_at: str
     entities: list[EntityAdminDetailOut]
     wallet_balance: float

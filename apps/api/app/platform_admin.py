@@ -8,15 +8,16 @@ from sqlalchemy.orm import Session
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .auth import send_platform_test_sms
 from .database import get_db
-from .erpnext import ErpNextCallError, get_erpnext_settings, list_accounts, list_tax_templates
-from .models import PlatformErpNextSettings, PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction
+from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
-    ErpNextAccountOut, ErpNextTaxTemplateOut, PlatformErpNextSettingsOut, PlatformErpNextSettingsUpdate, PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
+    PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
     PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
 from .services import DomainError, credit_platform_wallet, get_platform_company_info, log_activity, mask_mobile
+from .zoho_books import ZohoCallError, exchange_grant_code, get_zoho_settings, list_accounts, list_tax_rates
 
 router = APIRouter(prefix="/v1/admin/platform", tags=["platform-admin"])
 
@@ -86,7 +87,7 @@ def get_r2_settings(db: Session = Depends(get_db)):
 
 @router.put("/r2-settings", response_model=PlatformR2SettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def update_r2_settings(payload: PlatformR2SettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """secret_access_key is write-only, same convention as the SMTP password and ERPNext api_secret
+    """secret_access_key is write-only, same convention as the SMTP password and Zoho client_secret
     -- GET never returns it, and a blank value on PUT keeps whatever was already stored."""
     row = db.get(PlatformR2Settings, "platform")
     if not row:
@@ -105,84 +106,107 @@ def update_r2_settings(payload: PlatformR2SettingsUpdate, request: Request, auth
     )
 
 
-@router.get("/erpnext-settings", response_model=PlatformErpNextSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def get_erpnext_settings_admin(db: Session = Depends(get_db)):
-    row = db.get(PlatformErpNextSettings, "platform")
+@router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_zoho_settings_admin(db: Session = Depends(get_db)):
+    row = db.get(PlatformZohoSettings, "platform")
     if not row:
-        row = PlatformErpNextSettings(id="platform")
-    return PlatformErpNextSettingsOut(
-        base_url=row.base_url, api_key=row.api_key, company=row.company,
-        gst_tax_template=row.gst_tax_template, payment_account=row.payment_account, print_format=row.print_format,
-        customer_group=row.customer_group, sales_invoice_naming_series=row.sales_invoice_naming_series,
+        row = PlatformZohoSettings(id="platform")
+    return PlatformZohoSettingsOut(
+        client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        payment_deposit_account_id=row.payment_deposit_account_id,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
-        configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
+        configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
+        connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )
 
 
-@router.put("/erpnext-settings", response_model=PlatformErpNextSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_erpnext_settings(payload: PlatformErpNextSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """api_secret is write-only, same convention as the SMTP password -- GET never returns it,
-    and a blank value on PUT keeps whatever was already stored."""
-    row = db.get(PlatformErpNextSettings, "platform")
+@router.put("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_zoho_settings(payload: PlatformZohoSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """client_secret is write-only, same convention as the SMTP password -- GET never returns it,
+    and a blank value on PUT keeps whatever was already stored. Changing client_id/client_secret/
+    accounts_domain after a Connect has already happened does NOT itself invalidate the stored
+    refresh token -- it's tied to whichever client/DC it was actually issued against -- so a
+    genuine credential change needs a fresh Connect (POST .../zoho-connect) afterward."""
+    row = db.get(PlatformZohoSettings, "platform")
     if not row:
-        row = PlatformErpNextSettings(id="platform")
+        row = PlatformZohoSettings(id="platform")
         db.add(row)
-    row.base_url = payload.base_url
-    row.api_key = payload.api_key
-    if payload.api_secret:
-        row.api_secret_encrypted = encrypt_secret(payload.api_secret)
-    row.company = payload.company
-    row.gst_tax_template = payload.gst_tax_template
-    row.payment_account = payload.payment_account
-    row.print_format = payload.print_format
-    row.customer_group = payload.customer_group
-    row.sales_invoice_naming_series = payload.sales_invoice_naming_series
+    row.client_id = payload.client_id
+    if payload.client_secret:
+        row.client_secret_encrypted = encrypt_secret(payload.client_secret)
+    row.accounts_domain = payload.accounts_domain
+    row.organization_id = payload.organization_id
+    row.gst_tax_id_intrastate = payload.gst_tax_id_intrastate
+    row.gst_tax_id_interstate = payload.gst_tax_id_interstate
+    row.payment_deposit_account_id = payload.payment_deposit_account_id
     row.item_code_wallet_recharge = payload.item_code_wallet_recharge
     row.item_code_dlt_fee = payload.item_code_dlt_fee
     row.item_code_channel_subscription = payload.item_code_channel_subscription
     row.item_code_admin_credit = payload.item_code_admin_credit
-    log_activity(db, None, "platform_erpnext_settings_updated", "Platform ERPNext settings updated.", actor_email=_caller_email(authorization, db), request=request)
+    log_activity(db, None, "platform_zoho_settings_updated", "Platform Zoho Books settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
-    return PlatformErpNextSettingsOut(
-        base_url=row.base_url, api_key=row.api_key, company=row.company,
-        gst_tax_template=row.gst_tax_template, payment_account=row.payment_account, print_format=row.print_format,
-        customer_group=row.customer_group, sales_invoice_naming_series=row.sales_invoice_naming_series,
+    return PlatformZohoSettingsOut(
+        client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        payment_deposit_account_id=row.payment_deposit_account_id,
         item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
         item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
-        configured=bool(row.base_url and row.api_key and row.api_secret_encrypted and row.company),
+        configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
+        connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )
 
 
-@router.get("/erpnext-accounts", response_model=list[ErpNextAccountOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_erpnext_accounts(db: Session = Depends(get_db)):
-    """Real leaf accounts from the configured ERPNext company, for the payment-account dropdown --
-    fetched live rather than free-typed, since (confirmed live, see the API reference doc) a
-    group-node account name looks exactly as plausible as a real one but gets rejected the moment
-    an invoice actually tries to use it."""
-    settings_row = get_erpnext_settings(db)
+@router.post("/zoho-connect", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def connect_zoho(payload: ZohoConnectRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """The one-time step after generating a grant/authorization code from api-console.zoho.com --
+    exchanges it for a permanent refresh token. Only needs doing once per Zoho org connection;
+    the resulting token is then refreshed automatically forever by zoho_books._access_token."""
+    try:
+        row = exchange_grant_code(db, payload.grant_code)
+    except ZohoCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not connect to Zoho Books: {exc}") from exc
+    log_activity(db, None, "platform_zoho_connected", "Platform Zoho Books connection established.", actor_email=_caller_email(authorization, db), request=request)
+    return PlatformZohoSettingsOut(
+        client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        payment_deposit_account_id=row.payment_deposit_account_id,
+        item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
+        item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
+        configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
+        connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
+    )
+
+
+@router.get("/zoho-accounts", response_model=list[ZohoAccountOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_zoho_accounts(db: Session = Depends(get_db)):
+    """Real Bank/Cash accounts from the connected Zoho org's chart of accounts, for the payment
+    deposit account dropdown -- fetched live rather than free-typed, since these are opaque Zoho
+    account_id GUIDs, not names."""
+    settings_row = get_zoho_settings(db)
     if not settings_row:
-        raise HTTPException(status_code=422, detail="Configure the ERPNext base URL, API key/secret, and company first.")
+        raise HTTPException(status_code=422, detail="Configure and connect Zoho Books first.")
     try:
         accounts = list_accounts(db, settings_row)
-    except ErpNextCallError as exc:
-        raise HTTPException(status_code=502, detail=f"Could not fetch accounts from ERPNext: {exc}") from exc
-    return [ErpNextAccountOut(name=a["name"], account_name=a["account_name"], account_type=a.get("account_type") or "") for a in accounts]
+    except ZohoCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch accounts from Zoho Books: {exc}") from exc
+    return [ZohoAccountOut(account_id=a["account_id"], account_name=a["account_name"], account_type=a.get("account_type") or "") for a in accounts]
 
 
-@router.get("/erpnext-tax-templates", response_model=list[ErpNextTaxTemplateOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_erpnext_tax_templates_admin(db: Session = Depends(get_db)):
-    """Real Sales Taxes and Charges Templates from the configured ERPNext company, for the GST
-    tax template dropdown -- referencing one by name is all Textzi needs to send; ERPNext computes
-    and posts the correct CGST/SGST lines from the template's own setup."""
-    settings_row = get_erpnext_settings(db)
+@router.get("/zoho-tax-rates", response_model=list[ZohoTaxRateOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_zoho_tax_rates_admin(db: Session = Depends(get_db)):
+    """Real configured tax rates from the connected Zoho org, for the intrastate (CGST+SGST) and
+    interstate (IGST) tax rate dropdowns -- referencing one by tax_id is all Textzi needs to send;
+    Zoho computes and posts the correct GST lines from the rate's own setup."""
+    settings_row = get_zoho_settings(db)
     if not settings_row:
-        raise HTTPException(status_code=422, detail="Configure the ERPNext base URL, API key/secret, and company first.")
+        raise HTTPException(status_code=422, detail="Configure and connect Zoho Books first.")
     try:
-        templates = list_tax_templates(db, settings_row)
-    except ErpNextCallError as exc:
-        raise HTTPException(status_code=502, detail=f"Could not fetch tax templates from ERPNext: {exc}") from exc
-    return [ErpNextTaxTemplateOut(name=t["name"], is_default=bool(t.get("is_default"))) for t in templates]
+        rates = list_tax_rates(db, settings_row)
+    except ZohoCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not fetch tax rates from Zoho Books: {exc}") from exc
+    return [ZohoTaxRateOut(tax_id=t["tax_id"], tax_name=t.get("tax_name", ""), tax_percentage=t.get("tax_percentage")) for t in rates]
 
 
 def _norm(value: str | None) -> str | None:

@@ -35,6 +35,7 @@ type OrgOverview = {
   pan: string | null
   industry: string | null
   address: string | null
+  zoho_contact_id: string | null
   created_at: string
   entities: EntityRow[]
   wallet_balance: number
@@ -64,6 +65,8 @@ const actionSuccess = ref('')
 const togglingMemberId = ref<string | null>(null)
 const togglingEntityId = ref<string | null>(null)
 const resendingMemberId = ref<string | null>(null)
+const syncingZoho = ref(false)
+const zohoSyncError = ref('')
 
 async function loadOverview() {
   loadError.value = ''
@@ -123,6 +126,26 @@ async function onToggleEntityStatus(entity: EntityRow) {
   }
   finally {
     togglingEntityId.value = null
+  }
+}
+
+async function onSyncZoho() {
+  if (!overview.value)
+    return
+  zohoSyncError.value = ''
+  syncingZoho.value = true
+  try {
+    const result = await $api<{ organization_id: string, zoho_contact_id: string }>(
+      `/v1/admin/organizations/${overview.value.organization_id}/zoho-sync`,
+      { method: 'POST' },
+    )
+    overview.value.zoho_contact_id = result.zoho_contact_id
+  }
+  catch (error: any) {
+    zohoSyncError.value = extractErrorMessage(error, 'Could not link this customer to Zoho Books.')
+  }
+  finally {
+    syncingZoho.value = false
   }
 }
 
@@ -221,6 +244,45 @@ onMounted(loadOverview)
               {{ overview.address || '—' }}
             </div>
           </div>
+        </VCardText>
+      </VCard>
+
+      <VCard class="mt-6">
+        <VCardText>
+          <h6 class="text-h6 mb-4">
+            Zoho Books
+          </h6>
+          <VAlert
+            v-if="zohoSyncError"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            {{ zohoSyncError }}
+          </VAlert>
+          <div class="d-flex align-center gap-x-3">
+            <VChip
+              :color="overview.zoho_contact_id ? 'success' : 'default'"
+              size="small"
+            >
+              {{ overview.zoho_contact_id ? `Linked — ${overview.zoho_contact_id}` : 'Not linked' }}
+            </VChip>
+            <VBtn
+              v-if="!overview.zoho_contact_id"
+              size="small"
+              variant="tonal"
+              :loading="syncingZoho"
+              @click="onSyncZoho"
+            >
+              Sync to Zoho
+            </VBtn>
+          </div>
+          <p class="text-body-2 text-medium-emphasis mt-2 mb-0">
+            Links this customer to a Zoho Books contact so future invoices sync automatically.
+            Invoices issued before linking stay unsynced and can be retried individually from
+            <RouterLink to="/zoho-sync-log">Zoho Sync Log</RouterLink>.
+          </p>
         </VCardText>
       </VCard>
     </VCol>

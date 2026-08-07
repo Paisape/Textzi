@@ -18,26 +18,27 @@ from .channels import _mark_dlt_request_paid
 from .config import settings
 from .database import get_db
 from .email_service import render_email, send_email
-from .erpnext import sync_invoice_to_erpnext
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
-    ErpNextApiCallLog, Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction,
+    Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
+    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
-    DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, ErpNextCallLogOut, ErpNextRetryResponse, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
+    DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
     PlatformMessageTelemetryOut, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletCreditRequest, WalletCreditResponse, WalletTopupReportRowOut,
+    ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoRetryResponse,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
+from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
 from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
@@ -1022,13 +1023,15 @@ def bulk_issue_draft_invoices(request: Request, authorization: str | None = Head
     return {"issued_count": len(drafts)}
 
 
-@router.post("/invoices/{invoice_id}/retry-erpnext-sync", response_model=ErpNextRetryResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
-def retry_erpnext_sync(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """Re-attempts the exact same Customer/Item/Sales-Invoice/PDF-fetch chain issue_invoice tried
-    -- for an invoice that was already issued (with Textzi's own fallback PDF, if the first
+@router.post("/invoices/{invoice_id}/retry-zoho-sync", response_model=ZohoRetryResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def retry_zoho_sync(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Re-attempts the exact same Item/Invoice/mark-sent/payment/PDF-fetch chain issue_invoice
+    tried -- for an invoice that was already issued (with Textzi's own fallback PDF, if the first
     attempt failed) once whatever caused the original failure has been fixed. On success, the
-    stored PDF is replaced with the ERPNext-generated one; on failure, the invoice keeps its
-    current PDF and erpnext_sync_error is updated with the new reason."""
+    stored PDF is replaced with the Zoho-generated one; on failure, the invoice keeps its current
+    PDF and zoho_sync_error is updated with the new reason. If the organization still hasn't been
+    linked to Zoho (see POST .../zoho-sync), this just leaves zoho_sync_status="pending" again --
+    link the customer first."""
     invoice = db.get(Invoice, invoice_id)
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
@@ -1039,7 +1042,7 @@ def retry_erpnext_sync(invoice_id: str, request: Request, authorization: str | N
     if not organization:
         raise HTTPException(status_code=422, detail="Could not resolve this invoice's organization")
 
-    pdf_bytes = sync_invoice_to_erpnext(db, invoice, organization)
+    pdf_bytes = sync_invoice_to_zoho(db, invoice, organization)
     if pdf_bytes is not None:
         directory = os.path.join(settings.uploads_dir, "invoices")
         os.makedirs(directory, exist_ok=True)
@@ -1050,23 +1053,23 @@ def retry_erpnext_sync(invoice_id: str, request: Request, authorization: str | N
         db.commit()
 
     log_activity(
-        db, entity.organization_id if entity else None, "erpnext_sync_retried",
-        f"ERPNext sync retried for invoice {invoice.invoice_number} -- {invoice.erpnext_sync_status}.",
+        db, entity.organization_id if entity else None, "zoho_sync_retried",
+        f"Zoho Books sync retried for invoice {invoice.invoice_number} -- {invoice.zoho_sync_status}.",
         actor_email=_caller_email(authorization, db), request=request,
     )
     db.refresh(invoice)
-    return ErpNextRetryResponse(
-        invoice_id=invoice.id, erpnext_sync_status=invoice.erpnext_sync_status,
-        erpnext_invoice_name=invoice.erpnext_invoice_name, erpnext_sync_error=invoice.erpnext_sync_error,
+    return ZohoRetryResponse(
+        invoice_id=invoice.id, zoho_sync_status=invoice.zoho_sync_status,
+        zoho_invoice_id=invoice.zoho_invoice_id, zoho_sync_error=invoice.zoho_sync_error,
     )
 
 
-@router.get("/erpnext/call-log", response_model=list[ErpNextCallLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_erpnext_call_log(status_filter: str | None = None, limit: int = 100, db: Session = Depends(get_db)):
+@router.get("/zoho/call-log", response_model=list[ZohoCallLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_zoho_call_log(status_filter: str | None = None, limit: int = 100, db: Session = Depends(get_db)):
     limit = max(1, min(limit, 200))
-    query = select(ErpNextApiCallLog).order_by(ErpNextApiCallLog.created_at.desc()).limit(limit)
+    query = select(ZohoApiCallLog).order_by(ZohoApiCallLog.created_at.desc()).limit(limit)
     if status_filter:
-        query = query.where(ErpNextApiCallLog.status == status_filter)
+        query = query.where(ZohoApiCallLog.status == status_filter)
     rows = db.scalars(query).all()
     invoice_ids = {r.invoice_id for r in rows if r.invoice_id}
     invoice_numbers = {}
@@ -1074,13 +1077,34 @@ def list_erpnext_call_log(status_filter: str | None = None, limit: int = 100, db
         for inv in db.scalars(select(Invoice).where(Invoice.id.in_(invoice_ids))).all():
             invoice_numbers[inv.id] = inv.invoice_number
     return [
-        ErpNextCallLogOut(
+        ZohoCallLogOut(
             id=r.id, invoice_id=r.invoice_id, invoice_number=invoice_numbers.get(r.invoice_id) if r.invoice_id else None,
             method=r.method, path=r.path, status=r.status, status_code=r.status_code, error=r.error,
             created_at=r.created_at.isoformat(),
         )
         for r in rows
     ]
+
+
+@router.post("/organizations/{organization_id}/zoho-sync", response_model=ZohoOrganizationLinkResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def sync_organization_to_zoho(organization_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """The only place a Zoho Contact ever gets created or linked -- deliberately manual, never
+    automatic (see zoho_books.link_organization's docstring). Once linked, every future invoice
+    for this organization syncs to Zoho automatically; invoices issued before this point stay
+    zoho_sync_status="pending" and can be backfilled individually via retry-zoho-sync if wanted."""
+    organization = db.get(Organization, organization_id)
+    if not organization:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    try:
+        contact_id = link_organization(db, organization)
+    except ZohoCallError as exc:
+        raise HTTPException(status_code=502, detail=f"Could not link this organization to Zoho Books: {exc}") from exc
+    log_activity(
+        db, organization_id, "zoho_organization_linked", f"Organization linked to Zoho Books contact {contact_id}.",
+        actor_email=_caller_email(authorization, db), request=request,
+    )
+    db.commit()
+    return ZohoOrganizationLinkResponse(organization_id=organization.id, zoho_contact_id=contact_id)
 
 
 @router.post("/wallet-credits", response_model=WalletCreditResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
@@ -1474,7 +1498,7 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
         invoice_ids = [row[0] for row in db.execute(
             text("SELECT id FROM invoices WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
         ).all()]
-        _delete_where_in(db, "erpnext_api_call_logs", "invoice_id", invoice_ids)
+        _delete_where_in(db, "zoho_api_call_logs", "invoice_id", invoice_ids)
         request_ids = [row[0] for row in db.execute(
             text("SELECT id FROM dlt_onboarding_requests WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
         ).all()]
@@ -2003,7 +2027,7 @@ def get_organization_overview(organization_id: str, db: Session = Depends(get_db
 
     return OrganizationOverviewResponse(
         organization_id=org.id, organization_name=org.name, gstin=org.gstin, pan=org.pan, industry=org.industry,
-        address=org.address, created_at=org.created_at.isoformat(), entities=entity_details,
+        address=org.address, zoho_contact_id=org.zoho_contact_id, created_at=org.created_at.isoformat(), entities=entity_details,
         wallet_balance=wallet_balance, messages_sent=messages_sent, total_recharged=float(total_recharged),
         primary_contact_name=primary.full_name if primary else None,
         primary_contact_email=primary.email if primary else None,

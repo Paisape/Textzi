@@ -14,9 +14,9 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .email_service import render_email, send_email
-from .erpnext import sync_invoice_to_erpnext
 from .models import Entity, Invoice, Organization
 from .services import GST_SAC_CODE, PlatformCompanyInfo, get_platform_company_info, resolve_primary_user
+from .zoho_books import sync_invoice_to_zoho
 
 INVOICE_TYPE_LABELS = {
     "wallet_recharge": "SMS Wallet Recharge",
@@ -96,7 +96,7 @@ def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: fl
         reference=reference,
         notes=notes,
         created_by_admin_id=created_by_admin_id,
-        erpnext_mark_paid=mark_as_paid,
+        zoho_mark_paid=mark_as_paid,
     )
     db.add(invoice)
     db.flush()
@@ -279,11 +279,12 @@ INTRO_LINES = {
 
 
 def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
-    """ERPNext (if configured -- see erpnext.py) is the source of truth for the invoice document
-    itself; Textzi's own fpdf2 rendering only ever runs as a fallback, so a customer is never
-    left with literally no invoice while an ERPNext-side failure gets retried later. Two emails
-    go out: an immediate one the moment the charge/credit is recorded (before the ERPNext round
-    trip, which can take a few seconds), and the real invoice-with-PDF once it's ready."""
+    """Zoho Books (if the organization has been linked -- see zoho_books.py) is the source of
+    truth for the invoice document itself; Textzi's own fpdf2 rendering only ever runs as a
+    fallback, so a customer is never left with literally no invoice while a Zoho-side issue gets
+    retried later. Two emails go out: an immediate one the moment the charge/credit is recorded
+    (before the Zoho round trip, which can take a few seconds), and the real invoice-with-PDF
+    once it's ready."""
     if invoice.status == "issued":
         return invoice
     entity = db.get(Entity, invoice.entity_id)
@@ -314,11 +315,11 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
             ),
         )
 
-    pdf_bytes = sync_invoice_to_erpnext(db, invoice, organization)
+    pdf_bytes = sync_invoice_to_zoho(db, invoice, organization)
     if pdf_bytes is None:
-        # ERPNext unconfigured or the sync failed (see invoice.erpnext_sync_status/_error) --
-        # fall back to Textzi's own rendering so the customer isn't left with no invoice at all
-        # while an admin retries the ERPNext side from the admin panel.
+        # Organization not yet linked to Zoho, Zoho unconfigured, or the sync failed (see
+        # invoice.zoho_sync_status/_error) -- fall back to Textzi's own rendering so the customer
+        # isn't left with no invoice at all while an admin links/retries the Zoho side later.
         pdf_bytes = _render_invoice_pdf(invoice, entity, organization, get_platform_company_info(db))
 
     directory = os.path.join(settings.uploads_dir, "invoices")

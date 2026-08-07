@@ -18,6 +18,7 @@ type CompanyProfile = {
   company_name: string
   pan: string | null
   gstin: string | null
+  state_code: string | null
   address: string | null
   contact_email: string | null
   contact_mobile: string | null
@@ -32,6 +33,7 @@ const form = ref({
   companyName: '',
   pan: '',
   gstin: '',
+  stateCode: '',
   address: '',
   contactEmail: '',
   contactMobile: '',
@@ -63,6 +65,7 @@ async function loadProfile() {
     form.value.companyName = profile.company_name || ''
     form.value.pan = profile.pan || ''
     form.value.gstin = profile.gstin || ''
+    form.value.stateCode = profile.state_code || ''
     form.value.address = profile.address || ''
     form.value.contactEmail = profile.contact_email || ''
     form.value.contactMobile = profile.contact_mobile || ''
@@ -97,6 +100,7 @@ async function onSubmit() {
     body.set('company_name', form.value.companyName.trim())
     body.set('pan', form.value.pan.trim())
     body.set('gstin', noGstin.value ? '' : form.value.gstin.trim())
+    body.set('state_code', noGstin.value ? form.value.stateCode : '')
     body.set('address', form.value.address.trim())
     body.set('contact_email', form.value.contactEmail.trim())
     body.set('contact_mobile', form.value.contactMobile.trim())
@@ -204,10 +208,22 @@ async function onSubmit() {
               />
             </VCol>
             <VCol
+              v-else
               cols="12"
-              :md="noGstin ? 12 : 6"
-              class="d-flex align-center"
-              :class="noGstin ? '' : 'mt-n2'"
+              md="6"
+            >
+              <AppSelect
+                v-model="form.stateCode"
+                :items="GST_STATES"
+                :rules="[requiredValidator]"
+                label="State"
+                placeholder="Select your business's state"
+              />
+            </VCol>
+            <VCol
+              cols="12"
+              md="6"
+              class="d-flex align-center mt-n2"
             >
               <VCheckbox
                 v-model="noGstin"
