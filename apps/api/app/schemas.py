@@ -9,7 +9,10 @@ class SmsSendRequest(BaseModel):
     picking a template by its readable alias and letting Textzi fill in the variables live, with
     a preview. The external developer API (main.py) uses ApiSmsSendRequest instead: the caller's
     own system already has the complete message text, so there's nothing for Textzi to render."""
-    template: str = Field(pattern=r"^[a-z0-9_\-]{2,80}$")
+    # Must exactly match a Template.alias for this entity (services.resolve_template) --
+    # unrestricted in format since alias itself is saved exactly as entered, normally the
+    # DLT-portal-registered template name verbatim (e.g. "OTP NEW"), not a Textzi-imposed slug.
+    template: str = Field(min_length=1, max_length=80)
     mobile: str = Field(pattern=r"^[1-9][0-9]{9,14}$")
     variables: dict[str, str] = Field(default_factory=dict)
 
@@ -97,9 +100,9 @@ class HeaderCreate(BaseModel):
 class TemplateCreate(BaseModel):
     pe_id: str
     header_id: str
-    # Not pattern-restricted here -- normalize_template_alias (services.py) turns whatever's
-    # typed (often the DLT-portal-registered template name verbatim, e.g. "OTP NEW") into a valid
-    # slug server-side, rather than rejecting input that doesn't already match compose's format.
+    # Saved exactly as entered (router trims whitespace only) -- normally the DLT-portal-
+    # registered template name typed verbatim (e.g. "OTP NEW"), which SmsSendRequest.template
+    # must match exactly at send time.
     alias: str = Field(min_length=1, max_length=200)
     dlt_template_id: str = Field(min_length=3, max_length=80)
     body: str = Field(min_length=1, max_length=1600)
@@ -372,6 +375,8 @@ class AdminCreateCustomerResponse(BaseModel):
 
 class TemplateSummary(BaseModel):
     id: str
+    pe_id: str
+    header_id: str
     alias: str
     dlt_template_id: str
     body: str

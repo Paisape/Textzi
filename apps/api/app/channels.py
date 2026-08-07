@@ -36,7 +36,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, normalize_template_alias, require_channel_active, resolve_channel_fees, resolve_user_entity
+from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -586,13 +586,9 @@ def create_my_header(pe_id: str, header_id: str = Form(...), value: str = Form(.
 def create_my_template(
     pe_id: str = Form(...),
     header_id: str = Form(...),
-    # Not pattern-restricted -- normalize_template_alias (services.py) turns whatever's typed
-    # (often the DLT-portal-registered template name verbatim, e.g. "OTP NEW", which telecom
-    # operator portals place no such format restriction on) into the lowercase slug
-    # SmsSendRequest.template's pattern requires, rather than rejecting it. This endpoint used to
-    # accept any alias completely unvalidated, which was the actual original bug: a customer
-    # could create a template that saved fine and showed up in their list, but could never be
-    # sent -- compose's regex rejected it with a 422 the customer had no way to explain or fix.
+    # Saved exactly as entered (only whitespace-trimmed) -- this is normally the DLT-portal-
+    # registered template name typed verbatim, and SmsSendRequest.template must match it exactly
+    # at send time, so silently transforming it here would just move the mismatch to send time.
     alias: str = Form(...),
     dlt_template_id: str = Form(...),
     body: str = Form(...),
@@ -608,19 +604,58 @@ def create_my_template(
     pe, header = db.get(PeId, pe_id), db.get(Header, header_id)
     if not pe or pe.entity_id != entity.id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
-    try:
-        normalized_alias = normalize_template_alias(alias)
-    except DomainError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    item = Template(entity_id=entity.id, pe_id=pe_id, header_id=header_id, alias=normalized_alias, dlt_template_id=dlt_template_id, body=body, category=category, status=Status.active)
+    alias = alias.strip()
+    item = Template(entity_id=entity.id, pe_id=pe_id, header_id=header_id, alias=alias, dlt_template_id=dlt_template_id, body=body, category=category, status=Status.active)
     db.add(item)
     try:
         db.commit()
     except IntegrityError:
         db.rollback()
-        raise HTTPException(status_code=409, detail=f"A template with alias '{normalized_alias}' or DLT template id '{dlt_template_id}' already exists for this entity")
+        raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{dlt_template_id}' already exists for this entity")
     db.refresh(item)
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
+
+
+@router.put("/templates/{template_id}")
+def update_my_template(
+    template_id: str,
+    pe_id: str = Form(...),
+    header_id: str = Form(...),
+    alias: str = Form(...),
+    dlt_template_id: str = Form(...),
+    body: str = Form(...),
+    category: str = Form(default="transactional"),
+    user: User = Depends(require_capability("channels:manage")),
+    db: Session = Depends(get_db),
+):
+    """Unlike delete, editing is allowed regardless of send history -- it doesn't touch any past
+    Message row (Message.rendered_body already holds the exact text that was actually sent,
+    independent of whatever the template's alias/body/category say now), so there's no
+    historical-integrity reason to restrict it."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    template = db.get(Template, template_id)
+    if not template or template.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Template not found")
+    pe, header = db.get(PeId, pe_id), db.get(Header, header_id)
+    if not pe or pe.entity_id != entity.id or not header or header.pe_id != pe.id:
+        raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    alias = alias.strip()
+    template.pe_id = pe_id
+    template.header_id = header_id
+    template.alias = alias
+    template.dlt_template_id = dlt_template_id
+    template.body = body
+    template.category = category
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{dlt_template_id}' already exists for this entity")
+    db.refresh(template)
+    return {"id": template.id, "alias": template.alias, "dlt_template_id": template.dlt_template_id, "category": template.category}
 
 
 @router.delete("/templates/{template_id}")

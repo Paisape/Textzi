@@ -272,19 +272,6 @@ def resolve_entity_from_key(db: Session, api_key: str, client_ip: str | None = N
     return entity
 
 
-def normalize_template_alias(raw: str) -> str:
-    """Turns whatever a customer types into the lowercase/digits/underscore/hyphen slug
-    SmsSendRequest.template's pattern requires, rather than rejecting anything that doesn't
-    already match it. Customers naturally type their real DLT-approved template name here (e.g.
-    "OTP NEW", copied straight from their telecom operator's DLT portal, which places no such
-    restriction on template names) -- normalizing instead of rejecting means that always works,
-    with no back-and-forth over a formatting rule that has nothing to do with DLT compliance."""
-    slug = re.sub(r"[^a-z0-9_\-]+", "_", raw.strip().lower()).strip("_-")
-    if len(slug) < 2:
-        raise DomainError("Alias must contain at least 2 letters or numbers")
-    return slug[:80]
-
-
 def resolve_template(db: Session, entity_id: str, alias: str) -> Template:
     template = db.scalar(select(Template).where(Template.entity_id == entity_id, Template.alias == alias, Template.status == Status.active))
     if not template:

@@ -403,7 +403,7 @@ onMounted(loadOverview)
               <VTable density="compact">
                 <thead>
                   <tr>
-                    <th>Alias</th>
+                    <th>Template Name</th>
                     <th>DLT Template ID</th>
                     <th>Category</th>
                     <th>Status</th>

@@ -38,7 +38,7 @@ from .schemas import (
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
-from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, normalize_template_alias, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -194,13 +194,14 @@ def create_header(pe_id: str, payload: HeaderCreate, db: Session = Depends(get_d
 
 @router.post("/entities/{entity_id}/templates", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def create_template(entity_id: str, payload: TemplateCreate, db: Session = Depends(get_db)):
+    """alias is saved exactly as entered (only whitespace-trimmed) -- customers/admins normally
+    type the DLT-portal-registered template name here verbatim, and this is what SmsSendRequest.
+    template must match exactly at send time, so silently transforming it would just move the
+    mismatch to send time instead of removing it."""
     pe, header = db.get(PeId, payload.pe_id), db.get(HeaderModel, payload.header_id)
     if not pe or pe.entity_id != entity_id or not header or header.pe_id != pe.id:
         raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
-    try:
-        alias = normalize_template_alias(payload.alias)
-    except DomainError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    alias = payload.alias.strip()
     item = Template(entity_id=entity_id, pe_id=payload.pe_id, header_id=payload.header_id, alias=alias, dlt_template_id=payload.dlt_template_id, body=payload.body, category=payload.category.value, status=StatusEnum.active)
     db.add(item)
     try:
@@ -210,6 +211,34 @@ def create_template(entity_id: str, payload: TemplateCreate, db: Session = Depen
         raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{payload.dlt_template_id}' already exists for this entity")
     db.refresh(item)
     return {"id": item.id, "alias": item.alias, "dlt_template_id": item.dlt_template_id, "category": item.category}
+
+
+@router.put("/entities/{entity_id}/templates/{template_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_template(entity_id: str, template_id: str, payload: TemplateCreate, db: Session = Depends(get_db)):
+    """Unlike delete, editing is allowed regardless of send history -- it doesn't touch any past
+    Message row (Message.rendered_body already holds the exact text that was actually sent,
+    independent of whatever the template's alias/body/category say now), so there's no
+    historical-integrity reason to restrict it."""
+    template = db.get(Template, template_id)
+    if not template or template.entity_id != entity_id:
+        raise HTTPException(status_code=404, detail="Template not found")
+    pe, header = db.get(PeId, payload.pe_id), db.get(HeaderModel, payload.header_id)
+    if not pe or pe.entity_id != entity_id or not header or header.pe_id != pe.id:
+        raise HTTPException(status_code=422, detail="Template PE/Header mapping is invalid")
+    alias = payload.alias.strip()
+    template.pe_id = payload.pe_id
+    template.header_id = payload.header_id
+    template.alias = alias
+    template.dlt_template_id = payload.dlt_template_id
+    template.body = payload.body
+    template.category = payload.category.value
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=f"A template with alias '{alias}' or DLT template id '{payload.dlt_template_id}' already exists for this entity")
+    db.refresh(template)
+    return {"id": template.id, "alias": template.alias, "dlt_template_id": template.dlt_template_id, "category": template.category}
 
 
 @router.delete("/entities/{entity_id}/templates/{template_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

@@ -26,7 +26,7 @@ def list_my_templates(user: User = Depends(require_user), db: Session = Depends(
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     templates = db.scalars(select(Template).where(Template.entity_id == entity.id, Template.status == Status.active)).all()
-    return [TemplateSummary(id=t.id, alias=t.alias, dlt_template_id=t.dlt_template_id, body=t.body, category=t.category) for t in templates]
+    return [TemplateSummary(id=t.id, pe_id=t.pe_id, header_id=t.header_id, alias=t.alias, dlt_template_id=t.dlt_template_id, body=t.body, category=t.category) for t in templates]
 
 
 @router.post("/compose", response_model=SmsSendResponse)

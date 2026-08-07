@@ -7,6 +7,8 @@ definePage({
 
 type TemplateSummary = {
   id: string
+  pe_id: string
+  header_id: string
   alias: string
   dlt_template_id: string
   body: string
@@ -120,14 +122,6 @@ async function onSubmitTest() {
   }
 }
 
-// Mirrors services.normalize_template_alias -- just a live preview so the customer sees what
-// their input becomes before submitting (e.g. typing their DLT-portal template name "OTP NEW"
-// verbatim shows "otp_new"); the server does the real normalization regardless of this preview.
-const newTemplateAliasPreview = computed(() => {
-  const slug = newTemplateAlias.value.trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^[_-]+|[_-]+$/g, '')
-  return slug.slice(0, 80)
-})
-
 async function onAddTemplate() {
   templateSubmitError.value = ''
   if (!newTemplatePeId.value || !newTemplateHeaderId.value || !newTemplateAlias.value.trim() || !newTemplateDltId.value.trim() || !newTemplateBody.value.trim()) {
@@ -152,6 +146,63 @@ async function onAddTemplate() {
   }
   finally {
     templateSubmitting.value = false
+  }
+}
+
+// ---- Edit a template ----
+const editDialogOpen = ref(false)
+const editTemplateId = ref<string | null>(null)
+const editTemplatePeId = ref<string | null>(null)
+const editTemplateHeaderId = ref<string | null>(null)
+const editTemplateAlias = ref('')
+const editTemplateDltId = ref('')
+const editTemplateBody = ref('')
+const editTemplateCategory = ref('transactional')
+const editHeadersForSelectedPe = computed(() => headersForTemplate.value.filter(h => h.pe_id === editTemplatePeId.value))
+function onEditPeIdChange() {
+  // Only reset the header when the admin actually picks a different PE ID in the dropdown --
+  // not when onOpenEditDialog programmatically sets both fields together while pre-filling.
+  editTemplateHeaderId.value = null
+}
+const editSubmitting = ref(false)
+const editError = ref('')
+
+function onOpenEditDialog(template: TemplateSummary) {
+  editTemplateId.value = template.id
+  editTemplatePeId.value = template.pe_id
+  editTemplateHeaderId.value = template.header_id
+  editTemplateAlias.value = template.alias
+  editTemplateDltId.value = template.dlt_template_id
+  editTemplateBody.value = template.body
+  editTemplateCategory.value = template.category
+  editError.value = ''
+  editDialogOpen.value = true
+}
+
+async function onSubmitEdit() {
+  editError.value = ''
+  if (!editTemplateId.value || !editTemplatePeId.value || !editTemplateHeaderId.value || !editTemplateAlias.value.trim() || !editTemplateDltId.value.trim() || !editTemplateBody.value.trim()) {
+    editError.value = 'Fill in every field.'
+    return
+  }
+  editSubmitting.value = true
+  try {
+    const form = new FormData()
+    form.set('pe_id', editTemplatePeId.value)
+    form.set('header_id', editTemplateHeaderId.value)
+    form.set('alias', editTemplateAlias.value.trim())
+    form.set('dlt_template_id', editTemplateDltId.value.trim())
+    form.set('body', editTemplateBody.value.trim())
+    form.set('category', editTemplateCategory.value)
+    await $api(`/v1/channels/sms/templates/${editTemplateId.value}`, { method: 'PUT', body: form })
+    editDialogOpen.value = false
+    await loadTemplates()
+  }
+  catch (error: any) {
+    editError.value = extractErrorMessage(error, 'Could not save these changes.')
+  }
+  finally {
+    editSubmitting.value = false
   }
 }
 
@@ -1657,9 +1708,9 @@ onMounted(async () => {
                 >
                   <AppTextField
                     v-model="newTemplateAlias"
-                    label="Alias"
+                    label="Template Name"
                     placeholder="e.g. your DLT template name, OTP NEW"
-                    :hint="newTemplateAliasPreview ? `Will be saved as: ${newTemplateAliasPreview}` : 'This is what you\'ll pick the template by when sending'"
+                    hint="Saved exactly as entered -- this is what you'll pick the template by when sending"
                     persistent-hint
                   />
                 </VCol>
@@ -1708,7 +1759,7 @@ onMounted(async () => {
           <VTable v-if="!templatesError">
             <thead>
               <tr>
-                <th>Alias</th>
+                <th>Template Name</th>
                 <th>DLT template id</th>
                 <th>Category</th>
                 <th>Wording</th>
@@ -1737,6 +1788,13 @@ onMounted(async () => {
                       @click="onOpenTestDialog(template)"
                     >
                       Test
+                    </VBtn>
+                    <VBtn
+                      size="small"
+                      variant="outlined"
+                      @click="onOpenEditDialog(template)"
+                    >
+                      Edit
                     </VBtn>
                     <VBtn
                       size="small"
@@ -1827,6 +1885,94 @@ onMounted(async () => {
               Test
             </VBtn>
           </VCardText>
+        </VCard>
+      </VDialog>
+
+      <VDialog
+        v-model="editDialogOpen"
+        max-width="720"
+      >
+        <VCard>
+          <VCardTitle>
+            Edit template
+          </VCardTitle>
+          <VCardText>
+            <VAlert
+              v-if="editError"
+              type="error"
+              variant="tonal"
+              density="compact"
+              class="mb-4"
+            >
+              {{ editError }}
+            </VAlert>
+            <VForm @submit.prevent="onSubmitEdit">
+              <VRow>
+                <VCol cols="12" sm="6">
+                  <VSelect
+                    v-model="editTemplatePeId"
+                    :items="peIdsForTemplate"
+                    item-value="id"
+                    :item-title="(pe: PeIdRow) => `${pe.value} (${pe.operator})`"
+                    label="PE ID"
+                    @update:model-value="onEditPeIdChange"
+                  />
+                </VCol>
+                <VCol cols="12" sm="6">
+                  <VSelect
+                    v-model="editTemplateHeaderId"
+                    :items="editHeadersForSelectedPe"
+                    item-value="id"
+                    :item-title="(h: HeaderRow) => `${h.header_id} — ${h.value}`"
+                    label="Header"
+                    :disabled="!editTemplatePeId"
+                  />
+                </VCol>
+                <VCol cols="12" sm="6">
+                  <AppTextField
+                    v-model="editTemplateAlias"
+                    label="Template Name"
+                    hint="Saved exactly as entered -- this is what you'll pick the template by when sending"
+                    persistent-hint
+                  />
+                </VCol>
+                <VCol cols="12" sm="6">
+                  <AppTextField
+                    v-model="editTemplateDltId"
+                    label="DLT template id"
+                  />
+                </VCol>
+                <VCol cols="12" sm="6">
+                  <VSelect
+                    v-model="editTemplateCategory"
+                    :items="CATEGORY_OPTIONS"
+                    item-title="title"
+                    item-value="value"
+                    label="Category"
+                  />
+                </VCol>
+                <VCol cols="12">
+                  <AppTextarea
+                    v-model="editTemplateBody"
+                    label="Approved message body"
+                    rows="2"
+                  />
+                </VCol>
+              </VRow>
+            </VForm>
+          </VCardText>
+          <VCardActions>
+            <VSpacer />
+            <VBtn variant="tonal" @click="editDialogOpen = false">
+              Cancel
+            </VBtn>
+            <VBtn
+              :loading="editSubmitting"
+              @click="onSubmitEdit"
+            >
+              Save Changes
+            </VBtn>
+          </VCardActions>
         </VCard>
       </VDialog>
 
