@@ -911,6 +911,7 @@ function buildPostmanCollection(baseUrl: string) {
             { key: 'X-Api-Key', value: '{{api_key}}' },
             { key: 'Content-Type', value: 'application/json' },
             { key: 'Idempotency-Key', value: 'order-1001-confirmation', disabled: true },
+            { key: 'X-User-Id', value: '', disabled: true },
           ],
           body: {
             mode: 'raw',
@@ -918,6 +919,25 @@ function buildPostmanCollection(baseUrl: string) {
             options: { raw: { language: 'json' } },
           },
           url: { raw: '{{base_url}}/v1/sms/send', host: ['{{base_url}}'], path: ['v1', 'sms', 'send'] },
+        },
+      },
+      {
+        name: 'Send SMS via URL',
+        request: {
+          method: 'GET',
+          url: {
+            raw: '{{base_url}}/v1/sms/send-url?api_key={{api_key}}&mobile=919876543210&template_id=1707123456789012345&message=Your+order+1001+has+been+confirmed+and+will+ship+to+Pune.',
+            host: ['{{base_url}}'],
+            path: ['v1', 'sms', 'send-url'],
+            query: [
+              { key: 'api_key', value: '{{api_key}}' },
+              { key: 'mobile', value: '919876543210' },
+              { key: 'template_id', value: '1707123456789012345' },
+              { key: 'message', value: 'Your order 1001 has been confirmed and will ship to Pune.' },
+              { key: 'idempotency_key', value: 'order-1001-confirmation', disabled: true },
+              { key: 'user_id', value: '', disabled: true },
+            ],
+          },
         },
       },
       {
@@ -2358,8 +2378,11 @@ onMounted(async () => {
                 </VBtn>
               </div>
               <p class="text-body-2 text-medium-emphasis mb-0">
-                Every request needs an <code>X-Api-Key</code> header (generate one under
-                Settings — the plaintext is only ever shown once, right after creation).
+                Every request needs your API key — as an <code>X-Api-Key</code> header for
+                <code>POST /v1/sms/send</code>/<code>send-bulk</code>, or an
+                <code>api_key</code> query parameter for <code>GET /v1/sms/send-url</code>.
+                Generate one under Settings — the plaintext is only ever shown once, right after
+                creation.
               </p>
             </VCardText>
           </VCard>
@@ -2649,8 +2672,9 @@ onMounted(async () => {
                     Rate Limits
                   </h6>
                   <p class="text-body-2 mb-0">
-                    Requests are throttled per account across both <code>/v1/sms/send</code> and
-                    <code>/v1/sms/send-bulk</code>. Exceeding the limit returns
+                    Requests are throttled per account across <code>/v1/sms/send</code>,
+                    <code>/v1/sms/send-url</code>, and <code>/v1/sms/send-bulk</code> together —
+                    they share one limit, not three separate ones. Exceeding it returns
                     <code>429</code> with a <code>Rate limit exceeded</code> message — back off
                     and retry after the window resets.
                   </p>
