@@ -6,10 +6,8 @@ Razorpay dev/real dual-path pattern already used in wallet.py/payments.py."""
 import hmac
 import html
 import io
-import os
 import re
 import secrets
-import uuid
 from datetime import datetime, timedelta, timezone
 
 import razorpay
@@ -36,7 +34,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, validate_template_body
+from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -91,25 +89,6 @@ def _consume_api_key_otp(db: Session, user_id: str, action: str, code: str) -> N
     db.commit()
 
 router = APIRouter(prefix="/v1/channels/sms", tags=["channels"])
-
-MAX_UPLOAD_BYTES = 10 * 1024 * 1024
-ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
-
-
-def _save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
-    ext = os.path.splitext(upload.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=422, detail=f"Unsupported file type '{ext}'. Allowed: PDF, JPG, PNG.")
-    content = upload.file.read()
-    if len(content) > MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=422, detail="File is too large (max 10MB).")
-    directory = os.path.join(settings.uploads_dir, subdir)
-    os.makedirs(directory, exist_ok=True)
-    stored_name = f"{uuid.uuid4()}{ext}"
-    stored_path = os.path.join(directory, stored_name)
-    with open(stored_path, "wb") as f:
-        f.write(content)
-    return stored_path, content
 
 
 def _dlt_request_out(r: DltOnboardingRequest, docs: list[DltOnboardingRequestDocument]) -> DltOnboardingRequestOut:
@@ -305,8 +284,8 @@ def submit_self_service_dlt(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == pe_value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
-    stored_path, _ = _save_upload(certificate, f"pe-certificates/{entity.id}")
-    mapping_path, _ = _save_upload(pe_tm_mapping, f"pe-certificates/{entity.id}")
+    stored_path, _ = save_upload(certificate, f"pe-certificates/{entity.id}")
+    mapping_path, _ = save_upload(pe_tm_mapping, f"pe-certificates/{entity.id}")
     pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_path=mapping_path, status=Status.active)
     db.add(pe); db.flush()
     header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.active)
@@ -403,7 +382,7 @@ def submit_dlt_request(
     db.add(request_row); db.flush()
 
     def _save_typed(upload: UploadFile, document_type: str, default_name: str) -> DltOnboardingRequestDocument:
-        stored_path, _ = _save_upload(upload, f"dlt-requests/{request_row.id}")
+        stored_path, _ = save_upload(upload, f"dlt-requests/{request_row.id}")
         row = DltOnboardingRequestDocument(request_id=request_row.id, filename=upload.filename or default_name, stored_path=stored_path, document_type=document_type)
         db.add(row)
         return row

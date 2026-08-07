@@ -69,7 +69,7 @@ router.beforeEach(async to => {
   // "any role with no organization_id") because platform-staff roles never have an organization
   // at all by design -- checking organization_id alone would wrongly send an admin-invited staff
   // member (who has no org and never will) into the customer onboarding wizard.
-  if (isLoggedIn && !to.meta.public && to.name !== 'onboarding') {
+  if (isLoggedIn && !to.meta.public && to.name !== 'onboarding' && to.name !== 'complete-profile') {
     const authStore = useAuthStore()
     await authStore.load()
     if (!authStore.profile) {
@@ -85,6 +85,13 @@ router.beforeEach(async to => {
     }
     if (authStore.profile?.role === 'enterprise_customer' && !authStore.profile.organization_id)
       return '/onboarding'
+
+    // Mandatory post-onboarding gate: every organization starts with profile_completed_at NULL
+    // (including ones that onboarded long before this field existed), so this applies retroactively
+    // to existing customers too, not just brand new ones -- they'll hit this once on their next
+    // navigation until they submit the form.
+    if (authStore.profile?.organization_id && authStore.profile.profile_completed === false)
+      return '/complete-profile'
 
     // Structural backstop for admin-only pages -- every admin page already checks
     // authStore.isAdmin itself before rendering/fetching, but that's per-page discipline with

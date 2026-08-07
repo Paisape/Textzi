@@ -1,13 +1,39 @@
+import os
 import re
+import uuid
 from dataclasses import dataclass
 from decimal import Decimal
-from fastapi import Request
+from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
 from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction, Status
 from .security import hash_api_key
+
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+
+
+def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
+    """Shared by every KYC/certificate-style upload across the app (DLT documents, PE
+    certificates, and the company GST certificate) -- extension allowlist, size cap, and always a
+    uuid4()-generated stored filename (never the user-supplied one, so there's no path-traversal
+    or overwrite risk from a crafted filename)."""
+    ext = os.path.splitext(upload.filename or "")[1].lower()
+    if ext not in ALLOWED_UPLOAD_EXTENSIONS:
+        raise HTTPException(status_code=422, detail=f"Unsupported file type '{ext}'. Allowed: PDF, JPG, PNG.")
+    content = upload.file.read()
+    if len(content) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=422, detail="File is too large (max 10MB).")
+    directory = os.path.join(settings.uploads_dir, subdir)
+    os.makedirs(directory, exist_ok=True)
+    stored_name = f"{uuid.uuid4()}{ext}"
+    stored_path = os.path.join(directory, stored_name)
+    with open(stored_path, "wb") as f:
+        f.write(content)
+    return stored_path, content
+
 
 GST_RATE = 0.18
 GST_SAC_CODE = "998363"  # "Other telecommunication services" -- covers bulk SMS / messaging. Lives

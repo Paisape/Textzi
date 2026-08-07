@@ -17,6 +17,7 @@ export type AuthProfile = {
   full_name: string
   role: string
   organization_id: string | null
+  profile_completed: boolean | null
 }
 
 export const useAuthStore = defineStore('auth', () => {

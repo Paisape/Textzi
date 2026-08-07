@@ -18,7 +18,7 @@ from .config import settings
 from .database import get_db
 from .dispatch import provider_for_route
 from .email_service import render_email, send_email
-from .models import EmailVerification, MobileVerification, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, TwoFactorAuth, User, UserSession, UserStatus, uid
+from .models import EmailVerification, MobileVerification, Organization, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, TwoFactorAuth, User, UserSession, UserStatus, uid
 from .providers import ProviderMessage
 from .schemas import (
     ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, PermissionsResponse, RegisterRequest, RegisterResponse,
@@ -453,8 +453,15 @@ def step_up_2fa(payload: TwoFactorCodeRequest, user: User = Depends(require_user
 
 
 @router.get("/me", response_model=UserProfile)
-def me(user: User = Depends(require_user)):
-    return UserProfile(id=user.id, email=user.email, full_name=user.full_name, email_verified=user.email_verified, mobile_verified=user.mobile_verified, status=user.status, organization_id=user.organization_id, role=user.role)
+def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    profile_completed = None
+    if user.organization_id:
+        org = db.get(Organization, user.organization_id)
+        profile_completed = bool(org and org.profile_completed_at)
+    return UserProfile(
+        id=user.id, email=user.email, full_name=user.full_name, email_verified=user.email_verified, mobile_verified=user.mobile_verified,
+        status=user.status, organization_id=user.organization_id, role=user.role, profile_completed=profile_completed,
+    )
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)

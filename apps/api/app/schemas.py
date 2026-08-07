@@ -240,6 +240,11 @@ class UserProfile(BaseModel):
     status: str
     organization_id: str | None = None
     role: str = "user"
+    # None for a platform-staff account (no organization, this check never applies to them) or
+    # for a tenant account that hasn't onboarded an organization yet (the pre-existing onboarding
+    # gate handles that case first). True/False only once an organization exists -- the router
+    # guard (apps/web) redirects to /complete-profile while this is False.
+    profile_completed: bool | None = None
 
 
 class OrganizationOnboardRequest(BaseModel):
@@ -256,6 +261,22 @@ class OrganizationOnboardRequest(BaseModel):
     contact_person_name: str = Field(min_length=2, max_length=160)
     contact_email: EmailStr
     contact_mobile: str = Field(pattern=r"^[1-9][0-9]{9,14}$")
+
+
+class CompanyProfileOut(BaseModel):
+    organization_id: str
+    company_name: str
+    pan: str | None
+    gstin: str | None
+    address: str | None
+    contact_email: str | None
+    contact_mobile: str | None
+    gst_certificate_uploaded: bool
+    profile_completed: bool
+
+
+class CompanyProfileUpdateResponse(BaseModel):
+    profile_completed: bool
 
 
 class OrganizationOnboardResponse(BaseModel):

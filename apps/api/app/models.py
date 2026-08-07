@@ -186,6 +186,14 @@ class Organization(Base):
     # any invoice for this organization is pushed to ERPNext (services.erpnext.ensure_customer);
     # every later invoice reuses it instead of creating a duplicate Customer record.
     erpnext_customer_name: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # Proof of GST registration, uploaded the first time the company profile is completed --
+    # mirrors PeId.certificate_path's storage convention (services.save_upload).
+    gst_certificate_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Null until the mandatory post-first-login "Complete Your Profile" gate (router guard,
+    # apps/web/src/plugins/1.router/index.ts) has been submitted once -- every existing
+    # organization starts null too, so this doubles as the retroactive gate for accounts that
+    # onboarded before this field existed, not just brand new ones.
+    profile_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Entity(Base):
