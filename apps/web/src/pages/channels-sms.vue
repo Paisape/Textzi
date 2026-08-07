@@ -85,10 +85,20 @@ function onOpenTestDialog(template: TemplateSummary) {
 }
 
 function dummyVariablesFor(body: string): Record<string, string> {
-  const matches = body.matchAll(/\{\{\s*(\w+)\s*\}\}/g)
+  const namedMatches = [...body.matchAll(/\{\{\s*(\w+)\s*\}\}/g)]
+  if (namedMatches.length) {
+    const variables: Record<string, string> = {}
+    for (const match of new Set(namedMatches.map(m => m[1])))
+      variables[match] = 'Test'
+    return variables
+  }
+  // DLT-approved templates almost always use {#...#}-style placeholders instead (the TRAI/DLT
+  // platform's own convention -- see services.render_template), matched purely positionally
+  // server-side, not by name -- one dummy value per occurrence, uniquely keyed since the key name
+  // itself is never looked up for these, only the count and order of values matters.
+  const dltMatches = [...body.matchAll(/\{#[^{}]*#\}/g)]
   const variables: Record<string, string> = {}
-  for (const match of new Set([...matches].map(m => m[1])))
-    variables[match] = 'Test'
+  dltMatches.forEach((_match, index) => { variables[`dlt_${index}`] = 'Test' })
   return variables
 }
 

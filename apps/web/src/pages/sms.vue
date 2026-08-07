@@ -49,17 +49,55 @@ const sending = ref(false)
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === selectedTemplateId.value) ?? null)
 
-const variableNames = computed(() => {
+type VariableSlot = { key: string, label: string }
+
+// DLT-approved templates almost always use {#...#}-style placeholders (the TRAI/DLT platform's
+// own convention -- see services.render_template), not Textzi's own {{var}}. Those are purely
+// positional server-side (matched by occurrence order, not by name), so each occurrence gets its
+// own input even if the text inside the braces repeats -- unlike {{var}}, which is deduplicated
+// by name. A template uses one convention or the other, never both, so checking for {{var}} first
+// and falling back to {#...#} covers every real template correctly.
+const variableSlots = computed<VariableSlot[]>(() => {
   if (!selectedTemplate.value)
     return []
-  const matches = selectedTemplate.value.body.matchAll(/\{\{\s*(\w+)\s*\}\}/g)
-  return [...new Set([...matches].map(m => m[1]))]
+  const body = selectedTemplate.value.body
+  const namedMatches = [...body.matchAll(/\{\{\s*(\w+)\s*\}\}/g)]
+  if (namedMatches.length) {
+    const seen = new Set<string>()
+    const slots: VariableSlot[] = []
+    for (const m of namedMatches) {
+      if (!seen.has(m[1])) {
+        seen.add(m[1])
+        slots.push({ key: m[1], label: m[1] })
+      }
+    }
+    return slots
+  }
+  const dltMatches = [...body.matchAll(/\{#([^{}]*)#\}/g)]
+  return dltMatches.map((m, index) => ({ key: `dlt_${index}`, label: m[1] || `Variable ${index + 1}` }))
 })
+
+function initVariableValues() {
+  const values: Record<string, string> = {}
+  for (const slot of variableSlots.value)
+    values[slot.key] = ''
+  variableValues.value = values
+}
 
 const previewBody = computed(() => {
   if (!selectedTemplate.value)
     return ''
-  return selectedTemplate.value.body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, name) => variableValues.value[name] || `{{${name}}}`)
+  const body = selectedTemplate.value.body
+  if (variableSlots.value.length && body.includes('{{'))
+    return body.replace(/\{\{\s*(\w+)\s*\}\}/g, (_match, name) => variableValues.value[name] || `{{${name}}}`)
+  let index = 0
+  return body.replace(/\{#[^{}]*#\}/g, () => {
+    const slot = variableSlots.value[index]
+    index += 1
+    if (!slot)
+      return '{#...#}'
+    return variableValues.value[slot.key] || `{#${slot.label}#}`
+  })
 })
 
 const estimatedCredits = computed(() => {
@@ -68,7 +106,7 @@ const estimatedCredits = computed(() => {
 })
 
 watch(selectedTemplateId, () => {
-  variableValues.value = {}
+  initVariableValues()
 })
 
 async function loadTemplates() {
@@ -158,9 +196,9 @@ async function onSend() {
     sendError.value = 'Enter a recipient mobile number.'
     return
   }
-  const missing = variableNames.value.filter(name => !variableValues.value[name]?.trim())
+  const missing = variableSlots.value.filter(slot => !variableValues.value[slot.key]?.trim())
   if (missing.length) {
-    sendError.value = `Fill in: ${missing.join(', ')}`
+    sendError.value = `Fill in: ${missing.map(slot => slot.label).join(', ')}`
     return
   }
   sending.value = true
@@ -175,7 +213,7 @@ async function onSend() {
     })
     sendResult.value = { status: result.status, route: result.route, balance: result.balance, creditsCharged: result.credits_charged }
     mobile.value = ''
-    variableValues.value = {}
+    initVariableValues()
     await loadMessages(true)
   }
   catch (error: any) {
@@ -363,14 +401,14 @@ onMounted(load)
                         <strong>{{ estimatedCredits }} credit{{ estimatedCredits === 1 ? '' : 's' }}</strong> ({{ previewBody.length }} chars)
                       </p>
                       <AppTextField
-                        v-for="name in variableNames"
-                        :key="name"
-                        v-model="variableValues[name]"
-                        :label="name"
+                        v-for="slot in variableSlots"
+                        :key="slot.key"
+                        v-model="variableValues[slot.key]"
+                        :label="slot.label"
                         class="mb-4"
                       />
                       <p
-                        v-if="variableNames.length"
+                        v-if="variableSlots.length"
                         class="text-body-2 mb-4"
                       >
                         Preview: {{ previewBody }}
