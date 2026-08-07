@@ -800,8 +800,9 @@ class PlatformZohoSettings(Base):
     are entered once, then a one-time grant/authorization code is exchanged (POST
     /v1/admin/platform/zoho-connect) for a non-expiring refresh token; access_token_encrypted +
     access_token_expires_at are then maintained automatically by zoho_books._access_token. The
-    item_code_* fields map each of Textzi's own Invoice.type values to a Zoho Item id -- auto
-    resolved/created the first time it's needed. gst_tax_id_intrastate/interstate are real Zoho
+    item_code_sms_service/item_code_platform_fee_dlt/item_code_platform_fee_whatsapp map Textzi's
+    Invoice.type values (grouped via services.INVOICE_TYPE_ITEM_GROUP) to a Zoho Item id each --
+    auto resolved (by name) or created the first time it's needed. gst_tax_id_intrastate/interstate are real Zoho
     tax_id GUIDs (fetched via GET .../zoho-tax-rates) -- picked per invoice based on whether the
     customer's state matches the platform's own home state (services.get_platform_company_info's
     company_state_code, the same field the invoice PDF's seller block already uses)."""
@@ -820,14 +821,20 @@ class PlatformZohoSettings(Base):
     organization_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
     gst_tax_id_intrastate: Mapped[str | None] = mapped_column(String(140), nullable=True)
     gst_tax_id_interstate: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    # Zoho requires a tax_id (or an explicit tax-exemption reason) on every line item once GST
+    # compliance is enabled for the org -- confirmed live, "Specify either a Tax or Tax Exemption"
+    # -- so a zero-GST invoice (e.g. a free/promotional admin_credit) still needs a real 0% tax
+    # rate attached, not an omitted tax_id. A single 0% rate (e.g. Zoho's own pre-provisioned
+    # "GST0"), not split intrastate/interstate like the real rates above -- 0% has no CGST/SGST
+    # vs IGST distinction that matters here.
+    gst_tax_id_zero_rated: Mapped[str | None] = mapped_column(String(140), nullable=True)
     # The Zoho Books Bank/Cash account a Customer Payment deposits into -- required before any
     # invoice marked zoho_mark_paid=True can actually sync; picked by the admin from a real
     # fetched list (GET .../zoho-accounts), not free text.
     payment_deposit_account_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    item_code_wallet_recharge: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    item_code_dlt_fee: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    item_code_channel_subscription: Mapped[str | None] = mapped_column(String(140), nullable=True)
-    item_code_admin_credit: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    item_code_sms_service: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    item_code_platform_fee_dlt: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    item_code_platform_fee_whatsapp: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
 
 class ZohoApiCallLog(Base):

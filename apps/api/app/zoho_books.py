@@ -28,21 +28,17 @@ from sqlalchemy.orm import Session
 
 from .models import Invoice, Organization, PlatformZohoSettings, ZohoApiCallLog
 from .security import decrypt_secret, encrypt_secret
-from .services import GST_SAC_CODE, get_platform_company_info, state_code_from_gstin
+from .services import INVOICE_TYPE_ITEM_GROUP, ITEM_GROUP_LABELS, ITEM_GROUP_SAC_CODES, get_platform_company_info, sac_code_for_invoice_type, state_code_from_gstin
 
 logger = logging.getLogger("textzi.zoho_books")
 
-ITEM_CODE_FIELDS = {
-    "wallet_recharge": "item_code_wallet_recharge",
-    "dlt_fee": "item_code_dlt_fee",
-    "channel_subscription": "item_code_channel_subscription",
-    "admin_credit": "item_code_admin_credit",
-}
-ITEM_LABELS = {
-    "wallet_recharge": "SMS Wallet Recharge",
-    "dlt_fee": "DLT Registration Fee",
-    "channel_subscription": "Channel Subscription Fee",
-    "admin_credit": "Manual SMS Credit",
+# Three Zoho Items total, not one per Invoice.type -- "SMS Service" covers wallet_recharge and
+# admin_credit; the two "Platform fee (...)" items each cover their own single invoice type
+# (services.INVOICE_TYPE_ITEM_GROUP).
+GROUP_ITEM_CODE_FIELDS = {
+    "sms_service": "item_code_sms_service",
+    "platform_fee_dlt": "item_code_platform_fee_dlt",
+    "platform_fee_whatsapp": "item_code_platform_fee_whatsapp",
 }
 
 # A safety margin, not the literal expiry -- refreshing a few minutes early avoids a race where
@@ -250,26 +246,44 @@ def link_organization(db: Session, organization: Organization) -> str:
     return contact_id
 
 
+def _find_item_by_name(db: Session, settings_row: PlatformZohoSettings, access_token: str, name: str) -> str | None:
+    result = _request(db, settings_row, access_token, "GET", "/items", None, query={"name": name})
+    items = result.get("items") or []
+    return items[0]["item_id"] if items else None
+
+
 def _ensure_item(db: Session, settings_row: PlatformZohoSettings, access_token: str, invoice_type: str, invoice_id: str) -> str:
-    """Auto-creates the mapped Item the first time it's referenced -- one Item per invoice TYPE
-    (4 total, platform-wide), not per invoice or per customer. The admin only has to configure
-    this once; it's never touched again after the first invoice of that type."""
-    field = ITEM_CODE_FIELDS.get(invoice_type)
+    """Three Zoho Items total (not one per invoice TYPE) -- "SMS Service" for wallet_recharge/
+    admin_credit, plus one "Platform fee (...)" item each for dlt_fee and channel_subscription
+    (services.INVOICE_TYPE_ITEM_GROUP).
+    Reuses the cached id on the settings row if already resolved; otherwise looks the item up by
+    name first (it may already exist, created manually in Zoho by an admin) before creating one,
+    same GSTIN-first-then-create-shaped discipline as link_organization. The admin only has to
+    configure this once per group; it's never touched again after the first invoice of that type."""
+    group = INVOICE_TYPE_ITEM_GROUP.get(invoice_type)
+    field = GROUP_ITEM_CODE_FIELDS.get(group)
     if not field:
-        raise ZohoCallError(f"No Zoho item configured for invoice type '{invoice_type}'")
+        raise ZohoCallError(f"No Zoho item group configured for invoice type '{invoice_type}'")
     item_id = getattr(settings_row, field, None)
     if item_id:
         return item_id
-    result = _request(db, settings_row, access_token, "POST", "/items", invoice_id, {
-        "name": ITEM_LABELS.get(invoice_type, invoice_type),
-        "rate": 0,
-        "item_type": "service",
-        "product_type": "service",
-        # Same SAC code Textzi's own PDF invoice already prints for every line item
-        # (invoicing.py's GST_SAC_CODE) -- required for the line item's GST treatment.
-        "hsn_or_sac": GST_SAC_CODE,
-    })
-    item_id = result["item"]["item_id"]
+
+    label = ITEM_GROUP_LABELS[group]
+    item_id = _find_item_by_name(db, settings_row, access_token, label)
+    if not item_id:
+        result = _request(db, settings_row, access_token, "POST", "/items", invoice_id, {
+            "name": label,
+            "rate": 0,
+            # item_type governs which transaction types this item can appear on ("sales",
+            # "purchases", "sales_and_purchases", "inventory") -- Textzi only ever sells these,
+            # never purchases them. product_type is the separate goods-vs-service classification.
+            "item_type": "sales",
+            "product_type": "service",
+            # Same SAC code Textzi's own PDF invoice prints for this invoice type
+            # (services.sac_code_for_invoice_type) -- required for the line item's GST treatment.
+            "hsn_or_sac": ITEM_GROUP_SAC_CODES[group],
+        })
+        item_id = result["item"]["item_id"]
     setattr(settings_row, field, item_id)
     db.commit()
     return item_id
@@ -412,12 +426,17 @@ def sync_invoice_to_zoho(db: Session, invoice: Invoice, organization: Organizati
 
         item_id = _ensure_item(db, settings_row, access_token, invoice.type, invoice.id)
 
-        line_item = {"item_id": item_id, "rate": float(invoice.base_amount), "quantity": 1, "hsn_or_sac": GST_SAC_CODE}
-        # Left explicitly without a tax_id when no GST applies (e.g. admin_credit invoices,
-        # gst_amount=0.0) -- the total-mismatch check right after creation is the real safeguard
-        # against Zoho applying an unexpected default tax, not this construction itself.
+        line_item = {"item_id": item_id, "rate": float(invoice.base_amount), "quantity": 1, "hsn_or_sac": sac_code_for_invoice_type(invoice.type)}
         if float(invoice.gst_amount) > 0:
             line_item["tax_id"] = _resolve_tax_id(db, settings_row, customer_state)
+        else:
+            # Zoho requires a tax_id (or an explicit tax-exemption reason) on every line item once
+            # GST compliance is enabled for the org -- confirmed live ("Specify either a Tax or Tax
+            # Exemption") -- so a zero-GST invoice (e.g. a free/promotional admin_credit) still
+            # needs a real 0% rate attached, not an omitted tax_id.
+            if not settings_row.gst_tax_id_zero_rated:
+                raise ZohoCallError("This invoice has no GST, but no Zoho zero-rate tax is configured")
+            line_item["tax_id"] = settings_row.gst_tax_id_zero_rated
         payload = {
             "customer_id": organization.zoho_contact_id,
             "line_items": [line_item],

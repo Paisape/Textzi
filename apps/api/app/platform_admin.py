@@ -113,10 +113,10 @@ def get_zoho_settings_admin(db: Session = Depends(get_db)):
         row = PlatformZohoSettings(id="platform")
     return PlatformZohoSettingsOut(
         client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
-        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
         payment_deposit_account_id=row.payment_deposit_account_id,
-        item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
-        item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
+        item_code_sms_service=row.item_code_sms_service, item_code_platform_fee_dlt=row.item_code_platform_fee_dlt,
+        item_code_platform_fee_whatsapp=row.item_code_platform_fee_whatsapp,
         configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
         connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )
@@ -140,19 +140,19 @@ def update_zoho_settings(payload: PlatformZohoSettingsUpdate, request: Request, 
     row.organization_id = payload.organization_id
     row.gst_tax_id_intrastate = payload.gst_tax_id_intrastate
     row.gst_tax_id_interstate = payload.gst_tax_id_interstate
+    row.gst_tax_id_zero_rated = payload.gst_tax_id_zero_rated
     row.payment_deposit_account_id = payload.payment_deposit_account_id
-    row.item_code_wallet_recharge = payload.item_code_wallet_recharge
-    row.item_code_dlt_fee = payload.item_code_dlt_fee
-    row.item_code_channel_subscription = payload.item_code_channel_subscription
-    row.item_code_admin_credit = payload.item_code_admin_credit
+    row.item_code_sms_service = payload.item_code_sms_service
+    row.item_code_platform_fee_dlt = payload.item_code_platform_fee_dlt
+    row.item_code_platform_fee_whatsapp = payload.item_code_platform_fee_whatsapp
     log_activity(db, None, "platform_zoho_settings_updated", "Platform Zoho Books settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformZohoSettingsOut(
         client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
-        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
         payment_deposit_account_id=row.payment_deposit_account_id,
-        item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
-        item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
+        item_code_sms_service=row.item_code_sms_service, item_code_platform_fee_dlt=row.item_code_platform_fee_dlt,
+        item_code_platform_fee_whatsapp=row.item_code_platform_fee_whatsapp,
         configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
         connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )
@@ -170,10 +170,10 @@ def connect_zoho(payload: ZohoConnectRequest, request: Request, authorization: s
     log_activity(db, None, "platform_zoho_connected", "Platform Zoho Books connection established.", actor_email=_caller_email(authorization, db), request=request)
     return PlatformZohoSettingsOut(
         client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
-        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate,
+        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
         payment_deposit_account_id=row.payment_deposit_account_id,
-        item_code_wallet_recharge=row.item_code_wallet_recharge, item_code_dlt_fee=row.item_code_dlt_fee,
-        item_code_channel_subscription=row.item_code_channel_subscription, item_code_admin_credit=row.item_code_admin_credit,
+        item_code_sms_service=row.item_code_sms_service, item_code_platform_fee_dlt=row.item_code_platform_fee_dlt,
+        item_code_platform_fee_whatsapp=row.item_code_platform_fee_whatsapp,
         configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
         connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )

@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
 from .models import Entity, Invoice, Organization
-from .services import GST_SAC_CODE, PlatformCompanyInfo, get_platform_company_info, resolve_primary_user
+from .services import PlatformCompanyInfo, get_platform_company_info, resolve_primary_user, sac_code_for_invoice_type
 from .zoho_books import sync_invoice_to_zoho
 
 INVOICE_TYPE_LABELS = {
@@ -205,7 +205,7 @@ def _render_invoice_pdf(invoice: Invoice, entity: Entity, organization: Organiza
 
     pdf.set_font("Helvetica", "", 9)
     x = left
-    row_cells = ((col_sno, "1", "C"), (col_desc, INVOICE_TYPE_LABELS.get(invoice.type, invoice.type), "L"), (col_sac, GST_SAC_CODE, "C"), (col_amount, f"{float(invoice.base_amount):.2f}", "R"))
+    row_cells = ((col_sno, "1", "C"), (col_desc, INVOICE_TYPE_LABELS.get(invoice.type, invoice.type), "L"), (col_sac, sac_code_for_invoice_type(invoice.type), "C"), (col_amount, f"{float(invoice.base_amount):.2f}", "R"))
     for w, text, align in row_cells:
         pdf.set_xy(x, row_y)
         pdf.cell(w, 7, text, border=1, align=align)

@@ -36,9 +36,39 @@ def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
 
 
 GST_RATE = 0.18
-GST_SAC_CODE = "998363"  # "Other telecommunication services" -- covers bulk SMS / messaging. Lives
+
+# Real GST SAC (Services Accounting Code) classification, as provided by the business's own
+# accountant -- three item groups, not one per Invoice.type: "SMS Service" covers SMS wallet
+# credit (self-service recharge or an admin's manual credit); "Platform Fee (DLT Registration
+# Service)" and "Platform Fee (WhatsApp Business Platform Fee)" split the two platform-fee invoice
+# types into their own Zoho line items (for the business's own reporting) while sharing the same
+# SAC code. Used both for Textzi's own local PDF fallback (invoicing.py) and for the Zoho Books
+# item mapping (zoho_books.py -- three Zoho Items total, named after these same groups). Lives
 # here (not invoicing.py, where it's also used) so zoho_books.py can import it too without a cycle
 # (invoicing.py -> zoho_books.py already exists the other way).
+SAC_CODE_SMS_SERVICE = "998413"
+SAC_CODE_PLATFORM_FEE = "998314"
+INVOICE_TYPE_ITEM_GROUP = {
+    "wallet_recharge": "sms_service",
+    "admin_credit": "sms_service",
+    "dlt_fee": "platform_fee_dlt",
+    "channel_subscription": "platform_fee_whatsapp",
+}
+ITEM_GROUP_SAC_CODES = {
+    "sms_service": SAC_CODE_SMS_SERVICE,
+    "platform_fee_dlt": SAC_CODE_PLATFORM_FEE,
+    "platform_fee_whatsapp": SAC_CODE_PLATFORM_FEE,
+}
+ITEM_GROUP_LABELS = {
+    "sms_service": "SMS Service",
+    "platform_fee_dlt": "Platform fee (DLT Registration Service)",
+    "platform_fee_whatsapp": "Platform fee (WhatsApp Business Platform Fee)",
+}
+
+
+def sac_code_for_invoice_type(invoice_type: str) -> str:
+    group = INVOICE_TYPE_ITEM_GROUP.get(invoice_type)
+    return ITEM_GROUP_SAC_CODES.get(group, SAC_CODE_SMS_SERVICE)
 
 # Standard GST jurisdiction state codes (the first two digits of any GSTIN) -- used to derive a
 # customer's state from their GSTIN for interstate (IGST) vs intrastate (CGST+SGST) determination

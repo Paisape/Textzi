@@ -18,11 +18,11 @@ type ZohoSettings = {
   organization_id: string | null
   gst_tax_id_intrastate: string | null
   gst_tax_id_interstate: string | null
+  gst_tax_id_zero_rated: string | null
   payment_deposit_account_id: string | null
-  item_code_wallet_recharge: string | null
-  item_code_dlt_fee: string | null
-  item_code_channel_subscription: string | null
-  item_code_admin_credit: string | null
+  item_code_sms_service: string | null
+  item_code_platform_fee_dlt: string | null
+  item_code_platform_fee_whatsapp: string | null
   configured: boolean
   connected: boolean
 }
@@ -36,6 +36,7 @@ const accountsDomain = ref('accounts.zoho.in')
 const organizationId = ref('')
 const gstTaxIdIntrastate = ref('')
 const gstTaxIdInterstate = ref('')
+const gstTaxIdZeroRated = ref('')
 const paymentDepositAccountId = ref('')
 const accounts = ref<ZohoAccount[]>([])
 const accountsError = ref('')
@@ -45,10 +46,9 @@ const taxRates = ref<ZohoTaxRate[]>([])
 const taxRatesError = ref('')
 const taxRatesLoading = ref(false)
 const taxRateOptions = computed(() => taxRates.value.map(t => ({ title: t.tax_percentage != null ? `${t.tax_name} (${t.tax_percentage}%)` : t.tax_name, value: t.tax_id })))
-const itemCodeWalletRecharge = ref('')
-const itemCodeDltFee = ref('')
-const itemCodeChannelSubscription = ref('')
-const itemCodeAdminCredit = ref('')
+const itemCodeSmsService = ref('')
+const itemCodePlatformFeeDlt = ref('')
+const itemCodePlatformFeeWhatsapp = ref('')
 const configured = ref(false)
 const connected = ref(false)
 const apiDomain = ref('')
@@ -70,11 +70,11 @@ function applySettings(result: ZohoSettings) {
   apiDomain.value = result.api_domain ?? ''
   gstTaxIdIntrastate.value = result.gst_tax_id_intrastate ?? ''
   gstTaxIdInterstate.value = result.gst_tax_id_interstate ?? ''
+  gstTaxIdZeroRated.value = result.gst_tax_id_zero_rated ?? ''
   paymentDepositAccountId.value = result.payment_deposit_account_id ?? ''
-  itemCodeWalletRecharge.value = result.item_code_wallet_recharge ?? ''
-  itemCodeDltFee.value = result.item_code_dlt_fee ?? ''
-  itemCodeChannelSubscription.value = result.item_code_channel_subscription ?? ''
-  itemCodeAdminCredit.value = result.item_code_admin_credit ?? ''
+  itemCodeSmsService.value = result.item_code_sms_service ?? ''
+  itemCodePlatformFeeDlt.value = result.item_code_platform_fee_dlt ?? ''
+  itemCodePlatformFeeWhatsapp.value = result.item_code_platform_fee_whatsapp ?? ''
   configured.value = result.configured
   connected.value = result.connected
 }
@@ -137,11 +137,11 @@ async function onSave() {
         organization_id: organizationId.value || null,
         gst_tax_id_intrastate: gstTaxIdIntrastate.value || null,
         gst_tax_id_interstate: gstTaxIdInterstate.value || null,
+        gst_tax_id_zero_rated: gstTaxIdZeroRated.value || null,
         payment_deposit_account_id: paymentDepositAccountId.value || null,
-        item_code_wallet_recharge: itemCodeWalletRecharge.value || null,
-        item_code_dlt_fee: itemCodeDltFee.value || null,
-        item_code_channel_subscription: itemCodeChannelSubscription.value || null,
-        item_code_admin_credit: itemCodeAdminCredit.value || null,
+        item_code_sms_service: itemCodeSmsService.value || null,
+        item_code_platform_fee_dlt: itemCodePlatformFeeDlt.value || null,
+        item_code_platform_fee_whatsapp: itemCodePlatformFeeWhatsapp.value || null,
       },
     })
     applySettings(result)
@@ -348,6 +348,17 @@ onMounted(loadSettings)
             </VCol>
             <VCol cols="12" sm="6">
               <VAutocomplete
+                v-model="gstTaxIdZeroRated"
+                :items="taxRateOptions"
+                :loading="taxRatesLoading"
+                label="Zero-rate GST (0%)"
+                hint="Zoho requires a tax on every line item once GST is enabled, even at 0% -- used for invoices with no GST at all (e.g. a free/promotional admin credit)."
+                persistent-hint
+                clearable
+              />
+            </VCol>
+            <VCol cols="12" sm="6">
+              <VAutocomplete
                 v-model="paymentDepositAccountId"
                 :items="accountOptions"
                 :loading="accountsLoading"
@@ -378,46 +389,38 @@ onMounted(loadSettings)
           <VDivider class="my-6" />
 
           <h6 class="text-h6 mb-2">
-            Item codes
+            Items
           </h6>
           <p class="text-body-2 text-medium-emphasis mb-4">
-            Auto-created in Zoho Books the first time each is referenced — leave blank to have
-            Textzi create and remember one automatically on first use.
+            Three Zoho Items, each matched to a real GST SAC code: "SMS Service" (wallet recharges
+            and admin manual credits, SAC 998413), "Platform fee (DLT Registration Service)" (SAC
+            998314), and "Platform fee (WhatsApp Business Platform Fee)" (SAC 998314). Leave blank
+            to have Textzi find an existing item with that exact name in Zoho on first use, or
+            create one if none exists — paste a Zoho item id here directly only if you want to
+            pin a specific one.
           </p>
           <VRow>
-            <VCol cols="12" sm="6">
+            <VCol cols="12" sm="4">
               <AppTextField
-                v-model="itemCodeWalletRecharge"
-                label="Wallet recharge (Zoho item id)"
-                readonly
-                hint="Populated automatically after the first wallet recharge invoice syncs."
+                v-model="itemCodeSmsService"
+                label="SMS Service (Zoho item id)"
+                hint="Wallet recharges + admin manual credits. Blank = auto-detect by name."
                 persistent-hint
               />
             </VCol>
-            <VCol cols="12" sm="6">
+            <VCol cols="12" sm="4">
               <AppTextField
-                v-model="itemCodeDltFee"
-                label="DLT fee (Zoho item id)"
-                readonly
-                hint="Populated automatically after the first DLT fee invoice syncs."
+                v-model="itemCodePlatformFeeDlt"
+                label="Platform fee — DLT Registration (Zoho item id)"
+                hint="DLT registration fee invoices. Blank = auto-detect by name."
                 persistent-hint
               />
             </VCol>
-            <VCol cols="12" sm="6">
+            <VCol cols="12" sm="4">
               <AppTextField
-                v-model="itemCodeChannelSubscription"
-                label="Channel subscription (Zoho item id)"
-                readonly
-                hint="Populated automatically after the first channel subscription invoice syncs."
-                persistent-hint
-              />
-            </VCol>
-            <VCol cols="12" sm="6">
-              <AppTextField
-                v-model="itemCodeAdminCredit"
-                label="Admin manual credit (Zoho item id)"
-                readonly
-                hint="Populated automatically after the first admin credit invoice syncs."
+                v-model="itemCodePlatformFeeWhatsapp"
+                label="Platform fee — WhatsApp (Zoho item id)"
+                hint="Channel subscription invoices. Blank = auto-detect by name."
                 persistent-hint
               />
             </VCol>

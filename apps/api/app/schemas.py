@@ -1082,11 +1082,11 @@ class PlatformZohoSettingsOut(BaseModel):
     organization_id: str | None
     gst_tax_id_intrastate: str | None
     gst_tax_id_interstate: str | None
+    gst_tax_id_zero_rated: str | None
     payment_deposit_account_id: str | None
-    item_code_wallet_recharge: str | None
-    item_code_dlt_fee: str | None
-    item_code_channel_subscription: str | None
-    item_code_admin_credit: str | None
+    item_code_sms_service: str | None
+    item_code_platform_fee_dlt: str | None
+    item_code_platform_fee_whatsapp: str | None
     configured: bool
     connected: bool
 
@@ -1098,11 +1098,11 @@ class PlatformZohoSettingsUpdate(BaseModel):
     organization_id: str | None = None
     gst_tax_id_intrastate: str | None = None
     gst_tax_id_interstate: str | None = None
+    gst_tax_id_zero_rated: str | None = None
     payment_deposit_account_id: str | None = None
-    item_code_wallet_recharge: str | None = None
-    item_code_dlt_fee: str | None = None
-    item_code_channel_subscription: str | None = None
-    item_code_admin_credit: str | None = None
+    item_code_sms_service: str | None = None
+    item_code_platform_fee_dlt: str | None = None
+    item_code_platform_fee_whatsapp: str | None = None
 
 
 class ZohoConnectRequest(BaseModel):
