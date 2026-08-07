@@ -851,6 +851,8 @@ const sendResponseExample = `{
   "credits_charged": 1
 }`
 
+const simpleUrlExample = computed(() => `${apiBaseUrl.value}/v1/sms/send-url?api_key=YOUR_API_KEY&mobile=919876543210&template_id=1707123456789012345&message=Your+order+1001+has+been+confirmed+and+will+ship+to+Pune.`)
+
 const bulkCurlExample = computed(() => `curl -X POST "${apiBaseUrl.value}/v1/sms/send-bulk" \\
   -H "X-Api-Key: YOUR_API_KEY" \\
   -H "Content-Type: application/json" \\
@@ -2462,6 +2464,91 @@ onMounted(async () => {
                 </h6>
                 <VBtn size="x-small" variant="text" icon @click="copyToClipboard(sendResponseExample, 'send-response')">
                   <VIcon :icon="copiedKey === 'send-response' ? 'tabler-check' : 'tabler-copy'" size="16" />
+                </VBtn>
+              </div>
+              <pre class="api-docs-code">{{ sendResponseExample }}</pre>
+            </VCardText>
+          </VCard>
+
+          <!-- GET /v1/sms/send-url -->
+          <VCard variant="outlined" class="mb-6">
+            <VCardText>
+              <div class="d-flex align-center gap-2 mb-2">
+                <VChip color="info" size="small" class="font-weight-bold">
+                  GET
+                </VChip>
+                <code class="api-docs-inline-code">/v1/sms/send-url</code>
+              </div>
+              <p class="text-body-2 mb-4">
+                Same send, as a single plain URL instead of a header + JSON body — for systems
+                that can only fire a GET request (no custom headers, no JSON support), e.g.
+                migrating off a raw carrier gateway URL. Everything else about the send (rate
+                limits, opt-out checks, wallet debit) behaves identically to
+                <code>POST /v1/sms/send</code> above.
+              </p>
+              <VAlert type="warning" variant="tonal" density="compact" class="mb-4">
+                Putting your API key in a URL is less safe than a header — it can end up in
+                server/proxy logs or browser history along the way. Prefer
+                <code>POST /v1/sms/send</code> unless your integration genuinely can't send a
+                header or JSON body.
+              </VAlert>
+
+              <h6 class="text-caption font-weight-bold text-uppercase mb-2">
+                Query parameters
+              </h6>
+              <VTable density="compact" class="mb-4">
+                <thead>
+                  <tr>
+                    <th>Parameter</th>
+                    <th>Required</th>
+                    <th>Description</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>api_key</code></td>
+                    <td>Yes</td>
+                    <td>Your account's API key.</td>
+                  </tr>
+                  <tr>
+                    <td><code>mobile</code></td>
+                    <td>Yes</td>
+                    <td>Recipient's number with country code, e.g. <code>919876543210</code>.</td>
+                  </tr>
+                  <tr>
+                    <td><code>template_id</code></td>
+                    <td>Yes</td>
+                    <td>Your DLT-registered template id (not Textzi's Template Name) — the same id shown against the template under Templates above.</td>
+                  </tr>
+                  <tr>
+                    <td><code>message</code></td>
+                    <td>Yes</td>
+                    <td>The complete message text, exactly as it should be sent, URL-encoded. Max 1600 characters.</td>
+                  </tr>
+                  <tr>
+                    <td><code>idempotency_key</code></td>
+                    <td>No</td>
+                    <td>Same behavior as the <code>Idempotency-Key</code> header on <code>POST /v1/sms/send</code>.</td>
+                  </tr>
+                </tbody>
+              </VTable>
+
+              <div class="d-flex align-center justify-space-between mb-2">
+                <h6 class="text-caption font-weight-bold text-uppercase mb-0">
+                  Example request
+                </h6>
+                <VBtn size="x-small" variant="text" icon @click="copyToClipboard(simpleUrlExample, 'send-url')">
+                  <VIcon :icon="copiedKey === 'send-url' ? 'tabler-check' : 'tabler-copy'" size="16" />
+                </VBtn>
+              </div>
+              <pre class="api-docs-code mb-4">{{ simpleUrlExample }}</pre>
+
+              <div class="d-flex align-center justify-space-between mb-2">
+                <h6 class="text-caption font-weight-bold text-uppercase mb-0">
+                  Example response <span class="text-medium-emphasis">200 OK</span>
+                </h6>
+                <VBtn size="x-small" variant="text" icon @click="copyToClipboard(sendResponseExample, 'send-url-response')">
+                  <VIcon :icon="copiedKey === 'send-url-response' ? 'tabler-check' : 'tabler-copy'" size="16" />
                 </VBtn>
               </div>
               <pre class="api-docs-code">{{ sendResponseExample }}</pre>
