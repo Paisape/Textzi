@@ -1,0 +1,4 @@
+# Shell scripts run inside Linux containers -- a CRLF line ending breaks the #!/bin/sh shebang
+# outright ("bad interpreter"). Force LF regardless of the cloning machine's core.autocrlf, so
+# this doesn't depend on every dev machine / CI runner having the same git config.
+*.sh text eol=lf
