@@ -30,11 +30,11 @@ if [[ ! -f apps/web/.env ]]; then
   echo 'VITE_API_BASE_URL=http://localhost:8000' > apps/web/.env
 fi
 
-if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='textzi'" | grep -q 1; then
-  sudo -u postgres psql -c "CREATE USER textzi WITH PASSWORD 'change-me-in-production' CREATEDB;"
+if ! psql -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_roles WHERE rolname='textzi'" | grep -q 1; then
+  psql -h localhost -p 5432 -d postgres -c "CREATE USER textzi WITH PASSWORD 'change-me-in-production' CREATEDB;"
 fi
-if ! sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='textzi'" | grep -q 1; then
-  sudo -u postgres psql -c "CREATE DATABASE textzi OWNER textzi;"
+if ! psql -h localhost -p 5432 -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname='textzi'" | grep -q 1; then
+  psql -h localhost -p 5432 -d postgres -c "CREATE DATABASE textzi OWNER textzi;"
 fi
 
 if [[ ! -d .venv ]]; then
