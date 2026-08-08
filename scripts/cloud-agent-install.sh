@@ -43,6 +43,9 @@ fi
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r apps/api/requirements.txt
 
-cd apps/web
+cd "$ROOT/apps/api"
+"$ROOT/.venv/bin/python" -c "from app.database import Base, engine; import app.models  # noqa: F401; Base.metadata.create_all(bind=engine)"
+
+cd "$ROOT/apps/web"
 corepack enable
 pnpm install --frozen-lockfile
