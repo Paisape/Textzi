@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+"$ROOT/scripts/cloud-agent-start.sh"
+
 if [[ ! -f .env ]]; then
   cp .env.example .env
   sed -i \
