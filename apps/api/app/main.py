@@ -223,10 +223,14 @@ def send_sms_via_url(
     template resolution, wallet debit, dispatch, ApiLog entry) rather than duplicating that logic.
 
     user_id (query param here, X-User-Id header on POST /v1/sms/send) is what makes a per-user
-    Route Policy (Provider Routes admin page) actually apply -- without it, resolve_routes has no
-    subject to match a policy against and always falls back to "default-simulated-route",
-    regardless of any policy configured in the admin panel. Must be the recipient's real internal
-    User.id (found on the Team page), not their email.
+    Route Policy (Provider Routes admin page) apply. resolve_routes checks user -> group -> entity
+    -> "default-simulated-route" fallback, in that order, falling through a tier only when that
+    tier's own lookup finds nothing -- entity_id is always resolved from api_key alone (regardless
+    of whether user_id was sent), so an entity-level Route Policy (subject_type="entity") already
+    applies correctly with no user_id at all. user_id only matters for a *per-user* policy
+    specifically; omitting it does not force the simulated fallback if an entity-level policy
+    exists. Must be the recipient's real internal User.id (found on the Team page), not their
+    email.
 
     Putting api_key in the URL is inherently less safe than a header: it can end up logged along
     the way. Textzi's own side is covered -- ApiLog only ever stores request.url.path, never the

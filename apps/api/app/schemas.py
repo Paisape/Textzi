@@ -26,12 +26,13 @@ class SmsSendResponse(BaseModel):
 
 
 class ApiSmsSendResponse(BaseModel):
-    """Same as SmsSendResponse minus route -- used as the response_model for the external-facing
-    send endpoints (main.py's send_sms/send_sms_via_url) so the internal route/provider name
-    never appears in an API response, even though the underlying send still returns a full
-    SmsSendResponse internally. The dashboard's own Compose (sms.py's compose_sms) keeps using
-    SmsSendResponse directly -- showing a customer which route their own dashboard test/send took
-    is a reasonable in-app debugging aid, distinct from exposing it in a raw API response."""
+    """Same as SmsSendResponse minus route -- used as the response_model for every customer-facing
+    send endpoint: the external API (main.py's send_sms/send_sms_via_url) and the dashboard's own
+    Compose/Test feature (sms.py's compose_sms). The internal route/provider name never appears in
+    a customer-facing response, even though the underlying send still builds a full
+    SmsSendResponse internally (kept for Message.response_payload's admin-visible audit trail).
+    Admin-only views (AdminMessageOut, MessageTelemetryOut) are separate schemas and still show
+    route."""
     status: str
     message_id: str
     balance: float
@@ -625,7 +626,6 @@ class MessageOut(BaseModel):
     recipient: str
     rendered_body: str
     status: str
-    route: str | None
     credits_charged: int = 1
     created_at: str
 

@@ -74,7 +74,7 @@ const testTemplate = ref<TemplateSummary | null>(null)
 const testMobile = ref('')
 const testSubmitting = ref(false)
 const testError = ref('')
-const testResult = ref<{ status: string, route: string } | null>(null)
+const testResult = ref<{ status: string } | null>(null)
 
 function onOpenTestDialog(template: TemplateSummary) {
   testTemplate.value = template
@@ -114,7 +114,7 @@ async function onSubmitTest() {
   }
   testSubmitting.value = true
   try {
-    const result = await $api<{ status: string, route: string }>('/v1/sms/compose', {
+    const result = await $api<{ status: string }>('/v1/sms/compose', {
       method: 'POST',
       body: {
         template: testTemplate.value.alias,
@@ -122,7 +122,7 @@ async function onSubmitTest() {
         variables: dummyVariablesFor(testTemplate.value.body),
       },
     })
-    testResult.value = { status: result.status, route: result.route }
+    testResult.value = { status: result.status }
   }
   catch (error: any) {
     testError.value = extractErrorMessage(error, 'Could not send the test message.')
@@ -557,7 +557,7 @@ async function onAddHeader() {
 }
 
 // ---- Logs tab ----
-type MessageRow = { id: string, recipient: string, rendered_body: string, status: string, route: string | null, created_at: string }
+type MessageRow = { id: string, recipient: string, rendered_body: string, status: string, created_at: string }
 const messages = ref<MessageRow[]>([])
 const logsError = ref('')
 const logsLoading = ref(false)
@@ -1878,7 +1878,7 @@ onMounted(async () => {
               density="compact"
               class="mb-4"
             >
-              Message {{ testResult.status }} via route "{{ testResult.route }}". Check the
+              Message {{ testResult.status }}. Check the
               <a
                 href="#"
                 class="font-weight-medium"
@@ -2058,7 +2058,6 @@ onMounted(async () => {
                 <th>Sent time</th>
                 <th>Mobile number</th>
                 <th>Message</th>
-                <th>Route</th>
                 <th>Status</th>
               </tr>
             </thead>
@@ -2072,7 +2071,6 @@ onMounted(async () => {
                 <td style="max-inline-size: 320px;">
                   {{ message.rendered_body }}
                 </td>
-                <td>{{ message.route ?? '—' }}</td>
                 <td>
                   <VChip
                     :color="statusColor(message.status)"

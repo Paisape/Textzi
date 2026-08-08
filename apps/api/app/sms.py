@@ -12,7 +12,7 @@ from .config import settings
 from .database import get_db
 from .dispatch import dispatch_message
 from .models import Message, OptOutEntry, Status, Template, User
-from .schemas import MessageOut, OptOutEntryCreate, OptOutEntryOut, SmsSendRequest, SmsSendResponse, TemplateSummary
+from .schemas import ApiSmsSendResponse, MessageOut, OptOutEntryCreate, OptOutEntryOut, SmsSendRequest, SmsSendResponse, TemplateSummary
 from .security import decrypt_recipient_lenient, encrypt_secret
 from .services import DomainError, RateLimitError, assert_not_opted_out, available_balance, debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, render_template, require_channel_active, resolve_routes, resolve_template, resolve_user_entity, sms_segment_credits
 
@@ -29,7 +29,7 @@ def list_my_templates(user: User = Depends(require_user), db: Session = Depends(
     return [TemplateSummary(id=t.id, pe_id=t.pe_id, header_id=t.header_id, alias=t.alias, dlt_template_id=t.dlt_template_id, body=t.body, category=t.category) for t in templates]
 
 
-@router.post("/compose", response_model=SmsSendResponse)
+@router.post("/compose", response_model=ApiSmsSendResponse)
 def compose_sms(payload: SmsSendRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     try:
         entity = resolve_user_entity(db, user)
@@ -103,7 +103,6 @@ def list_my_messages(limit: int = MESSAGE_PAGE_LIMIT_DEFAULT, offset: int = 0, u
             recipient=mask_mobile(decrypt_recipient_lenient(m.recipient)) if m.is_encrypted else m.recipient,
             rendered_body="[Encrypted]" if m.is_encrypted else m.rendered_body,
             status=m.status,
-            route=m.route,
             credits_charged=m.credits_charged,
             created_at=m.created_at.isoformat(),
         )
