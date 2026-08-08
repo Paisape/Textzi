@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
+from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
 from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
@@ -13,7 +14,7 @@ from .schemas import (
     PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
     PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
-    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
 from .services import DomainError, credit_platform_wallet, get_platform_company_info, log_activity, mask_mobile
@@ -104,6 +105,22 @@ def update_r2_settings(payload: PlatformR2SettingsUpdate, request: Request, auth
         account_id=row.account_id, access_key_id=row.access_key_id, bucket_name=row.bucket_name,
         configured=bool(row.account_id and row.access_key_id and row.secret_access_key_encrypted and row.bucket_name),
     )
+
+
+@router.post("/r2-settings/test-connection", response_model=R2TestConnectionResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def test_r2_connection(db: Session = Depends(get_db)):
+    """Actually exercises the currently-saved R2 credentials (a light head_bucket call) rather
+    than just checking the fields are non-empty -- the settings page's old "Configured" chip was a
+    pure null-check and would show green even for a wrong secret key."""
+    client = _r2_client(db)
+    if not client:
+        return R2TestConnectionResponse(ok=False, detail="R2 is not configured -- fill in and save all four fields first.")
+    row = db.get(PlatformR2Settings, "platform")
+    try:
+        client.head_bucket(Bucket=row.bucket_name)
+    except Exception as exc:
+        return R2TestConnectionResponse(ok=False, detail=f"Connection failed: {exc}")
+    return R2TestConnectionResponse(ok=True, detail=f"Connected -- bucket '{row.bucket_name}' is reachable.")
 
 
 @router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

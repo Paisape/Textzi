@@ -139,12 +139,27 @@ def ttbs_webhook_url(db: Session, webhook_secret: str) -> str | None:
 
 def client_ip(request: Request) -> str | None:
     """request.client.host is always the reverse proxy's own address when this API sits behind
-    one (nginx/ALB/etc), which silently defeats the API-key IP allow-list -- either rejecting
-    every legitimate call, or once "fixed" by allow-listing the proxy's IP, accepting traffic
-    from anywhere. X-Forwarded-For is trivially spoofable by the caller unless a trusted proxy
-    is the one setting/overwriting it, so this is opt-in via settings.trust_proxy_headers rather
-    than trusted by default."""
+    one (Cloudflare + Coolify's Traefik in production), which silently defeats the API-key IP
+    allow-list -- either rejecting every legitimate call, or once "fixed" by allow-listing the
+    proxy's IP, accepting traffic from anywhere. This is opt-in via settings.trust_proxy_headers
+    rather than trusted by default.
+
+    CF-Connecting-IP is checked first, ahead of X-Forwarded-For: Cloudflare's edge always sets
+    this header itself to the IP it actually terminated the TCP connection from, and does not
+    honor/forward a client-supplied value for it -- unlike X-Forwarded-For, which Cloudflare (like
+    most proxies) only ever APPENDS to, preserving whatever a client already put in it. That means
+    `X-Forwarded-For.split(",")[0]` is spoofable by any caller simply sending their own fabricated
+    X-Forwarded-For -- with a real request through Cloudflare, no bypass needed -- which would
+    defeat the IP allow-list this feeds today. Falls back to X-Forwarded-For only when
+    CF-Connecting-IP is absent (a non-Cloudflare proxy in front, e.g. local dev). This still
+    doesn't stop a caller who reaches the origin directly, bypassing Cloudflare's edge entirely --
+    that requires a network-layer control (a firewall/security-group rule restricting inbound
+    traffic to Cloudflare's published IP ranges, or Cloudflare's Authenticated Origin Pulls
+    feature) outside this application's own reach."""
     if settings.trust_proxy_headers:
+        cf_connecting_ip = request.headers.get("CF-Connecting-IP")
+        if cf_connecting_ip:
+            return cf_connecting_ip.strip()
         forwarded = request.headers.get("X-Forwarded-For")
         if forwarded:
             return forwarded.split(",")[0].strip()
@@ -528,6 +543,43 @@ def enforce_topup_integrity(db: Session, order: PaymentOrder, entity: Entity, us
         ),
     )
     return True
+
+
+def expected_order_paise(order: PaymentOrder) -> int:
+    """The paise amount Razorpay should have actually captured for this order, computed the same
+    way it was at order-creation time (payments.create_order / channels.create_dlt_request_order)
+    -- wallet recharges are grossed up by GST at checkout, DLT request fees are not (their
+    total_amount is already GST-inclusive when the order is created)."""
+    if order.purpose == "dlt_request":
+        return int(round(float(order.amount) * 100))
+    return int(round(float(order.amount) * (1 + GST_RATE) * 100))
+
+
+def flag_suspicious_payment(db: Session, order: PaymentOrder, entity: Entity, reason: str, user: User | None = None) -> None:
+    """Called when Razorpay's own record of a payment -- fetched independently here, never trusted
+    from what the client reports back after checkout -- doesn't match what this order expects
+    (wrong captured amount, or never actually captured). Flags the order for manual admin review
+    only: does NOT credit the wallet, issue an invoice, or touch the account/API keys, since a
+    mismatch could be a legitimate edge case and not necessarily fraud. Contrast
+    enforce_topup_integrity, which suspends the account immediately -- that guards a different,
+    code-only invariant (the codebase's own math against itself), not anything Razorpay-side."""
+    order.status = "suspicious"
+    log_activity(
+        db, entity.organization_id, "payment_flagged_suspicious",
+        f"Payment order {order.id} flagged suspicious: {reason}",
+        user_id=user.id if user else None, actor_email=user.email if user else None,
+    )
+    info = get_platform_company_info(db)
+    send_email(
+        db, to=info.support_email,
+        subject=f"[Review] Payment order {order.id} flagged suspicious",
+        html_body=render_email(
+            "Payment amount could not be automatically confirmed",
+            f"<p>Order <strong>{order.id}</strong> (entity {entity.id}) was flagged suspicious: {reason}</p>"
+            f"<p>No wallet credit or invoice was issued. Verify manually via Razorpay's own dashboard, then use "
+            f"the admin wallet-credit tool if the payment turns out to be legitimate.</p>",
+        ),
+    )
 
 
 def resolve_rate_card(db: Session, user: User) -> RateCard:

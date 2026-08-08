@@ -220,6 +220,11 @@ export const adminNav = [
         to: { name: 'platform-r2-settings' },
         icon: { icon: 'tabler-cloud-cog' },
       },
+      {
+        title: 'Archive Status',
+        to: { name: 'archive-status' },
+        icon: { icon: 'tabler-archive' },
+      },
     ],
   },
 ]

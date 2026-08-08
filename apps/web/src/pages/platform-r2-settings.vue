@@ -28,6 +28,8 @@ const loadError = ref('')
 const saveError = ref('')
 const saveSuccess = ref('')
 const saving = ref(false)
+const testing = ref(false)
+const testResult = ref<{ ok: boolean, detail: string } | null>(null)
 
 async function loadSettings() {
   loadError.value = ''
@@ -69,6 +71,20 @@ async function onSave() {
   }
   finally {
     saving.value = false
+  }
+}
+
+async function onTestConnection() {
+  testResult.value = null
+  testing.value = true
+  try {
+    testResult.value = await $api('/v1/admin/platform/r2-settings/test-connection', { method: 'POST' })
+  }
+  catch (error: any) {
+    testResult.value = { ok: false, detail: extractErrorMessage(error, 'Could not test the R2 connection.') }
+  }
+  finally {
+    testing.value = false
   }
 }
 
@@ -114,6 +130,24 @@ onMounted(loadSettings)
       >
         {{ configured ? 'Configured' : 'Not configured (R2 promotion is skipped)' }}
       </VChip>
+
+      <div v-if="configured" class="d-flex align-center ga-3 mb-4">
+        <VBtn
+          size="small"
+          variant="tonal"
+          :loading="testing"
+          @click="onTestConnection"
+        >
+          Test Connection
+        </VBtn>
+        <span
+          v-if="testResult"
+          :class="testResult.ok ? 'text-success' : 'text-error'"
+          class="text-body-2"
+        >
+          {{ testResult.detail }}
+        </span>
+      </div>
 
       <VAlert
         v-if="saveError"
@@ -170,6 +204,13 @@ onMounted(loadSettings)
               :loading="saving"
             >
               Save
+            </VBtn>
+            <VBtn
+              variant="text"
+              class="ml-2"
+              :to="{ path: '/archive-status' }"
+            >
+              View archive status →
             </VBtn>
           </VCol>
         </VRow>

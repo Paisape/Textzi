@@ -1,8 +1,11 @@
 import hashlib
 import hmac
+import http.client
 import ipaddress
 import secrets
 import socket
+import ssl
+import time
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -49,6 +52,63 @@ def assert_safe_webhook_url(url: str) -> None:
         raise ValueError(f"Webhook URL hostname could not be resolved: {host}") from exc
     for family, _type, _proto, _canonname, sockaddr in resolved:
         _reject_if_unsafe_ip(ipaddress.ip_address(sockaddr[0]))
+
+
+class _PinnedIPHTTPSConnection(http.client.HTTPSConnection):
+    """Connects at the TCP layer to a specific, already-validated IP rather than letting the
+    connection re-resolve the hostname itself -- while still sending the original hostname as SNI
+    and verifying the server certificate against it, so this doesn't break normal TLS validation
+    for the customer's real domain/cert. This is what actually closes the DNS-rebinding gap:
+    resolving+validating a hostname's IPs and then connecting by hostname again (as urlopen/a
+    normal HTTPSConnection does) leaves a window where DNS can answer differently the second time;
+    pinning means the address that was checked is the address that gets connected to."""
+    def __init__(self, pinned_ip: str, hostname: str, port: int, timeout: float):
+        super().__init__(hostname, port, timeout=timeout)
+        self._pinned_ip = pinned_ip
+
+    def connect(self):
+        sock = socket.create_connection((self._pinned_ip, self.port), self.timeout)
+        context = ssl.create_default_context()
+        self.sock = context.wrap_socket(sock, server_hostname=self.host)
+
+
+def open_safe_webhook_connection(url: str, timeout: float = 5) -> tuple[_PinnedIPHTTPSConnection, str]:
+    """SSRF-safe outbound connection for a customer-supplied webhook URL (e.g.
+    ChannelSettings.dr_webhook_url), for use right at relay time -- not a substitute for
+    assert_safe_webhook_url, which still gates saving the URL in the first place. Resolves and
+    validates the hostname exactly like assert_safe_webhook_url, but then hands back a connection
+    already pinned to the specific IP that was validated (see _PinnedIPHTTPSConnection), so there
+    is no gap between "this address was checked" and "this is the address actually connected to"
+    for a hostname under attacker-controlled DNS to exploit. Caller is responsible for closing the
+    returned connection."""
+    parsed = urlparse(url)
+    if parsed.scheme != "https":
+        raise ValueError("Webhook URL must use https://")
+    host = (parsed.hostname or "").lower()
+    if not host or host in {"localhost", "0.0.0.0"}:
+        raise ValueError("Webhook URL cannot point at a local address")
+    port = parsed.port or 443
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        try:
+            resolved = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        except OSError as exc:
+            raise ValueError(f"Webhook URL hostname could not be resolved: {host}") from exc
+        pinned_ip = None
+        for family, _type, _proto, _canonname, sockaddr in resolved:
+            candidate = ipaddress.ip_address(sockaddr[0])
+            _reject_if_unsafe_ip(candidate)
+            if pinned_ip is None:
+                pinned_ip = sockaddr[0]
+    else:
+        _reject_if_unsafe_ip(ip)
+        pinned_ip = host
+    conn = _PinnedIPHTTPSConnection(pinned_ip, host, port, timeout)
+    path = parsed.path or "/"
+    if parsed.query:
+        path += "?" + parsed.query
+    return conn, path
 
 
 def hash_password(value: str) -> str:
@@ -106,8 +166,23 @@ def totp_uri(secret: str, email: str) -> str:
     return pyotp.totp.TOTP(secret).provisioning_uri(name=email, issuer_name="Textzi")
 
 
-def verify_totp(secret: str, code: str) -> bool:
-    return pyotp.TOTP(secret).verify(code, valid_window=1)
+def verify_totp(secret: str, code: str, last_used_step: int | None = None) -> int | None:
+    """Returns the matching 30-second time-step counter if `code` is a currently-valid TOTP code
+    (allowing +-1 step of clock skew, same tolerance as before), or None if it doesn't match any
+    step in that window. When last_used_step is given, a code whose matching step is <= it is
+    also treated as invalid (returns None) -- otherwise a valid code stays usable for its whole
+    ~90-second window, so anyone who observes it once (shoulder-surfing, a log line, a proxy) can
+    replay it for a second sensitive action (e.g. login, then immediately step-up 2FA) within that
+    window. Callers should persist the returned step back onto last_used_step after a success."""
+    totp = pyotp.TOTP(secret)
+    current_step = int(time.time() // totp.interval)
+    for offset in (-1, 0, 1):
+        step = current_step + offset
+        if hmac.compare_digest(totp.at(step * totp.interval), code):
+            if last_used_step is not None and step <= last_used_step:
+                return None
+            return step
+    return None
 
 
 def generate_otp(length: int = 6) -> str:

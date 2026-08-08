@@ -1,7 +1,10 @@
 import hmac
+import logging
 import time
 import uuid
 from contextlib import asynccontextmanager
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
@@ -10,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .admin import router as admin_router, require_admin
+from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
 from .channels import router as channels_router
 from .database import Base, engine, get_db
@@ -37,10 +41,38 @@ from .services import (
 )
 
 
+# Attached directly to the "textzi" parent logger (every module-level logger in this app is
+# named "textzi.<module>" and propagates up to it) rather than relying on root/basicConfig, since
+# uvicorn's own CLI configures the root logger's handlers before this module is even imported --
+# attaching here guarantees textzi.* messages reach stdout regardless of that ordering.
+_textzi_logger = logging.getLogger("textzi")
+_textzi_logger.setLevel(logging.INFO)
+if not _textzi_logger.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    _textzi_logger.addHandler(_handler)
+
+logger = logging.getLogger("textzi.archiving")
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)  # Deployment uses Alembic migrations.
+
+    # Runs the daily local/R2 archive job in-process rather than depending on a separate,
+    # easy-to-forget Coolify scheduled-task step. BackgroundScheduler runs jobs on its own thread,
+    # not the asyncio loop, so run_archive_job's synchronous DB/boto3 calls don't block requests.
+    # Safe for this deployment's single, non-scaled api replica; even if that changes,
+    # archive_jobs.run()'s own pg_try_advisory_lock already prevents a second concurrent run from
+    # double-processing.
+    scheduler = BackgroundScheduler(timezone="UTC")
+    scheduler.add_job(run_archive_job, CronTrigger(hour=2, minute=0), id="daily_archive_job", misfire_grace_time=3600)
+    scheduler.start()
+    logger.info("scheduled daily archive job (02:00 UTC)")
+
     yield
+
+    scheduler.shutdown(wait=False)
 
 
 app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)

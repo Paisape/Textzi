@@ -24,6 +24,7 @@ codebase's existing fail-open convention for optional third-party integrations (
 import gzip
 import io
 import json
+import logging
 import os
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -34,6 +35,8 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .models import ApiLog, ArchiveManifest, DeliveryAttempt, Message, PlatformR2Settings
 from .security import decrypt_secret
+
+logger = logging.getLogger("textzi.archiving")
 
 LOCAL_ARCHIVE_DIR = os.path.join(settings.uploads_dir, "archives", "local")
 
@@ -168,6 +171,7 @@ def archive_to_local(db: Session) -> dict:
             periods_touched.add(period)
         db.commit()
         total_archived += len(messages)
+        logger.info("archived %d messages to local tier (periods so far: %s)", total_archived, sorted(periods_touched))
         if len(messages) < ARCHIVE_BATCH_SIZE:
             break
 
@@ -200,6 +204,7 @@ def promote_to_r2(db: Session) -> dict:
     deployment/environment."""
     client = _r2_client(db)
     if not client:
+        logger.info("R2 promotion skipped -- not configured")
         return {"promoted": 0, "reason": "R2 not configured"}
     bucket_name = db.get(PlatformR2Settings, "platform").bucket_name
 
@@ -229,12 +234,21 @@ def promote_to_r2(db: Session) -> dict:
         pq.write_table(table, buffer, compression="zstd", compression_level=19)
         buffer.seek(0)
         object_key = f"archives/messages-{manifest.period}.parquet"
-        client.put_object(Bucket=bucket_name, Key=object_key, Body=buffer.getvalue())
+        try:
+            client.put_object(Bucket=bucket_name, Key=object_key, Body=buffer.getvalue())
+        except Exception:
+            # Surface as a real, logged failure rather than an uncaught traceback with no trail --
+            # the caller (archive_jobs.run) records this against ArchiveRunLog. Re-raised, not
+            # swallowed: the local gzip file must NOT be removed below since the upload didn't
+            # actually succeed.
+            logger.exception("R2 upload failed for period %s", manifest.period)
+            raise
 
         db.add(ArchiveManifest(tier="r2", period=manifest.period, path=object_key, record_count=len(trimmed_records), size_bytes=len(buffer.getvalue())))
         db.commit()
         os.remove(manifest.path)  # only after the R2 upload + manifest commit above both succeeded
         promoted.append(manifest.period)
+        logger.info("promoted period %s to R2 (%d records)", manifest.period, len(trimmed_records))
     return {"promoted": len(promoted), "periods": promoted}
 
 

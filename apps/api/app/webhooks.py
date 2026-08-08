@@ -4,10 +4,9 @@ create_ttbs_provider_route) once a message reaches its final delivery state -- n
 customer-specific URL; Textzi is always the intermediary, and relays to the sending customer's
 own webhook (ChannelSettings.dr_webhook_url) afterward, if they've configured one."""
 import hmac
+import http.client
 import json
 from datetime import datetime, timezone
-from urllib.error import HTTPError
-from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
@@ -16,24 +15,10 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .models import ChannelSettings, DeliveryAttempt, DeliveryStatusCodeRule, Message, PlatformMessage, ProviderRoute
 from .schemas import TtbsDrWebhookPayload
-from .security import assert_safe_webhook_url, decrypt_secret
+from .security import decrypt_secret, open_safe_webhook_connection
 from .services import DomainError, credit_wallet, mask_mobile, redact_payload_values
 
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
-
-
-class _NoRedirect(HTTPRedirectHandler):
-    """urlopen's default opener follows HTTP redirects transparently, which would completely
-    defeat assert_safe_webhook_url's SSRF guard below it: a customer's webhook URL passes
-    validation (it's a real public host they control), but that host can respond with a 302 to
-    e.g. http://169.254.169.254/... (cloud metadata) or any private/internal address, and the
-    redirect target is never re-validated. Raising here instead of following means a redirect is
-    just treated as a failed relay attempt (caught below), never an SSRF vector."""
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise HTTPError(req.full_url, code, "Redirects are not followed for outbound webhook relays", headers, fp)
-
-
-_no_redirect_opener = build_opener(_NoRedirect)
 
 
 def _ttbs_reports_failure(payload: TtbsDrWebhookPayload) -> bool:
@@ -57,20 +42,30 @@ def _resolve_ttbs_route_by_token(db: Session, token: str) -> ProviderRoute | Non
 def _relay_to_customer(webhook_url: str, payload: dict) -> tuple[str, str | None]:
     """Best-effort forward to the customer's own DR webhook -- a slow or broken customer
     endpoint must never affect Textzi's own delivery-report processing, so failures here are
-    swallowed rather than raised, not propagated. assert_safe_webhook_url is re-checked here, not
-    just once when the customer saved the URL -- a hostname can resolve safely at save time and
-    to a private/internal address at request time (DNS rebinding), so every actual outbound call
-    re-validates against whatever the hostname resolves to right now. Returns (status, error) so
+    swallowed rather than raised, not propagated. open_safe_webhook_connection re-resolves and
+    re-validates the hostname here, not just once when the customer saved the URL (a hostname can
+    resolve safely at save time and to a private/internal address at request time -- DNS
+    rebinding), and pins the actual connection to the exact IP it just validated so there's no gap
+    between the check and the connect for a rebinding attack to land in. A raw HTTPSConnection
+    also never follows redirects on its own (unlike urlopen), so a 3xx response to a private
+    address is simply read as a non-2xx failure below, never acted on. Returns (status, error) so
     the caller can persist what actually happened onto the DeliveryAttempt row, instead of this
     being invisible everywhere the way it was before."""
+    conn = None
     try:
-        assert_safe_webhook_url(webhook_url)
-        request = Request(webhook_url, data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"}, method="POST")
-        with _no_redirect_opener.open(request, timeout=5):
-            pass
+        conn, path = open_safe_webhook_connection(webhook_url, timeout=5)
+        body = json.dumps(payload).encode()
+        conn.request("POST", path, body=body, headers={"Content-Type": "application/json", "Content-Length": str(len(body))})
+        response = conn.getresponse()
+        response.read()
+        if not (200 <= response.status < 300):
+            return "failed", f"HTTP {response.status}"
         return "success", None
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, http.client.HTTPException) as exc:
         return "failed", str(exc)[:300]
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 @router.post("/ttbs/dr")

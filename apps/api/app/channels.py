@@ -34,7 +34,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
+from .services import GST_RATE, DomainError, channel_active, expected_order_paise, flag_suspicious_payment, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -445,7 +445,11 @@ def create_dlt_request_order(request_id: str, user: User = Depends(require_user)
         raise HTTPException(status_code=409, detail=f"This request has already been {request_row.status}")
     amount_paise = int(round(float(request_row.total_amount) * 100))
     try:
-        order = client.order.create({"amount": amount_paise, "currency": "INR", "receipt": f"dlt-request-{request_row.id}", "notes": {"entity_id": entity.id, "request_id": request_row.id}})
+        # Razorpay caps "receipt" at 40 characters -- "dlt-request-" (12) + a UUID4 request id (36)
+        # is 48, which Razorpay rejects outright ("the length must be no more than 40"), confirmed
+        # live against the real test-mode API (same bug, same fix as payments.create_order). Full
+        # request_id is already in "notes" for reconciliation.
+        order = client.order.create({"amount": amount_paise, "currency": "INR", "receipt": f"d-{request_row.id}", "notes": {"entity_id": entity.id, "request_id": request_row.id}})
     except razorpay.errors.BadRequestError as exc:
         raise HTTPException(status_code=422, detail=f"Razorpay rejected the order request: {exc}") from exc
     db.add(PaymentOrder(entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=request_row.total_amount, purpose="dlt_request", reference_id=request_row.id, status="created"))
@@ -463,7 +467,10 @@ def verify_dlt_request_payment(request_id: str, payload: RazorpayVerifyRequest, 
     request_row = db.scalar(select(DltOnboardingRequest).where(DltOnboardingRequest.id == request_id, DltOnboardingRequest.entity_id == entity.id))
     if not request_row:
         raise HTTPException(status_code=404, detail="DLT registration request not found")
-    order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == payload.razorpay_order_id, PaymentOrder.entity_id == entity.id, PaymentOrder.reference_id == request_row.id))
+    # Row-locked so two concurrent /verify calls for the same order (a double-submit, or a
+    # replayed request) serialize instead of both reading status=="created" and both issuing an
+    # invoice -- mirrors payments.verify_payment's own locking, which has the identical hazard.
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == payload.razorpay_order_id, PaymentOrder.entity_id == entity.id, PaymentOrder.reference_id == request_row.id).with_for_update())
     if not order:
         raise HTTPException(status_code=404, detail="No matching payment order for this request")
     if order.status != "created":
@@ -478,6 +485,26 @@ def verify_dlt_request_payment(request_id: str, payload: RazorpayVerifyRequest, 
         order.status = "failed"
         db.commit()
         raise HTTPException(status_code=422, detail="Payment signature verification failed") from exc
+
+    # Signature-only proves authenticity, not amount -- independently confirm what Razorpay
+    # actually captured before marking this request paid (same gap/fix as payments.verify_payment).
+    try:
+        razorpay_payment = client.payment.fetch(payload.razorpay_payment_id)
+    except Exception as exc:
+        # A Razorpay-side hiccup here must not look like a confirmed mismatch -- the order stays
+        # at "created" (nothing committed yet) so the customer or an admin can safely retry/
+        # reconcile once Razorpay is reachable again, rather than getting an opaque 500.
+        raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
+    expected_paise = expected_order_paise(order)
+    if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
+        flag_suspicious_payment(
+            db, order, entity,
+            f"expected {expected_paise} paise captured, Razorpay reports status={razorpay_payment.get('status')} amount={razorpay_payment.get('amount')}",
+            user=user,
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail=f"We couldn't automatically confirm this payment. It's been flagged for manual review -- contact support with reference {order.id} if this is urgent.")
+
     order.status = "paid"
     _mark_dlt_request_paid(db, request_row, payload.razorpay_payment_id)
     docs = db.scalars(select(DltOnboardingRequestDocument).where(DltOnboardingRequestDocument.request_id == request_row.id)).all()

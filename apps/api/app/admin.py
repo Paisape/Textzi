@@ -13,14 +13,14 @@ from fpdf import FPDF
 from sqlalchemy import bindparam, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from .auth import _issue_otp, _send_platform_otp_sms, STEP_UP_WINDOW_MINUTES
+from .auth import _issue_otp, _revoke_all_sessions, _send_platform_otp_sms, STEP_UP_WINDOW_MINUTES
 from .channels import _mark_dlt_request_paid
 from .config import settings
 from .database import get_db
 from .email_service import render_email, send_email
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
     PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
 )
@@ -34,12 +34,13 @@ from .schemas import (
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletAdjustmentQuoteOut, WalletCreditRequest, WalletCreditResponse, WalletDebitRequest, WalletDebitResponse, WalletTopupReportRowOut, EntityWalletSummaryOut,
-    ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoRetryResponse,
+    ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoRetryResponse, ArchiveManifestOut, ArchiveRunLogOut, ArchiveRunNowResponse,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
-from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_topup_credits, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from . import archive_jobs
+from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_suspicious_payment, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -850,6 +851,10 @@ def admin_reset_password(user_id: str, request: Request, db: Session = Depends(g
     user.password_hash = hash_password(generated_password)
     user.failed_login_attempts = 0
     user.login_locked_until = None
+    # This is the platform's actual response to a suspected compromised account -- revoking every
+    # existing session ensures a token an attacker already holds stops working immediately,
+    # instead of remaining valid until it naturally expires.
+    _revoke_all_sessions(db, user.id)
     log_activity(db, user.organization_id, "password_reset_by_admin", f"{user.email}'s password was reset by an admin.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     send_email(
@@ -1249,7 +1254,12 @@ def create_wallet_credit(payload: WalletCreditRequest, request: Request, authori
         db.rollback()
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=0.0, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None, mark_as_paid=payload.paid)
+    # GST only applies to a real taxable sale (payload.paid -- e.g. a bank transfer collected
+    # outside Razorpay); a free/promotional credit (paid=False) has no money changing hands and so
+    # no output tax to collect, mirroring how every other invoice type computes gst_amount only
+    # once real payment is confirmed.
+    gst_amount = round(payload.amount * GST_RATE, 2) if payload.paid else 0.0
+    invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=gst_amount, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None, mark_as_paid=payload.paid)
     if payload.generate_invoice:
         issue_invoice(db, invoice)
     log_activity(db, entity.organization_id, "wallet_credited_by_admin", f"Admin credited Rs.{payload.amount:.2f} ({round(credits, 2)} credits) to entity '{entity.name}'.", actor_email=admin_user.email if admin_user else "admin (bootstrap key)", request=request)
@@ -1344,29 +1354,41 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
 
     if order.status != "paid" and captured:
         payment_id = captured[0]["id"]
-        already_credited = db.scalar(select(WalletTransaction).where(WalletTransaction.reference == payment_id)) is not None
-        if not already_credited:
+        captured_amount = captured[0].get("amount")
+        expected_paise = expected_order_paise(order)
+        if captured_amount != expected_paise:
+            # Razorpay's own record of what it actually captured doesn't match what this order
+            # expects -- flag for manual review rather than crediting an unverified amount.
             entity = db.get(Entity, order.entity_id)
-            if order.purpose == "dlt_request" and order.reference_id:
-                request_row = db.get(DltOnboardingRequest, order.reference_id)
-                if request_row and request_row.status == "pending_payment":
-                    _mark_dlt_request_paid(db, request_row, payment_id)
-            else:
-                credits = None
-                if order.price_per_sms:
-                    credits = float(order.amount) / float(order.price_per_sms)
+            flag_suspicious_payment(
+                db, order, entity,
+                f"expected {expected_paise} paise captured, Razorpay reports amount={captured_amount} (payment {payment_id})",
+            )
+            action_taken = "flagged_suspicious"
+        else:
+            already_credited = db.scalar(select(WalletTransaction).where(WalletTransaction.reference == payment_id)) is not None
+            if not already_credited:
+                entity = db.get(Entity, order.entity_id)
+                if order.purpose == "dlt_request" and order.reference_id:
+                    request_row = db.get(DltOnboardingRequest, order.reference_id)
+                    if request_row and request_row.status == "pending_payment":
+                        _mark_dlt_request_paid(db, request_row, payment_id)
                 else:
-                    primary_user = resolve_primary_user(db, entity.organization_id)
-                    rate_card = resolve_rate_card(db, primary_user) if primary_user else None
-                    if rate_card:
-                        credits, _slab = quote_credits(db, rate_card, float(order.amount))
-                if credits:
-                    credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay_reconciled", reference=payment_id)
-                    gst_amount = round(float(order.amount) * GST_RATE, 2)
-                    invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id)
-                    issue_invoice(db, invoice)
-        order.status = "paid"
-        action_taken = "credited_and_marked_paid"
+                    credits = None
+                    if order.price_per_sms:
+                        credits = float(order.amount) / float(order.price_per_sms)
+                    else:
+                        primary_user = resolve_primary_user(db, entity.organization_id)
+                        rate_card = resolve_rate_card(db, primary_user) if primary_user else None
+                        if rate_card:
+                            credits, _slab = quote_credits(db, rate_card, float(order.amount))
+                    if credits:
+                        credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay_reconciled", reference=payment_id)
+                        gst_amount = round(float(order.amount) * GST_RATE, 2)
+                        invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id)
+                        issue_invoice(db, invoice)
+            order.status = "paid"
+            action_taken = "credited_and_marked_paid"
     elif order.status == "created" and not captured and razorpay_order.get("attempts", 0) > 0:
         # Razorpay shows checkout was attempted but nothing was ever captured -- treat as failed
         # rather than leaving it stuck at "created" forever.
@@ -1375,6 +1397,43 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
 
     db.commit()
     return PaymentOrderReconcileResponse(our_status_before=before_status, razorpay_status=razorpay_status, action_taken=action_taken)
+
+
+@router.get("/archive/runs", response_model=list[ArchiveRunLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_archive_runs(limit: int = 50, db: Session = Depends(get_db)):
+    """Recent attempts (success or failure) of the daily local/R2 archive job -- see
+    archive_jobs.run(). This is what answers "did the job actually run, and did it work", unlike
+    ArchiveManifest below which only ever records a successful period-completion."""
+    runs = db.scalars(select(ArchiveRunLog).order_by(ArchiveRunLog.started_at.desc()).limit(limit)).all()
+    return [
+        ArchiveRunLogOut(
+            id=r.id, job=r.job, status=r.status, records_processed=r.records_processed, error=r.error,
+            started_at=r.started_at.isoformat(), finished_at=r.finished_at.isoformat(),
+        )
+        for r in runs
+    ]
+
+
+@router.get("/archive/manifest", response_model=list[ArchiveManifestOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_archive_manifest(db: Session = Depends(get_db)):
+    """What's actually been archived so far, per tier/period -- see ArchiveManifest's own
+    docstring in models.py."""
+    rows = db.scalars(select(ArchiveManifest).order_by(ArchiveManifest.period.desc(), ArchiveManifest.tier)).all()
+    return [
+        ArchiveManifestOut(id=m.id, tier=m.tier, period=m.period, record_count=m.record_count, size_bytes=m.size_bytes, created_at=m.created_at.isoformat())
+        for m in rows
+    ]
+
+
+@router.post("/archive/run-now", response_model=ArchiveRunNowResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def run_archive_now(db: Session = Depends(get_db)):
+    """Manually triggers the local + R2 archive steps synchronously, for on-demand testing/catch-up
+    without waiting for the scheduled daily run -- same underlying job, same advisory lock, so it
+    safely no-ops (rather than double-processing) if the scheduled run happens to be mid-flight."""
+    result = archive_jobs.run(db)
+    if result.get("skipped"):
+        raise HTTPException(status_code=409, detail="The archive job is already running elsewhere. Try again shortly.")
+    return ArchiveRunNowResponse(local=result["local"], r2=result["r2"])
 
 
 def _bulk_customer_stats(db: Session, organization_ids: list[str]):

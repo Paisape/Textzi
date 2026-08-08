@@ -92,6 +92,10 @@ class TwoFactorAuth(Base):
     enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     failed_attempts: Mapped[int] = mapped_column(Integer, default=0)
     locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The 30-second time-step counter of the last successfully-verified code (see
+    # security.verify_totp) -- closes the replay window a still-valid TOTP code would otherwise
+    # have for a second sensitive action within the same ~90-second window.
+    last_used_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class EmailVerification(Base):
@@ -629,6 +633,22 @@ class ArchiveManifest(Base):
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     __table_args__ = (UniqueConstraint("tier", "period", name="uq_archive_tier_period"),)
+
+
+class ArchiveRunLog(Base):
+    """Every attempt at running the daily archive job (archive_jobs.run()), one row per step
+    (local/r2), whether it succeeded or not -- unlike ArchiveManifest above, which only ever
+    records a *successful* period-completion and has no idea whether the job even ran today.
+    This is what actually answers "did the job run, and did it work" for the admin archive-status
+    page, mirroring ZohoApiCallLog's success-or-failure-both-logged pattern."""
+    __tablename__ = "archive_run_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    job: Mapped[str] = mapped_column(String(10))  # "local" | "r2"
+    status: Mapped[str] = mapped_column(String(10))  # "success" | "failed" | "partial"
+    records_processed: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
 
 
 class AccountActivity(Base):

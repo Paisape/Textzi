@@ -18,7 +18,7 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import PaymentOrder, User
 from .schemas import RazorpayOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse
-from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet/recharge/razorpay", tags=["wallet"])
 
@@ -44,7 +44,11 @@ def create_order(payload: RazorpayOrderRequest, request: Request, user: User = D
     total_amount = payload.amount * (1 + GST_RATE)
     amount_paise = int(round(total_amount * 100))
     try:
-        order = client.order.create({"amount": amount_paise, "currency": "INR", "receipt": f"wallet-{entity.id}", "notes": {"entity_id": entity.id, "pre_tax_amount": payload.amount}})
+        # Razorpay caps "receipt" at 40 characters -- "wallet-" (7) + a UUID4 entity id (36) is 43,
+        # which Razorpay rejects outright ("the length must be no more than 40"), confirmed live
+        # against the real test-mode API. Full entity_id is already in "notes" for reconciliation,
+        # so the receipt itself only needs a short, still-unique-enough prefix.
+        order = client.order.create({"amount": amount_paise, "currency": "INR", "receipt": f"w-{entity.id}", "notes": {"entity_id": entity.id, "pre_tax_amount": payload.amount}})
     except razorpay.errors.BadRequestError as exc:
         raise HTTPException(status_code=422, detail=f"Razorpay rejected the order request: {exc}") from exc
 
@@ -84,6 +88,26 @@ def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_
         order.status = "failed"
         db.commit()
         raise HTTPException(status_code=422, detail="Payment signature verification failed") from exc
+
+    # The signature only proves the payment/order/id triple is authentically from Razorpay -- it
+    # says nothing about the amount actually captured. Fetch Razorpay's own record of the payment
+    # and independently confirm it matches what this order expects before crediting anything.
+    try:
+        razorpay_payment = client.payment.fetch(payload.razorpay_payment_id)
+    except Exception as exc:
+        # A Razorpay-side hiccup here must not look like a confirmed mismatch -- the order stays
+        # at "created" (nothing committed yet) so the customer can safely retry once Razorpay is
+        # reachable again, rather than getting an opaque 500.
+        raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
+    expected_paise = expected_order_paise(order)
+    if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
+        flag_suspicious_payment(
+            db, order, entity,
+            f"expected {expected_paise} paise captured, Razorpay reports status={razorpay_payment.get('status')} amount={razorpay_payment.get('amount')}",
+            user=user,
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail=f"We couldn't automatically confirm this payment. It's been flagged for manual review -- contact support with reference {order.id} if this is urgent.")
 
     try:
         if order.price_per_sms:

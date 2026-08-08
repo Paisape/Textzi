@@ -308,6 +308,25 @@ def _create_session(db: Session, user_id: str, request: Request | None) -> str:
     return session.id
 
 
+def _revoke_all_sessions(db: Session, user_id: str, except_sid: str | None = None) -> int:
+    """Called whenever a password changes (self-service change, forgot-password reset, or an
+    admin-forced reset) so a token stolen before the change stops working immediately rather than
+    remaining valid for up to jwt_access_ttl_minutes afterward -- otherwise admin_reset_password,
+    the platform's actual tool for responding to a suspected account compromise, wouldn't actually
+    stop an intruder who already has a live token. except_sid preserves the session making the
+    change itself (self-service change-password, where the caller just proved they know the
+    current password) -- omitted entirely for reset flows, which have no "current" session to
+    keep."""
+    sessions = db.scalars(select(UserSession).where(UserSession.user_id == user_id, UserSession.revoked_at.is_(None))).all()
+    count = 0
+    now = datetime.now(timezone.utc)
+    for s in sessions:
+        if s.id != except_sid:
+            s.revoked_at = now
+            count += 1
+    return count
+
+
 def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str) -> None:
     """Shared by login/verify-2fa, step-up-2fa, and (imported into two_factor.py) enroll-confirm
     and disable -- a TOTP code is only 6 digits, so without this an mfa_token (valid for the
@@ -316,7 +335,8 @@ def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str)
     resets the counter."""
     if two_factor.locked_until and two_factor.locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many incorrect codes; try again later")
-    if not verify_totp(decrypt_secret(two_factor.secret_encrypted), code):
+    matched_step = verify_totp(decrypt_secret(two_factor.secret_encrypted), code, last_used_step=two_factor.last_used_step)
+    if matched_step is None:
         two_factor.failed_attempts += 1
         if two_factor.failed_attempts >= TOTP_MAX_ATTEMPTS:
             two_factor.locked_until = datetime.now(timezone.utc) + timedelta(minutes=TOTP_LOCKOUT_MINUTES)
@@ -324,6 +344,7 @@ def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str)
         raise HTTPException(status_code=422, detail="Incorrect authenticator code")
     two_factor.failed_attempts = 0
     two_factor.locked_until = None
+    two_factor.last_used_step = matched_step
     db.commit()
 
 
@@ -524,6 +545,7 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
     user.password_hash = hash_password(payload.new_password)
     user.failed_login_attempts = 0
     user.login_locked_until = None
+    _revoke_all_sessions(db, user.id)
     sid = _create_session(db, user.id, request)
     log_activity(db, user.organization_id, "password_reset", "Password reset via forgot-password.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
@@ -531,13 +553,18 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
 
 
 @router.post("/change-password")
-def change_password(payload: ChangePasswordRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def change_password(payload: ChangePasswordRequest, request: Request, authorization: str = Header(...), user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Available to every account, staff included -- unlike forgot-password, this requires
     already knowing the current password, so it doesn't carry the same public-attack-surface
     risk. This is the password-change path for platform staff."""
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(status_code=422, detail="Current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
+    # Revoke every other session -- the caller just proved they know the current password, so
+    # their own session stays valid, but a token stolen elsewhere (XSS, malware, a leaked log)
+    # stops working immediately instead of surviving until it naturally expires.
+    current_sid = _decode_bearer_claims(authorization).get("sid")
+    _revoke_all_sessions(db, user.id, except_sid=current_sid)
     log_activity(db, user.organization_id, "password_changed", "Password changed.", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     return {"status": "changed"}

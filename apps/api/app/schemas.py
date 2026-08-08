@@ -1184,6 +1184,35 @@ class ZohoCallLogOut(BaseModel):
     created_at: str
 
 
+class ArchiveRunLogOut(BaseModel):
+    id: str
+    job: str
+    status: str
+    records_processed: int
+    error: str | None
+    started_at: str
+    finished_at: str
+
+
+class ArchiveManifestOut(BaseModel):
+    id: str
+    tier: str
+    period: str
+    record_count: int
+    size_bytes: int
+    created_at: str
+
+
+class ArchiveRunNowResponse(BaseModel):
+    local: dict
+    r2: dict
+
+
+class R2TestConnectionResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
 class PlatformGeneralSettingsOut(BaseModel):
     company_name: str
     company_address: str

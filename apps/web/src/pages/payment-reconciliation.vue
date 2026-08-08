@@ -59,6 +59,8 @@ async function onReconcile(order: OrderRow) {
 function statusColor(status: string): string {
   if (status === 'paid')
     return 'success'
+  if (status === 'suspicious')
+    return 'deep-orange'
   if (status === 'failed')
     return 'error'
   return 'warning'
