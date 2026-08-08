@@ -769,3 +769,16 @@ def resolve_routes(db: Session, user_id: str | None, user_group: str | None, ent
         if policy:
             return policy.routes
     return ["default-simulated-route"]
+
+
+def resolve_user_route_policy(db: Session, user_id: str) -> list[str]:
+    """The external API's own routing rule (main.py's send_sms/send_sms_via_url): user_id is
+    mandatory there and already verified to belong to the caller's own organization before this is
+    ever called, so routing is decided by that user's own Route Policy specifically -- entity-level
+    policies are never consulted as an in-between tier here, unlike the dashboard's own
+    resolve_routes (still used by sms.py's compose_sms). Never raises for a missing policy -- the
+    admin simply not having set one up for this particular user falls back to the simulated route,
+    same fallback constant resolve_routes uses; only the caller's own identity checks (user_id
+    present, user_id belongs to the calling entity's org) are hard-reject conditions."""
+    policy = db.scalar(select(RoutePolicy).where(RoutePolicy.subject_type == "user", RoutePolicy.subject_id == user_id, RoutePolicy.active == True))  # noqa: E712
+    return policy.routes if policy else ["default-simulated-route"]

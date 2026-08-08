@@ -896,7 +896,7 @@ const bulkRecipientShapeExample = '{ mobile, message }'
 const errorCodesReference = [
   { code: 401, meaning: 'Invalid or missing X-Api-Key.' },
   { code: 403, meaning: 'This entity/channel is not active, the caller IP isn\'t on this key\'s IP allow-list, or X-User-Id/user_id was set to an id that doesn\'t belong to your own account.' },
-  { code: 422, meaning: 'Validation failure -- unknown/unapproved template_id, recipient on your opt-out list, or a malformed request body.' },
+  { code: 422, meaning: 'Validation failure -- X-User-Id/user_id missing, unknown/unapproved template_id, recipient on your opt-out list, or a malformed request body.' },
   { code: 429, meaning: 'Rate limit exceeded for this account. See Rate Limits below.' },
   { code: 409, meaning: 'This Idempotency-Key has already been used. Each key works once -- send a new one, or omit the header entirely.' },
 ]
@@ -921,7 +921,7 @@ function buildPostmanCollection(baseUrl: string) {
             { key: 'X-Api-Key', value: '{{api_key}}' },
             { key: 'Content-Type', value: 'application/json' },
             { key: 'Idempotency-Key', value: 'order-1001-confirmation', disabled: true },
-            { key: 'X-User-Id', value: '', disabled: true },
+            { key: 'X-User-Id', value: 'YOUR_USER_ID' },
           ],
           body: {
             mode: 'raw',
@@ -936,7 +936,7 @@ function buildPostmanCollection(baseUrl: string) {
         request: {
           method: 'GET',
           url: {
-            raw: '{{base_url}}/v1/sms/send-url?api_key={{api_key}}&mobile=919876543210&template_id=1707123456789012345&message=Your+order+1001+has+been+confirmed+and+will+ship+to+Pune.',
+            raw: '{{base_url}}/v1/sms/send-url?api_key={{api_key}}&mobile=919876543210&template_id=1707123456789012345&message=Your+order+1001+has+been+confirmed+and+will+ship+to+Pune.&user_id=YOUR_USER_ID',
             host: ['{{base_url}}'],
             path: ['v1', 'sms', 'send-url'],
             query: [
@@ -945,7 +945,7 @@ function buildPostmanCollection(baseUrl: string) {
               { key: 'template_id', value: '1707123456789012345' },
               { key: 'message', value: 'Your order 1001 has been confirmed and will ship to Pune.' },
               { key: 'idempotency_key', value: 'order-1001-confirmation', disabled: true },
-              { key: 'user_id', value: '', disabled: true },
+              { key: 'user_id', value: 'YOUR_USER_ID' },
             ],
           },
         },
@@ -957,6 +957,7 @@ function buildPostmanCollection(baseUrl: string) {
           header: [
             { key: 'X-Api-Key', value: '{{api_key}}' },
             { key: 'Content-Type', value: 'application/json' },
+            { key: 'X-User-Id', value: 'YOUR_USER_ID' },
           ],
           body: {
             mode: 'raw',
@@ -2438,15 +2439,14 @@ onMounted(async () => {
                   </tr>
                   <tr>
                     <td><code>X-User-Id</code></td>
-                    <td>No</td>
+                    <td>Yes</td>
                     <td>
-                      Route a send through a per-user route policy set up for someone in your own
-                      organization. <strong>Rejected with 403 if the id doesn't belong to your
-                      organization</strong> — leave it out entirely rather than guessing. Find a
-                      teammate's id (and copy it) on the
-                      <RouterLink to="/team">Team</RouterLink> page. Not needed at all if your
-                      account has an account-wide (Entity) route policy set up instead — ask
-                      support if you're not sure which applies to you.
+                      <strong>Required on every request.</strong> Must belong to your own
+                      organization — <strong>rejected with 403</strong> if it doesn't, and
+                      <strong>rejected with 422</strong> if omitted entirely. Find a teammate's id
+                      (and copy it) on the <RouterLink to="/team">Team</RouterLink> page. Routing
+                      is decided by this user's own route policy specifically; if none is set up
+                      for them, the send still succeeds using the simulated route.
                     </td>
                   </tr>
                 </tbody>
@@ -2570,8 +2570,8 @@ onMounted(async () => {
                   </tr>
                   <tr>
                     <td><code>user_id</code></td>
-                    <td>No</td>
-                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — only needed for a per-user Route Policy, rejected with 403 if it doesn't belong to your account, and not required at all if your account has an account-wide (Entity) route policy set up instead.</td>
+                    <td>Yes</td>
+                    <td>Same behavior as the <code>X-User-Id</code> header on <code>POST /v1/sms/send</code> — required on every request (422 if omitted), rejected with 403 if it doesn't belong to your account.</td>
                   </tr>
                 </tbody>
               </VTable>

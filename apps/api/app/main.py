@@ -33,7 +33,7 @@ from .security import encrypt_secret
 from .services import (
     AuthenticationError, AuthorizationError, DomainError, RateLimitError, assert_not_opted_out, available_balance, client_ip,
     debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, require_channel_active, resolve_entity_from_key,
-    resolve_routes, resolve_template_by_dlt_id, sms_segment_credits,
+    resolve_template_by_dlt_id, resolve_user_route_policy, sms_segment_credits,
 )
 
 
@@ -115,6 +115,10 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
     caller_ip = client_ip(request)
     try:
         entity = resolve_entity_from_key(db, x_api_key, caller_ip); entity_id = entity.id
+        if not x_user_id:
+            status_code, error_detail = 422, "user_id is required"
+            raise HTTPException(status_code=422, detail="user_id is required -- pass it as the X-User-Id header (POST) or user_id query param (GET), the recipient's real internal User.id from the Team page.")
+        verified_user_id = _same_org_user_id(db, entity, x_user_id)
         enforce_rate_limit(f"ratelimit:sms:{entity.id}", settings.sms_rate_limit_max_requests, settings.sms_rate_limit_window_seconds)
         require_channel_active(db, entity.id, "sms")
         if idempotency_key:
@@ -132,7 +136,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         # still verifies it's one of this entity's own approved templates and resolves the
         # header/PE_ID/route mapping registered for it.
         template = resolve_template_by_dlt_id(db, entity.id, payload.template_id)
-        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None, entity.id)
+        route_plan = resolve_user_route_policy(db, verified_user_id)
         route = route_plan[0]
         rendered_body = payload.message
         encrypted = is_encryption_enabled(db, entity.id, "sms")
@@ -222,15 +226,19 @@ def send_sms_via_url(
     body or custom headers. Delegates to send_sms itself (same auth, rate limit, opt-out check,
     template resolution, wallet debit, dispatch, ApiLog entry) rather than duplicating that logic.
 
-    user_id (query param here, X-User-Id header on POST /v1/sms/send) is what makes a per-user
-    Route Policy (Provider Routes admin page) apply. resolve_routes checks user -> group -> entity
-    -> "default-simulated-route" fallback, in that order, falling through a tier only when that
-    tier's own lookup finds nothing -- entity_id is always resolved from api_key alone (regardless
-    of whether user_id was sent), so an entity-level Route Policy (subject_type="entity") already
-    applies correctly with no user_id at all. user_id only matters for a *per-user* policy
-    specifically; omitting it does not force the simulated fallback if an entity-level policy
-    exists. Must be the recipient's real internal User.id (found on the Team page), not their
-    email.
+    user_id (query param here, X-User-Id header on POST /v1/sms/send) is mandatory -- omitting it
+    rejects the request with a 422 (this is an identity requirement, not just a routing hint), and
+    it must resolve to a real User belonging to the same organization as the api_key's own entity
+    or the request is rejected with a 403 (see _same_org_user_id). Must be the recipient's real
+    internal User.id (found on the Team page), not their email.
+
+    Once accepted, routing is decided by that user_id specifically via
+    services.resolve_user_route_policy -- entity-level Route Policies are never consulted here at
+    all (unlike the dashboard's own Compose feature, sms.py's compose_sms, which still falls
+    through user -> group -> entity -> simulated via the separate resolve_routes). If the admin
+    simply hasn't set up a Route Policy for this particular user, the send still succeeds -- it
+    falls back straight to the simulated route, skipping the entity tier entirely, rather than
+    being rejected.
 
     Putting api_key in the URL is inherently less safe than a header: it can end up logged along
     the way. Textzi's own side is covered -- ApiLog only ever stores request.url.path, never the
@@ -259,6 +267,10 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
     caller_ip = client_ip(request)
     try:
         entity = resolve_entity_from_key(db, x_api_key, caller_ip); entity_id = entity.id
+        if not x_user_id:
+            status_code, error_detail = 422, "user_id is required"
+            raise HTTPException(status_code=422, detail="user_id is required -- pass it as the X-User-Id header, the recipient's real internal User.id from the Team page.")
+        verified_user_id = _same_org_user_id(db, entity, x_user_id)
         # Costs len(recipients) units, not 1 -- otherwise a 100-recipient batch would only cost
         # as much rate-limit budget as a single send, letting bulk push up to
         # max_requests * 100 actual messages through the same window a single-send caller is
@@ -266,7 +278,7 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
         enforce_rate_limit(f"ratelimit:sms:{entity.id}", settings.sms_rate_limit_max_requests, settings.sms_rate_limit_window_seconds, amount=len(payload.recipients))
         require_channel_active(db, entity.id, "sms")
         template = resolve_template_by_dlt_id(db, entity.id, payload.template_id)
-        route_plan = resolve_routes(db, _same_org_user_id(db, entity, x_user_id), None, entity.id)
+        route_plan = resolve_user_route_policy(db, verified_user_id)
         route = route_plan[0]
         encrypted = is_encryption_enabled(db, entity.id, "sms")
     except AuthenticationError as exc:
