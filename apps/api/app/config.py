@@ -68,16 +68,25 @@ class Settings(BaseSettings):
 settings = Settings()
 
 if settings.environment != "development":
-    # admin_bootstrap_key/worker_key already refuse to authenticate anything while left at their
-    # default (see admin.py's require_admin, main.py's require_worker) -- jwt_secret and
-    # provider_secret_key have no equivalent per-request guard since they're used far too
-    # pervasively (every JWT issue/verify; every encrypt_secret/decrypt_secret call protecting
-    # provider credentials, SMTP passwords, 2FA TOTP secrets, and encrypted message content) to
-    # gate at each call site. Both are printed in this very file, so leaving either one at its
-    # default in a real deployment is a complete authentication bypass (JWT_SECRET) or a complete
-    # break of every "encrypted" secret in the system (PROVIDER_SECRET_KEY) -- fail at import
-    # time, before the app can serve a single request, rather than silently running compromised.
-    if settings.jwt_secret == "development-only-change-me":
-        raise RuntimeError("JWT_SECRET must be set to a real, unique secret outside development (see .env.example)")
+    # admin_bootstrap_key/worker_key also have a per-request guard (see admin.py's require_admin,
+    # main.py's require_worker) that already rejects them while they still start with
+    # "development-" -- but that guard only ever ran once a request came in, and only ever caught
+    # the literal default/development- prefixed values, not a merely weak-but-different key an
+    # admin typed in by hand. jwt_secret and provider_secret_key have no per-request guard at all,
+    # since they're used far too pervasively (every JWT issue/verify; every
+    # encrypt_secret/decrypt_secret call protecting provider credentials, SMTP passwords, 2FA TOTP
+    # secrets, and encrypted message content) to gate at each call site. All four are printed in
+    # this very file, so leaving any of them at its default (or merely too short to be a real
+    # generated secret) in a real deployment is a complete authentication bypass (JWT_SECRET,
+    # ADMIN_BOOTSTRAP_KEY, WORKER_KEY) or a complete break of every "encrypted" secret in the
+    # system (PROVIDER_SECRET_KEY) -- fail at import time, before the app can serve a single
+    # request, rather than relying on a per-request check that only catches the exact placeholder.
+    MIN_SECRET_LENGTH = 20  # same floor as the API key length already enforced elsewhere (main.py)
+    if settings.jwt_secret == "development-only-change-me" or len(settings.jwt_secret) < MIN_SECRET_LENGTH:
+        raise RuntimeError("JWT_SECRET must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
     if settings.provider_secret_key == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=":
         raise RuntimeError("PROVIDER_SECRET_KEY must be set to a real generated Fernet key outside development (see .env.example)")
+    if settings.admin_bootstrap_key.startswith("development-") or len(settings.admin_bootstrap_key) < MIN_SECRET_LENGTH:
+        raise RuntimeError("ADMIN_BOOTSTRAP_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
+    if settings.worker_key.startswith("development-") or len(settings.worker_key) < MIN_SECRET_LENGTH:
+        raise RuntimeError("WORKER_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
