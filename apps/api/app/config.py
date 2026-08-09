@@ -1,3 +1,5 @@
+import logging
+
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -100,3 +102,16 @@ if settings.environment != "development":
         raise RuntimeError("ADMIN_BOOTSTRAP_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
     if settings.worker_key.startswith("development-") or len(settings.worker_key) < MIN_SECRET_LENGTH:
         raise RuntimeError("WORKER_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
+    if settings.turnstile_secret == "development-turnstile-secret-change-me":
+        # Deliberately a warning, not a RuntimeError like the four above -- unlike those, this one
+        # has a second, equally valid source (the PlatformTurnstileSettings DB row, admin-editable
+        # from Platform Settings > Turnstile Setting), which config.py can't see at import time, so
+        # a blank .env value here doesn't necessarily mean Turnstile is actually unconfigured.
+        # Still worth surfacing loudly: confirmed live that leaving BOTH unset produces no startup
+        # signal at all, only a silent 403 on every register/login/forgot-password/contact request
+        # once real traffic arrives -- this log line is the fail-fast signal that gap was missing.
+        logging.getLogger("textzi.config").warning(
+            "TURNSTILE_SECRET is unset and no PlatformTurnstileSettings row may exist yet -- "
+            "if neither is configured before traffic arrives, every register/login/forgot-password/"
+            "contact request will be rejected. Set it via Platform Settings > Turnstile Setting, or TURNSTILE_SECRET.",
+        )

@@ -98,6 +98,22 @@ class TwoFactorAuth(Base):
     last_used_step: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
+class TwoFactorRecoveryCode(Base):
+    """One row per single-use TOTP recovery/backup code -- a batch of 10 is generated once when
+    2FA is confirmed (two_factor.py's confirm()), shown to the user exactly once in that response,
+    never retrievable again afterward (only code_hash is persisted). Usable in place of a live TOTP
+    code at login (auth.py's login_verify_2fa), step-up (step_up_2fa), or self-service disable, so
+    losing the authenticator device doesn't strand a user with admin force-disable as the only way
+    back in. code_hash uses the same HMAC-SHA256 scheme as OTPs (security.hash_otp) -- these codes
+    have far higher entropy than a 6-digit OTP, but no reason not to reuse a proven scheme."""
+    __tablename__ = "two_factor_recovery_codes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    code_hash: Mapped[str] = mapped_column(String(64))
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class EmailVerification(Base):
     __tablename__ = "email_verifications"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)

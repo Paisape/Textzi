@@ -188,7 +188,8 @@ async function onSubmitMfa() {
                   autofocus
                   label="Authenticator code"
                   placeholder="123456"
-                  maxlength="6"
+                  hint="Lost your device? Enter one of your recovery codes instead."
+                  persistent-hint
                 />
               </VCol>
               <VCol cols="12">

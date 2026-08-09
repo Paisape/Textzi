@@ -45,6 +45,7 @@ const devCode = ref('')
 
 const code = ref('')
 const newPassword = ref('')
+const totpCode = ref('')
 const isPasswordVisible = ref(false)
 
 const turnstileToken = ref('')
@@ -79,7 +80,7 @@ async function submitReset() {
   try {
     await $api('/v1/auth/reset-password', {
       method: 'POST',
-      body: { user_id: userId.value, code: code.value, new_password: newPassword.value },
+      body: { user_id: userId.value, code: code.value, new_password: newPassword.value, totp_code: totpCode.value || undefined },
     })
     step.value = 3
   }
@@ -206,6 +207,15 @@ async function submitReset() {
                     placeholder="At least 8 characters"
                     :append-inner-icon="isPasswordVisible ? 'tabler-eye-off' : 'tabler-eye'"
                     @click:append-inner="isPasswordVisible = !isPasswordVisible"
+                  />
+                </VCol>
+                <VCol cols="12">
+                  <AppTextField
+                    v-model="totpCode"
+                    label="Two-factor code (only if you have 2FA enabled)"
+                    placeholder="123456 or a recovery code"
+                    hint="Leave blank if you don't have two-factor authentication set up."
+                    persistent-hint
                   />
                 </VCol>
                 <VCol cols="12">

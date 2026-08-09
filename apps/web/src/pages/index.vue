@@ -112,6 +112,11 @@ async function onSubmitContact() {
     contactForm.phone = ''
     contactForm.company = ''
     contactForm.message = ''
+    // The token was just redeemed (single-use) -- clear it so a future resubmission (if the form
+    // ever gains a "send another message" affordance) can't reuse it. The widget itself is
+    // unmounted along with the rest of the form (v-if="!contactSuccess"), which already cleans up
+    // the Cloudflare-side instance via TurnstileWidget's own onBeforeUnmount.
+    contactTurnstileToken.value = ''
   }
   catch (error: any) {
     contactError.value = extractErrorMessage(error, 'Could not send your message. Please try again.')

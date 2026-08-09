@@ -3,6 +3,11 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 from .models import MessageCategory, Status, UserRole, UserStatus
 from .security import assert_safe_webhook_url
 
+# Shared by every field that accepts either a live 6-digit TOTP code or a recovery code
+# (security.generate_recovery_code's "XXXXX-XXXXX" format, 11 chars with the dash, 10 without --
+# callers normalize before hashing, so this pattern just needs to admit both shapes).
+TWO_FACTOR_CODE_PATTERN = r"^[A-Za-z0-9-]{6,11}$"
+
 
 class SmsSendRequest(BaseModel):
     """Dashboard Compose only (sms.py's compose_sms) -- a human filling out a form benefits from
@@ -198,6 +203,10 @@ class ResetPasswordRequest(BaseModel):
     user_id: str
     code: str = Field(min_length=4, max_length=8)
     new_password: str = Field(min_length=8, max_length=128)
+    # Required only if the account has 2FA enabled -- checked in auth.py's reset_password, not
+    # here, since a blank .env-style "is this account 2FA-enabled" flag can't live in a request
+    # schema. Accepts either a live TOTP code or a recovery code, same pattern as TWO_FACTOR_CODE_PATTERN.
+    totp_code: str | None = Field(default=None, min_length=6, max_length=11, pattern=TWO_FACTOR_CODE_PATTERN)
 
 
 class ChangePasswordRequest(BaseModel):
@@ -223,12 +232,25 @@ class TwoFactorEnrollResponse(BaseModel):
 
 
 class TwoFactorCodeRequest(BaseModel):
-    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+    # Accepts a recovery code too (not just a live TOTP code) -- confirm() only ever calls
+    # _verify_totp_with_lockout directly so a recovery-code-shaped value there just fails as an
+    # invalid TOTP code (correct: none exist yet before confirm succeeds); disable() and
+    # step_up_2fa go through the combined check (auth.py's _verify_2fa_code) and accept either.
+    code: str = Field(min_length=6, max_length=11, pattern=TWO_FACTOR_CODE_PATTERN)
+
+
+class TwoFactorConfirmResponse(BaseModel):
+    enabled: bool
+    recovery_codes: list[str]
+
+
+class TwoFactorRecoveryCodesOut(BaseModel):
+    recovery_codes: list[str]
 
 
 class Verify2faRequest(BaseModel):
     mfa_token: str
-    code: str = Field(min_length=6, max_length=6, pattern=r"^[0-9]{6}$")
+    code: str = Field(min_length=6, max_length=11, pattern=TWO_FACTOR_CODE_PATTERN)
 
 
 class TwoFactorAdminUpdate(BaseModel):

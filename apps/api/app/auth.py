@@ -18,14 +18,14 @@ from .config import settings
 from .database import get_db
 from .dispatch import provider_for_route
 from .email_service import render_email, send_email
-from .models import EmailVerification, MobileVerification, Organization, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, TwoFactorAuth, User, UserSession, UserStatus, uid
+from .models import EmailVerification, MobileVerification, Organization, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, TwoFactorAuth, TwoFactorRecoveryCode, User, UserSession, UserStatus, uid
 from .providers import ProviderMessage
 from .schemas import (
     ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, PermissionsResponse, RegisterRequest, RegisterResponse,
     RequestMobileOtpRequest, RequestMobileOtpResponse, ResetPasswordRequest, SessionOut,
     RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
-from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, verify_password, verify_totp
+from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, normalize_recovery_code, verify_password, verify_totp
 from .services import DomainError, RateLimitError, capabilities_for, client_ip, debit_platform_wallet, enforce_rate_limit, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
 from .turnstile import require_turnstile
 
@@ -350,6 +350,26 @@ def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str)
     db.commit()
 
 
+def _verify_2fa_code(db: Session, two_factor: TwoFactorAuth, code: str) -> None:
+    """Accepts either a live TOTP code or an unused recovery code -- checked in that order (a
+    recovery-code match is looked up first) so that entering one never counts as a wrong TOTP
+    guess against the lockout counter in _verify_totp_with_lockout. Recovery codes have no lockout
+    of their own: they're already single-use and far higher entropy than a 6-digit OTP."""
+    code_hash = hash_otp(normalize_recovery_code(code))
+    recovery_code = db.scalar(
+        select(TwoFactorRecoveryCode).where(
+            TwoFactorRecoveryCode.user_id == two_factor.user_id,
+            TwoFactorRecoveryCode.code_hash == code_hash,
+            TwoFactorRecoveryCode.consumed_at.is_(None),
+        ),
+    )
+    if recovery_code:
+        recovery_code.consumed_at = datetime.now(timezone.utc)
+        db.commit()
+        return
+    _verify_totp_with_lockout(db, two_factor, code)
+
+
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
     require_turnstile(payload.turnstile_token, request, db)
@@ -399,7 +419,7 @@ def login_verify_2fa(payload: Verify2faRequest, request: Request, db: Session = 
     two_factor = db.get(TwoFactorAuth, claims.get("sub")) if user else None
     if not user or user.status != UserStatus.active or not two_factor or not two_factor.enabled:
         raise HTTPException(status_code=401, detail="Invalid or expired login session; sign in again")
-    _verify_totp_with_lockout(db, two_factor, payload.code)
+    _verify_2fa_code(db, two_factor, payload.code)
     now = datetime.now(timezone.utc)
     sid = _create_session(db, user.id, request)
     token = create_access_token(subject=user.id, extra_claims={"mfa_verified_at": int(now.timestamp()), "sid": sid})
@@ -464,7 +484,7 @@ def step_up_2fa(payload: TwoFactorCodeRequest, user: User = Depends(require_user
     two_factor = db.get(TwoFactorAuth, user.id)
     if not two_factor or not two_factor.enabled:
         raise HTTPException(status_code=422, detail="2FA is not enabled on this account")
-    _verify_totp_with_lockout(db, two_factor, payload.code)
+    _verify_2fa_code(db, two_factor, payload.code)
     now = datetime.now(timezone.utc)
     # Reuses the caller's own sid rather than _create_session -- this re-proves an existing
     # session's freshness, it doesn't start a new login, so it shouldn't spawn a new session row.
@@ -545,6 +565,17 @@ def reset_password(payload: ResetPasswordRequest, request: Request, db: Session 
     if not hmac.compare_digest(record.code_hash, hash_otp(payload.code)):
         db.commit()
         raise HTTPException(status_code=422, detail="Invalid or expired reset code")
+    two_factor = db.get(TwoFactorAuth, user.id)
+    if two_factor and two_factor.enabled:
+        # Second factor required on top of the emailed code -- otherwise an attacker who only
+        # compromised the account's inbox (not the authenticator app or recovery codes) could
+        # still reset the password. Checked here, after the emailed code is validated but before
+        # it's marked consumed, so a wrong/missing 2FA code doesn't burn the emailed code -- the
+        # user can retry with the correct one without waiting on a fresh email.
+        if not payload.totp_code:
+            db.commit()
+            raise HTTPException(status_code=422, detail="Two-factor code required")
+        _verify_2fa_code(db, two_factor, payload.totp_code)
     record.consumed_at = datetime.now(timezone.utc)
     user.password_hash = hash_password(payload.new_password)
     user.failed_login_attempts = 0

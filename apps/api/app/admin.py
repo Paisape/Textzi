@@ -10,7 +10,7 @@ import razorpay
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse
 from fpdf import FPDF
-from sqlalchemy import bindparam, func, or_, select, text
+from sqlalchemy import bindparam, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .auth import _issue_otp, _revoke_all_sessions, _send_platform_otp_sms, STEP_UP_WINDOW_MINUTES
@@ -22,7 +22,7 @@ from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
@@ -810,11 +810,13 @@ def update_user_role(user_id: str, payload: UserRoleUpdateRequest, request: Requ
 
 @router.patch("/users/{user_id}/two-factor", response_model=TwoFactorStatusOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def admin_update_two_factor(user_id: str, payload: TwoFactorAdminUpdate, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """Recovery lever for a locked-out user (e.g. lost authenticator device) -- admin-only
-    force-disable, no backup codes in this pass. Enabling 2FA for someone else is not supported
-    since only the user can prove possession of the secret via a live code. Same self-action and
-    privileged-tier protections as update_user_role/update_user_status -- stripping someone's 2FA
-    is at least as capable of enabling privilege abuse as changing their role or status is."""
+    """Last-resort recovery lever for a user locked out of both their authenticator device AND
+    their recovery codes (see two_factor.py -- a user who still has even one saved recovery code
+    should use that themselves via Account Security instead of needing an admin at all). Admin-only
+    force-disable; enabling 2FA for someone else is not supported since only the user can prove
+    possession of the secret via a live code. Same self-action and privileged-tier protections as
+    update_user_role/update_user_status -- stripping someone's 2FA is at least as capable of
+    enabling privilege abuse as changing their role or status is."""
     if payload.enabled:
         raise HTTPException(status_code=422, detail="2FA can only be enabled by the user themselves")
     caller = None
@@ -834,6 +836,7 @@ def admin_update_two_factor(user_id: str, payload: TwoFactorAdminUpdate, authori
         raise HTTPException(status_code=403, detail="Only Super Admin can disable a privileged account's 2FA")
     row = db.get(TwoFactorAuth, user_id)
     if row:
+        db.execute(delete(TwoFactorRecoveryCode).where(TwoFactorRecoveryCode.user_id == user_id))
         db.delete(row)
         db.commit()
     return TwoFactorStatusOut(enabled=False)
@@ -1352,7 +1355,14 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
     captured = [p for p in payments.get("items", []) if p.get("status") == "captured"]
     action_taken = "no_change"
 
-    if order.status != "paid" and captured:
+    if order.status == "suspicious":
+        # Already flagged by an earlier reconcile (or the original /verify call) -- re-entering
+        # the mismatch branch below on every subsequent reconcile attempt would re-send the
+        # support alert email and add a duplicate audit-log entry each time, since order.status
+        # being "suspicious" (not "paid") still satisfies the condition below. Nothing has changed
+        # since the last flag; an admin already has this order queued for manual review.
+        action_taken = "already_suspicious"
+    elif order.status != "paid" and captured:
         payment_id = captured[0]["id"]
         captured_amount = captured[0].get("amount")
         expected_paise = expected_order_paise(order)

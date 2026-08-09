@@ -189,6 +189,22 @@ def generate_otp(length: int = 6) -> str:
     return "".join(str(secrets.randbelow(10)) for _ in range(length))
 
 
+# Excludes visually ambiguous characters (0/O, 1/I/L) since these are hand-typed from a printed/
+# saved list, unlike a TOTP code that's copied from an app.
+_RECOVERY_CODE_ALPHABET = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"
+
+
+def generate_recovery_code() -> str:
+    raw = "".join(secrets.choice(_RECOVERY_CODE_ALPHABET) for _ in range(10))
+    return f"{raw[:5]}-{raw[5:]}"
+
+
+def normalize_recovery_code(code: str) -> str:
+    # Case- and formatting-insensitive lookup -- a user retyping "ab3d9-xk2p7" or "AB3D9 XK2P7"
+    # should match the same stored hash as the canonical "AB3D9-XK2P7" it was shown as.
+    return code.strip().upper().replace("-", "").replace(" ", "")
+
+
 def hash_otp(code: str) -> str:
     # A 6-digit numeric code is only 10^6 possible values -- plain SHA-256 would let anyone who
     # ever saw a code_hash column (a DB backup, etc.) recover every code instantly via a

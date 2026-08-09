@@ -18,10 +18,20 @@ const qrDataUrl = ref('')
 const confirmCode = ref('')
 const confirming = ref(false)
 
+// Shown once, right after confirm succeeds -- the backend never returns these again afterward
+// (only their hashes are persisted), so this is the only chance the user gets to save them.
+const recoveryCodes = ref<string[]>([])
+const recoveryCodesSaved = ref(false)
+
 const disabling = ref(false)
 const disableCode = ref('')
 const disableError = ref('')
 const showDisableForm = ref(false)
+
+const regenerating = ref(false)
+const regenerateCode = ref('')
+const regenerateError = ref('')
+const showRegenerateForm = ref(false)
 
 async function loadStatus() {
   statusError.value = ''
@@ -57,12 +67,14 @@ async function onConfirmEnroll() {
   enrollError.value = ''
   confirming.value = true
   try {
-    await $api('/v1/auth/2fa/confirm', { method: 'POST', body: { code: confirmCode.value } })
+    const result = await $api<{ enabled: boolean, recovery_codes: string[] }>('/v1/auth/2fa/confirm', { method: 'POST', body: { code: confirmCode.value } })
     secret.value = ''
     otpauthUri.value = ''
     qrDataUrl.value = ''
     confirmCode.value = ''
     enabled.value = true
+    recoveryCodes.value = result.recovery_codes
+    recoveryCodesSaved.value = false
   }
   catch (error: any) {
     enrollError.value = extractErrorMessage(error, 'Incorrect authenticator code.')
@@ -70,6 +82,16 @@ async function onConfirmEnroll() {
   finally {
     confirming.value = false
   }
+}
+
+function downloadRecoveryCodes() {
+  const blob = new Blob([`Textzi two-factor recovery codes\nEach code can be used once, in place of your authenticator app code, if you lose access to it.\n\n${recoveryCodes.value.join('\n')}\n`], { type: 'text/plain' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'textzi-recovery-codes.txt'
+  a.click()
+  URL.revokeObjectURL(url)
 }
 
 async function onDisable() {
@@ -86,6 +108,24 @@ async function onDisable() {
   }
   finally {
     disabling.value = false
+  }
+}
+
+async function onRegenerateRecoveryCodes() {
+  regenerateError.value = ''
+  regenerating.value = true
+  try {
+    const result = await $api<{ recovery_codes: string[] }>('/v1/auth/2fa/recovery-codes/regenerate', { method: 'POST', body: { code: regenerateCode.value } })
+    recoveryCodes.value = result.recovery_codes
+    recoveryCodesSaved.value = false
+    showRegenerateForm.value = false
+    regenerateCode.value = ''
+  }
+  catch (error: any) {
+    regenerateError.value = extractErrorMessage(error, 'Incorrect authenticator code.')
+  }
+  finally {
+    regenerating.value = false
   }
 }
 
@@ -181,8 +221,49 @@ onMounted(loadSessions)
         {{ statusError }}
       </VAlert>
 
+      <div v-if="recoveryCodes.length" class="mb-4">
+        <VAlert
+          type="warning"
+          variant="tonal"
+          class="mb-4"
+        >
+          <strong>Save these recovery codes now — they won't be shown again.</strong>
+          If you ever lose access to your authenticator app, any one of these codes can be entered
+          in its place to sign in or turn off 2FA. Each code works once.
+        </VAlert>
+        <div class="d-flex flex-wrap ga-2 mb-4">
+          <code
+            v-for="code in recoveryCodes"
+            :key="code"
+            class="pa-2"
+            style="min-inline-size: 130px; text-align: center;"
+          >
+            {{ code }}
+          </code>
+        </div>
+        <div class="d-flex align-center ga-3 mb-4">
+          <VBtn
+            variant="tonal"
+            prepend-icon="tabler-download"
+            @click="downloadRecoveryCodes"
+          >
+            Download codes
+          </VBtn>
+          <VCheckbox
+            v-model="recoveryCodesSaved"
+            label="I've saved these codes somewhere safe"
+          />
+        </div>
+        <VBtn
+          :disabled="!recoveryCodesSaved"
+          @click="recoveryCodes = []"
+        >
+          Done
+        </VBtn>
+      </div>
+
       <div
-        v-if="enabled === true"
+        v-else-if="enabled === true"
         class="mb-4"
       >
         <VChip
@@ -192,19 +273,28 @@ onMounted(loadSessions)
           Two-factor authentication is ON
         </VChip>
 
-        <div v-if="!showDisableForm">
+        <div v-if="!showDisableForm && !showRegenerateForm">
           <p class="text-body-2 text-medium-emphasis mb-4">
-            Disabling requires a current code from your authenticator app.
+            Disabling (or regenerating recovery codes) requires a current code from your
+            authenticator app, or one of your unused recovery codes.
           </p>
-          <VBtn
-            color="error"
-            variant="tonal"
-            @click="showDisableForm = true"
-          >
-            Disable 2FA
-          </VBtn>
+          <div class="d-flex ga-3">
+            <VBtn
+              color="error"
+              variant="tonal"
+              @click="showDisableForm = true"
+            >
+              Disable 2FA
+            </VBtn>
+            <VBtn
+              variant="tonal"
+              @click="showRegenerateForm = true"
+            >
+              Regenerate recovery codes
+            </VBtn>
+          </div>
         </div>
-        <div v-else>
+        <div v-else-if="showDisableForm">
           <VAlert
             v-if="disableError"
             type="error"
@@ -216,9 +306,8 @@ onMounted(loadSessions)
           </VAlert>
           <AppTextField
             v-model="disableCode"
-            label="Authenticator code"
+            label="Authenticator or recovery code"
             placeholder="123456"
-            maxlength="6"
             class="mb-4"
             style="max-inline-size: 220px;"
           />
@@ -238,6 +327,44 @@ onMounted(loadSessions)
             </VBtn>
           </div>
         </div>
+        <div v-else>
+          <VAlert
+            v-if="regenerateError"
+            type="error"
+            variant="tonal"
+            density="compact"
+            class="mb-4"
+          >
+            {{ regenerateError }}
+          </VAlert>
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            This invalidates all of your existing recovery codes and issues 10 new ones. Requires
+            a current authenticator code (not a recovery code, to prevent one leaked code from
+            renewing itself indefinitely).
+          </p>
+          <AppTextField
+            v-model="regenerateCode"
+            label="Authenticator code"
+            placeholder="123456"
+            maxlength="6"
+            class="mb-4"
+            style="max-inline-size: 220px;"
+          />
+          <div class="d-flex gap-3">
+            <VBtn
+              :loading="regenerating"
+              @click="onRegenerateRecoveryCodes"
+            >
+              Regenerate codes
+            </VBtn>
+            <VBtn
+              variant="tonal"
+              @click="showRegenerateForm = false; regenerateCode = ''; regenerateError = ''"
+            >
+              Cancel
+            </VBtn>
+          </div>
+        </div>
       </div>
 
       <div v-else-if="enabled === false">
@@ -249,9 +376,31 @@ onMounted(loadSessions)
         </VChip>
 
         <div v-if="!otpauthUri">
+          <p class="text-body-2 text-medium-emphasis mb-2">
+            You'll need an authenticator app on your phone before you start. If you don't have one:
+          </p>
+          <div class="d-flex flex-wrap ga-3 mb-4">
+            <a
+              href="https://play.google.com/store/apps/details?id=com.google.android.apps.authenticator2"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary text-body-2 d-inline-flex align-center ga-1"
+            >
+              <VIcon icon="tabler-brand-google-play" size="18" />
+              Google Authenticator (Android)
+            </a>
+            <a
+              href="https://apps.apple.com/app/google-authenticator/id388497605"
+              target="_blank"
+              rel="noopener noreferrer"
+              class="text-primary text-body-2 d-inline-flex align-center ga-1"
+            >
+              <VIcon icon="tabler-brand-apple" size="18" />
+              Google Authenticator (iPhone)
+            </a>
+          </div>
           <p class="text-body-2 text-medium-emphasis mb-4">
-            Scan a QR code with an authenticator app (Google Authenticator, Authy, etc.) to get
-            started.
+            Then scan the QR code below with it (Authy and other TOTP apps work too).
           </p>
           <VAlert
             v-if="enrollError"

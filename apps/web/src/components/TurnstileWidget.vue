@@ -20,15 +20,28 @@ const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const el = ref<HTMLElement>()
 let widgetId = ''
+let pollInterval: ReturnType<typeof setInterval> | undefined
 
-function waitForTurnstile(): Promise<void> {
+// Bounded (10s) so a blocked/failed-to-load Cloudflare script (ad-blocker, privacy extension,
+// network issue) can't leave a setInterval polling forever -- tracked at component scope, not
+// just inside this function's closure, so onBeforeUnmount can always clear it.
+function waitForTurnstile(): Promise<boolean> {
   return new Promise(resolve => {
     if (window.turnstile)
-      return resolve()
-    const interval = setInterval(() => {
+      return resolve(true)
+    let elapsed = 0
+    pollInterval = setInterval(() => {
       if (window.turnstile) {
-        clearInterval(interval)
-        resolve()
+        clearInterval(pollInterval)
+        pollInterval = undefined
+        resolve(true)
+        return
+      }
+      elapsed += 50
+      if (elapsed >= 10000) {
+        clearInterval(pollInterval)
+        pollInterval = undefined
+        resolve(false)
       }
     }, 50)
   })
@@ -48,8 +61,8 @@ onMounted(async () => {
     // decides what happens to the submission, same as if Turnstile were never wired up.
     return
   }
-  await waitForTurnstile()
-  if (!el.value)
+  const ready = await waitForTurnstile()
+  if (!ready || !el.value)
     return
   widgetId = window.turnstile!.render(el.value, {
     sitekey: siteKey,
@@ -61,6 +74,8 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (pollInterval)
+    clearInterval(pollInterval)
   if (widgetId)
     window.turnstile?.remove(widgetId)
 })
