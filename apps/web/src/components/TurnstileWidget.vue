@@ -1,41 +1,73 @@
 <script setup lang="ts">
-// Wraps a Cloudflare Turnstile widget for SPA forms that submit via fetch (not a native form
-// POST), so implicit auto-render's usual approach (a hidden cf-turnstile-response input injected
-// into the surrounding <form>) isn't picked up automatically. data-callback bridges the token back
-// into this component's v-model instead. `id` must be unique per page -- it's both the DOM id
-// Turnstile's MutationObserver-based auto-render keys off of and the container argument
-// window.turnstile.reset(id) needs to reset this specific widget (tokens are single-use; a caller
-// must reset before letting the user retry after a failed submit).
+// Explicit rendering (turnstile.render()), not implicit (class="cf-turnstile" + data-* attrs).
+// Confirmed live and per Cloudflare's own docs: implicit rendering only picks up elements already
+// in the DOM when api.js first runs -- it does NOT reliably catch a container added later, which
+// is exactly what happens here (the div only exists once the async /v1/public/turnstile-config
+// fetch below resolves). Implicit mode silently never rendered anything, leaving every submission
+// with an empty token. Explicit mode is Cloudflare's documented fix for SPA-injected containers.
+declare global {
+  interface Window {
+    turnstile?: {
+      render: (container: HTMLElement, options: Record<string, unknown>) => string
+      reset: (widgetId: string) => void
+      remove: (widgetId: string) => void
+    }
+  }
+}
+
 const props = defineProps<{ id: string, modelValue: string }>()
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
-const callbackName = `__turnstileCallback_${props.id.replace(/-/g, '_')}`
+const el = ref<HTMLElement>()
+let widgetId = ''
 
-// Fetched at runtime rather than hardcoded -- admins can change the sitekey from Platform
-// Settings > Turnstile Setting without a frontend rebuild/redeploy. The div below only enters the
-// DOM once this is set (v-if), since the callback must already exist on `window` before
-// Turnstile's MutationObserver-based auto-render discovers it.
-const siteKey = ref('')
+function waitForTurnstile(): Promise<void> {
+  return new Promise(resolve => {
+    if (window.turnstile)
+      return resolve()
+    const interval = setInterval(() => {
+      if (window.turnstile) {
+        clearInterval(interval)
+        resolve()
+      }
+    }, 50)
+  })
+}
 
 onMounted(async () => {
-  ;(window as any)[callbackName] = (token?: string) => emit('update:modelValue', token ?? '')
+  // Fetched at runtime rather than hardcoded -- admins can change the sitekey from Platform
+  // Settings > Turnstile Setting without a frontend rebuild/redeploy.
+  let siteKey = ''
   try {
     const result = await $api<{ site_key: string }>('/v1/public/turnstile-config')
-    siteKey.value = result.site_key
+    siteKey = result.site_key
   }
   catch {
-    // Leave the widget unrendered rather than guess a sitekey. turnstile_token then stays empty,
-    // and the backend's own posture (turnstile.py -- fail-open in development, fail-closed
-    // otherwise) decides what happens to the submission, same as if Turnstile were never wired up.
+    // No sitekey -- leave the widget unrendered. turnstile_token then stays empty, and the
+    // backend's own posture (turnstile.py -- fail-open in development, fail-closed otherwise)
+    // decides what happens to the submission, same as if Turnstile were never wired up.
+    return
   }
+  await waitForTurnstile()
+  if (!el.value)
+    return
+  widgetId = window.turnstile!.render(el.value, {
+    sitekey: siteKey,
+    action: 'turnstile-spin-v2',
+    callback: (token: string) => emit('update:modelValue', token),
+    'expired-callback': () => emit('update:modelValue', ''),
+    'error-callback': () => emit('update:modelValue', ''),
+  })
 })
 
 onBeforeUnmount(() => {
-  delete (window as any)[callbackName]
+  if (widgetId)
+    window.turnstile?.remove(widgetId)
 })
 
 function reset() {
-  ;(window as any).turnstile?.reset(props.id)
+  if (widgetId)
+    window.turnstile?.reset(widgetId)
   emit('update:modelValue', '')
 }
 
@@ -43,13 +75,5 @@ defineExpose({ reset })
 </script>
 
 <template>
-  <div
-    v-if="siteKey"
-    :id="id"
-    class="cf-turnstile"
-    :data-sitekey="siteKey"
-    data-action="turnstile-spin-v2"
-    :data-callback="callbackName"
-    :data-expired-callback="callbackName"
-  />
+  <div :id="id" ref="el" />
 </template>
