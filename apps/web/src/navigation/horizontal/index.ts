@@ -221,6 +221,11 @@ export const adminNav = [
         icon: { icon: 'tabler-cloud-cog' },
       },
       {
+        title: 'Turnstile Setting',
+        to: { name: 'platform-turnstile-settings' },
+        icon: { icon: 'tabler-shield-check' },
+      },
+      {
         title: 'Archive Status',
         to: { name: 'archive-status' },
         icon: { icon: 'tabler-archive' },

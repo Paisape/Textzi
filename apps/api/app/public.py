@@ -12,9 +12,10 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .email_service import render_email, send_email
 from .models import ContactMessage, PageView, RateCard, Testimonial, VisitorSession
-from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
+from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, PublicTurnstileConfigOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
 from .security import decode_access_token
-from .services import client_ip, get_platform_company_info, parse_user_agent, rate_card_slabs
+from .services import client_ip, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
+from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
 
@@ -40,8 +41,19 @@ def get_public_company_info(db: Session = Depends(get_db)):
     )
 
 
+@router.get("/turnstile-config", response_model=PublicTurnstileConfigOut)
+def get_public_turnstile_config(db: Session = Depends(get_db)):
+    """The sitekey isn't a secret -- it's shipped to every visitor's browser regardless -- so
+    TurnstileWidget.vue fetches it here at runtime instead of it being baked into the JS bundle at
+    build time, letting an admin change it from Platform Settings > Turnstile Setting without a
+    frontend rebuild/redeploy."""
+    site_key, _ = get_platform_turnstile_settings(db)
+    return PublicTurnstileConfigOut(site_key=site_key)
+
+
 @router.post("/contact", response_model=ContactResponse)
-def submit_contact(payload: ContactRequest, db: Session = Depends(get_db)):
+def submit_contact(payload: ContactRequest, request: Request, db: Session = Depends(get_db)):
+    require_turnstile(payload.turnstile_token, request, db)
     row = ContactMessage(
         name=payload.name,
         email=payload.email,

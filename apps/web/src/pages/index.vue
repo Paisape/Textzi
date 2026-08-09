@@ -87,6 +87,8 @@ const contactForm = reactive({ name: '', email: '', phone: '', company: '', mess
 const contactSubmitting = ref(false)
 const contactSuccess = ref('')
 const contactError = ref('')
+const contactTurnstileToken = ref('')
+const contactTurnstileRef = ref<InstanceType<typeof TurnstileWidget>>()
 
 async function onSubmitContact() {
   contactSubmitting.value = true
@@ -101,6 +103,7 @@ async function onSubmitContact() {
         phone: contactForm.phone || undefined,
         company: contactForm.company || undefined,
         message: contactForm.message,
+        turnstile_token: contactTurnstileToken.value,
       },
     })
     contactSuccess.value = data.message
@@ -112,6 +115,10 @@ async function onSubmitContact() {
   }
   catch (error: any) {
     contactError.value = extractErrorMessage(error, 'Could not send your message. Please try again.')
+    // Turnstile tokens are single-use -- the page doesn't navigate away on a failed submit, so
+    // without resetting, a retry would resubmit the same already-redeemed token and get rejected
+    // by Cloudflare's edge as timeout-or-duplicate instead of getting a fresh one.
+    contactTurnstileRef.value?.reset()
   }
   finally {
     contactSubmitting.value = false
@@ -1039,6 +1046,13 @@ onMounted(() => {
                         label="Message"
                         rows="4"
                         :rules="[v => !!v || 'Required']"
+                      />
+                    </VCol>
+                    <VCol cols="12">
+                      <TurnstileWidget
+                        id="turnstile-contact"
+                        ref="contactTurnstileRef"
+                        v-model="contactTurnstileToken"
                       />
                     </VCol>
                     <VCol cols="12">

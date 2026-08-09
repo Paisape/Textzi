@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction, Status
-from .security import hash_api_key
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction, Status
+from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
@@ -123,6 +123,26 @@ def get_platform_company_info(db: Session) -> PlatformCompanyInfo:
         support_email=(row.support_email if row and row.support_email else settings.support_email),
         public_api_base_url=(row.public_api_base_url if row and row.public_api_base_url else settings.public_api_base_url),
     )
+
+
+_TURNSTILE_SECRET_UNCONFIGURED = "development-turnstile-secret-change-me"
+
+
+def get_platform_turnstile_settings(db: Session) -> tuple[str, str | None]:
+    """Resolves the DB-backed, admin-UI-editable PlatformTurnstileSettings row, falling back
+    field-by-field to the .env defaults in config.py wherever the admin hasn't set one -- same
+    convention as get_platform_company_info above. Returns (site_key, secret); secret is None if
+    neither the DB row nor .env has ever been set to a real (non-placeholder) value, which
+    turnstile.py treats as "unconfigured"."""
+    row = db.get(PlatformTurnstileSettings, "platform")
+    site_key = row.site_key if row and row.site_key else settings.turnstile_site_key
+    if row and row.secret_key_encrypted:
+        secret = decrypt_secret(row.secret_key_encrypted)
+    elif settings.turnstile_secret != _TURNSTILE_SECRET_UNCONFIGURED:
+        secret = settings.turnstile_secret
+    else:
+        secret = None
+    return site_key, secret
 
 
 def ttbs_webhook_url(db: Session, webhook_secret: str) -> str | None:

@@ -30,6 +30,9 @@ const mfaRequired = ref(false)
 const mfaToken = ref('')
 const mfaCode = ref('')
 
+const turnstileToken = ref('')
+const turnstileRef = ref<InstanceType<typeof TurnstileWidget>>()
+
 // Set by the router guard / the global 401 handler (utils/api.ts) when they detect a dead
 // session and redirect here -- without this, a user who got logged out purely from inactivity
 // had no way to tell that apart from having never been logged in at all.
@@ -62,7 +65,7 @@ async function onSubmit() {
   try {
     const data = await $api<{ access_token: string | null, mfa_required: boolean, mfa_token: string | null }>('/v1/auth/login', {
       method: 'POST',
-      body: { email: form.value.email, password: form.value.password },
+      body: { email: form.value.email, password: form.value.password, turnstile_token: turnstileToken.value },
     })
     if (data.mfa_required && data.mfa_token) {
       mfaRequired.value = true
@@ -74,6 +77,9 @@ async function onSubmit() {
   }
   catch (error: any) {
     errorMessage.value = extractErrorMessage(error, 'Unable to sign in. Please check your details and try again.')
+    // Tokens are single-use; reset so a retry (e.g. after a typo'd password) gets a fresh one
+    // instead of Cloudflare rejecting the already-redeemed one as timeout-or-duplicate.
+    turnstileRef.value?.reset()
   }
   finally {
     submitting.value = false
@@ -237,6 +243,13 @@ async function onSubmitMfa() {
                     Forgot Password?
                   </RouterLink>
                 </div>
+
+                <TurnstileWidget
+                  id="turnstile-login"
+                  ref="turnstileRef"
+                  v-model="turnstileToken"
+                  class="mb-6"
+                />
 
                 <VBtn
                   block

@@ -47,13 +47,16 @@ const code = ref('')
 const newPassword = ref('')
 const isPasswordVisible = ref(false)
 
+const turnstileToken = ref('')
+const turnstileRef = ref<InstanceType<typeof TurnstileWidget>>()
+
 async function submitEmail() {
   errorMessage.value = ''
   submitting.value = true
   try {
     const data = await $api<{ message: string, dev_code?: string | null, dev_user_id?: string | null }>('/v1/auth/forgot-password', {
       method: 'POST',
-      body: { email: email.value },
+      body: { email: email.value, turnstile_token: turnstileToken.value },
     })
     userId.value = data.dev_user_id ?? ''
     devCode.value = data.dev_code ?? ''
@@ -61,6 +64,9 @@ async function submitEmail() {
   }
   catch (error: any) {
     errorMessage.value = extractErrorMessage(error, 'Could not process this request. Please try again.')
+    // Single-use token -- reset before a retry, or Cloudflare rejects the already-redeemed token
+    // as timeout-or-duplicate instead of accepting a fresh one.
+    turnstileRef.value?.reset()
   }
   finally {
     submitting.value = false
@@ -137,6 +143,13 @@ async function submitReset() {
                     type="email"
                     placeholder="you@company.com"
                     autofocus
+                  />
+                </VCol>
+                <VCol cols="12">
+                  <TurnstileWidget
+                    id="turnstile-forgot-password"
+                    ref="turnstileRef"
+                    v-model="turnstileToken"
                   />
                 </VCol>
                 <VCol cols="12">

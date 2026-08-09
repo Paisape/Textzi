@@ -810,6 +810,19 @@ class PlatformR2Settings(Base):
     bucket_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
 
+class PlatformTurnstileSettings(Base):
+    """Singleton row. Cloudflare Turnstile credentials for the bot-check widget embedded on
+    register/login/forgot-password/contact -- editable from the admin UI, not just `.env`, same
+    convention as PlatformSmtpSettings/PlatformR2Settings above. site_key isn't a secret (it ships
+    to every visitor's browser regardless) so it's stored/returned plain, via the public
+    /v1/public/turnstile-config endpoint the frontend fetches at runtime; secret_key is write-only
+    (encrypted at rest, never returned by GET)."""
+    __tablename__ = "platform_turnstile_settings"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
+    site_key: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    secret_key_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class PlatformZohoSettings(Base):
     """Singleton row. Connection details for Zoho Books -- Zoho is the source of truth for the
     invoice DOCUMENT itself (zoho_books.py creates the Contact/Item/Invoice there and fetches the

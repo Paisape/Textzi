@@ -131,6 +131,7 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=2, max_length=160)
+    turnstile_token: str | None = None
 
 
 class RegisterResponse(BaseModel):
@@ -170,6 +171,7 @@ class VerifyMobileRequest(BaseModel):
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str
+    turnstile_token: str | None = None
 
 
 class TokenResponse(BaseModel):
@@ -181,6 +183,7 @@ class TokenResponse(BaseModel):
 
 class ForgotPasswordRequest(BaseModel):
     email: EmailStr
+    turnstile_token: str | None = None
 
 
 class ForgotPasswordResponse(BaseModel):
@@ -511,6 +514,7 @@ class ContactRequest(BaseModel):
     phone: str = Field(min_length=1, max_length=20)
     company: str = Field(min_length=1, max_length=160)
     message: str = Field(min_length=1, max_length=4000)
+    turnstile_token: str | None = None
 
 
 class ContactResponse(BaseModel):
@@ -1112,6 +1116,25 @@ class PlatformR2SettingsUpdate(BaseModel):
     access_key_id: str | None = None
     secret_access_key: str | None = None  # blank = keep the existing one, same convention as SMTP's password
     bucket_name: str | None = None
+
+
+class PlatformTurnstileSettingsOut(BaseModel):
+    site_key: str | None
+    configured: bool
+
+
+class PlatformTurnstileSettingsUpdate(BaseModel):
+    site_key: str | None = None
+    secret_key: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
+
+
+class TurnstileTestConnectionResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
+class PublicTurnstileConfigOut(BaseModel):
+    site_key: str
 
 
 class PlatformZohoSettingsOut(BaseModel):

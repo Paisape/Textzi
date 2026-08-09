@@ -51,13 +51,16 @@ const mobileOtpRequested = ref(false)
 
 const isPasswordVisible = ref(false)
 
+const turnstileToken = ref('')
+const turnstileRef = ref<InstanceType<typeof TurnstileWidget>>()
+
 async function submitAccountDetails() {
   errorMessage.value = ''
   submitting.value = true
   try {
     const data = await $api<{ user_id: string, dev_email_code?: string | null }>('/v1/auth/register', {
       method: 'POST',
-      body: { email: accountForm.value.email, password: accountForm.value.password, full_name: accountForm.value.fullName },
+      body: { email: accountForm.value.email, password: accountForm.value.password, full_name: accountForm.value.fullName, turnstile_token: turnstileToken.value },
     })
     userId.value = data.user_id
     devEmailCode.value = data.dev_email_code ?? ''
@@ -65,6 +68,9 @@ async function submitAccountDetails() {
   }
   catch (error: any) {
     errorMessage.value = extractErrorMessage(error, 'Could not create your account. Please try again.')
+    // Single-use token -- reset before the user can retry, or Cloudflare rejects the resubmitted
+    // (already-redeemed) token as timeout-or-duplicate instead of accepting a fresh one.
+    turnstileRef.value?.reset()
   }
   finally {
     submitting.value = false
@@ -206,6 +212,13 @@ async function submitMobileCode() {
                       placeholder="At least 8 characters"
                       :append-inner-icon="isPasswordVisible ? 'tabler-eye-off' : 'tabler-eye'"
                       @click:append-inner="isPasswordVisible = !isPasswordVisible"
+                    />
+                  </VCol>
+                  <VCol cols="12">
+                    <TurnstileWidget
+                      id="turnstile-register"
+                      ref="turnstileRef"
+                      v-model="turnstileToken"
                     />
                   </VCol>
                   <VCol cols="12">

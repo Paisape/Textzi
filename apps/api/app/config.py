@@ -26,6 +26,16 @@ class Settings(BaseSettings):
     admin_bootstrap_key: str = "development-admin-key-change-me"
     worker_key: str = "development-worker-key-change-me"
     provider_secret_key: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="  # dev-only placeholder Fernet key; override in .env
+    # Cloudflare Turnstile credentials (turnstile.py) -- .env-level fallback only. The primary,
+    # admin-UI-editable source is the PlatformTurnstileSettings DB row (services.
+    # get_platform_turnstile_settings), same convention as company_name/support_email above: these
+    # two values are only ever used for a field the admin hasn't set from Platform Settings >
+    # Turnstile Setting yet. Left at its placeholder (in neither .env nor the DB), verify_turnstile
+    # no-ops in development only, same fail-open-when-unconfigured convention as
+    # _send_platform_otp_sms/send_email elsewhere in this codebase -- outside development it's
+    # enforced unconditionally.
+    turnstile_site_key: str = "0x4AAAAAAEK61ZxTLsoU-BJ5"
+    turnstile_secret: str = "development-turnstile-secret-change-me"
     otp_ttl_minutes: int = 10
     otp_max_attempts: int = 5
     razorpay_key_id: str | None = None

@@ -1,6 +1,7 @@
 """Admin-only configuration for the platform's own operational sending -- its SMS sender
 identity, its SMTP config, and its wallet. Deliberately separate from every tenant-facing router:
 this is Textzi's own infrastructure, not something any customer sees or touches."""
+import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -9,15 +10,16 @@ from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
-from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
+from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
     PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
-    PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
-    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
+    PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
-from .services import DomainError, credit_platform_wallet, get_platform_company_info, log_activity, mask_mobile
+from .services import DomainError, credit_platform_wallet, get_platform_company_info, get_platform_turnstile_settings, log_activity, mask_mobile
+from .turnstile import SITEVERIFY_URL
 from .zoho_books import ZohoCallError, exchange_grant_code, get_zoho_settings, list_accounts, list_tax_rates
 
 router = APIRouter(prefix="/v1/admin/platform", tags=["platform-admin"])
@@ -121,6 +123,69 @@ def test_r2_connection(db: Session = Depends(get_db)):
     except Exception as exc:
         return R2TestConnectionResponse(ok=False, detail=f"Connection failed: {exc}")
     return R2TestConnectionResponse(ok=True, detail=f"Connected -- bucket '{row.bucket_name}' is reachable.")
+
+
+@router.get("/turnstile-settings", response_model=PlatformTurnstileSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_turnstile_settings(db: Session = Depends(get_db)):
+    row = db.get(PlatformTurnstileSettings, "platform")
+    return PlatformTurnstileSettingsOut(
+        site_key=(row.site_key if row else None),
+        configured=bool(row and row.secret_key_encrypted),
+    )
+
+
+@router.put("/turnstile-settings", response_model=PlatformTurnstileSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_turnstile_settings(payload: PlatformTurnstileSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """secret_key is write-only, same convention as the SMTP password and R2's secret_access_key
+    -- GET never returns it, and a blank value on PUT keeps whatever was already stored."""
+    row = db.get(PlatformTurnstileSettings, "platform")
+    if not row:
+        row = PlatformTurnstileSettings(id="platform")
+        db.add(row)
+    row.site_key = payload.site_key
+    if payload.secret_key:
+        row.secret_key_encrypted = encrypt_secret(payload.secret_key)
+    log_activity(db, None, "platform_turnstile_settings_updated", "Platform Turnstile settings updated.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit(); db.refresh(row)
+    return PlatformTurnstileSettingsOut(site_key=row.site_key, configured=bool(row.secret_key_encrypted))
+
+
+@router.post("/turnstile-settings/test-connection", response_model=TurnstileTestConnectionResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def test_turnstile_connection(db: Session = Depends(get_db)):
+    """Exercises the currently-saved secret against Cloudflare's real siteverify endpoint with an
+    intentionally-invalid dummy token, rather than just checking the field is non-empty. Never
+    touches the account-management API, only the same public siteverify endpoint every real
+    request already calls.
+
+    A wrong secret always comes back success:false with "invalid-input-secret" in error-codes --
+    that's the one unambiguous failure signal, checked first regardless of `success`. Everything
+    else counts as a working secret: a normal secret rejects the dummy token with success:false
+    and "invalid-input-response" (the token is what's invalid, not the secret), while Cloudflare's
+    own published always-pass test secrets instead return success:true outright for any token --
+    both outcomes prove the secret itself is valid and recognized."""
+    _, secret = get_platform_turnstile_settings(db)
+    if not secret:
+        return TurnstileTestConnectionResponse(ok=False, detail="Turnstile is not configured -- save a secret key first.")
+    try:
+        response = requests.post(
+            SITEVERIFY_URL,
+            data={"secret": secret, "response": "XXXX.DUMMY.TOKEN.XXXX"},
+            timeout=10,
+        )
+        # Deliberately not response.raise_for_status() -- confirmed live that Cloudflare answers a
+        # malformed/wrong secret with HTTP 400, not 200, but still returns the same structured
+        # {"success": false, "error-codes": [...]} body either way. Raising here would throw that
+        # useful body away and misreport a real "your secret is wrong" as a fake "can't reach
+        # Cloudflare" -- exactly the two outcomes this diagnostic exists to tell apart.
+        result = response.json()
+    except Exception as exc:
+        return TurnstileTestConnectionResponse(ok=False, detail=f"Could not reach Cloudflare's siteverify endpoint: {exc}")
+    codes = result.get("error-codes") or []
+    if "invalid-input-secret" in codes:
+        return TurnstileTestConnectionResponse(ok=False, detail="Cloudflare rejected this secret key -- double-check it matches the widget's secret in the Cloudflare dashboard.")
+    if result.get("success") is True or "invalid-input-response" in codes:
+        return TurnstileTestConnectionResponse(ok=True, detail="Secret key is valid and recognized by Cloudflare.")
+    return TurnstileTestConnectionResponse(ok=False, detail=f"Unexpected response from Cloudflare: {result}")
 
 
 @router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

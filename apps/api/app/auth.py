@@ -27,6 +27,7 @@ from .schemas import (
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, verify_password, verify_totp
 from .services import DomainError, RateLimitError, capabilities_for, client_ip, debit_platform_wallet, enforce_rate_limit, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
+from .turnstile import require_turnstile
 
 logger = logging.getLogger("textzi.auth")
 router = APIRouter(prefix="/v1/auth", tags=["auth"])
@@ -96,6 +97,7 @@ def register(payload: RegisterRequest, request: Request, db: Session = Depends(g
         enforce_rate_limit(f"ratelimit:register:{client_ip(request)}", REGISTER_RATE_LIMIT_MAX_REQUESTS, REGISTER_RATE_LIMIT_WINDOW_SECONDS)
     except RateLimitError as exc:
         raise HTTPException(status_code=429, detail=str(exc)) from exc
+    require_turnstile(payload.turnstile_token, request, db)
     # Normalized (stripped + lowercased) both for the new-row storage and for the lookup below via
     # func.lower() -- without this, "user@x.com" and "User@x.com" were treated as different
     # accounts (duplicate signups) and a genuine user logging in with different casing than they
@@ -350,6 +352,7 @@ def _verify_totp_with_lockout(db: Session, two_factor: TwoFactorAuth, code: str)
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
+    require_turnstile(payload.turnstile_token, request, db)
     ip = client_ip(request)
     user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
     if user and user.login_locked_until and user.login_locked_until > datetime.now(timezone.utc):
@@ -486,13 +489,14 @@ def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
-def forgot_password(payload: ForgotPasswordRequest, db: Session = Depends(get_db)):
+def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Session = Depends(get_db)):
     """Self-service reset -- deliberately customer-side only. A platform-staff account
     (PLATFORM_INTERNAL_ROLES) never gets a code from this endpoint, no matter what: a public,
     unauthenticated, email-enumerable reset path is exactly the kind of attack surface you don't
     want in front of your most privileged accounts. Staff passwords only ever get reset by
     another admin (POST /v1/admin/users/{id}/reset-password). The response is identical whether
     or not the email exists or belongs to staff, to avoid leaking account existence/tier."""
+    require_turnstile(payload.turnstile_token, request, db)
     generic = ForgotPasswordResponse(message="If an account with that email exists, we've sent a password reset code.")
     user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
     # A suspended account must stay locked out through this public, unauthenticated path -- an
