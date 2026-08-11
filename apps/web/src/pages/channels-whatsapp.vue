@@ -79,6 +79,7 @@ async function refreshWabaStatus() {
 // --- Direct connect (fallback when Embedded Signup isn't configured yet) ------------------
 
 const directConnectOpen = ref(false)
+const directTokenVisible = ref(false)
 const directConnecting = ref(false)
 const directConnectError = ref('')
 const directForm = ref({ waba_id: '', phone_number_id: '', access_token: '', business_id: '' })
@@ -605,10 +606,16 @@ watch(activeTab, tab => {
                 <VAlert v-if="directConnectError" type="error" variant="tonal" density="compact" class="mb-3">
                   {{ directConnectError }}
                 </VAlert>
-                <VTextField v-model="directForm.waba_id" label="WhatsApp Business Account ID" density="compact" class="mb-3" />
-                <VTextField v-model="directForm.phone_number_id" label="Phone number ID" density="compact" class="mb-3" />
-                <VTextField v-model="directForm.access_token" label="Access token" type="password" density="compact" class="mb-3" />
-                <VTextField v-model="directForm.business_id" label="Business ID (optional)" density="compact" class="mb-4" />
+                <VTextField v-model="directForm.waba_id" label="WhatsApp Business Account ID" autocomplete="off" density="compact" class="mb-3" />
+                <VTextField v-model="directForm.phone_number_id" label="Phone number ID" autocomplete="off" density="compact" class="mb-3" />
+                <VTextField
+                  v-model="directForm.access_token" label="Access token" autocomplete="off"
+                  :type="directTokenVisible ? 'text' : 'password'"
+                  :append-inner-icon="directTokenVisible ? 'tabler-eye-off' : 'tabler-eye'"
+                  density="compact" class="mb-3"
+                  @click:append-inner="directTokenVisible = !directTokenVisible"
+                />
+                <VTextField v-model="directForm.business_id" label="Business ID (optional)" autocomplete="off" density="compact" class="mb-4" />
                 <VBtn
                   :loading="directConnecting"
                   :disabled="!directForm.waba_id.trim() || !directForm.phone_number_id.trim() || !directForm.access_token.trim()"
