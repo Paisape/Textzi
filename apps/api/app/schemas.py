@@ -1087,6 +1087,19 @@ class AdminApiLogOut(BaseModel):
     created_at: str
 
 
+class AdminWabaWebhookLogOut(BaseModel):
+    id: str
+    direction: str
+    status: str
+    detail: str
+    phone_number_id: str | None
+    entity_id: str | None
+    entity_name: str | None
+    organization_name: str | None
+    ip_address: str | None
+    created_at: str
+
+
 class WalletCreditRequest(BaseModel):
     entity_id: str
     amount: float = Field(gt=0, le=1_000_000)

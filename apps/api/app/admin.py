@@ -22,10 +22,10 @@ from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
-    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
+    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaWebhookLogOut,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
@@ -2058,6 +2058,37 @@ def list_admin_api_log(entity_id: str | None = None, status_code: int | None = N
             message_id=l.message_id, endpoint=l.endpoint, method=l.metadata_json.get("method") if l.metadata_json else None,
             status_code=l.status_code, latency_ms=l.latency_ms, error=l.metadata_json.get("error") if l.metadata_json else None,
             ip_address=l.ip_address, country=l.country, user_agent=l.user_agent, created_at=l.created_at.isoformat(),
+        ))
+    return result
+
+
+@router.get("/waba-webhook-log", response_model=list[AdminWabaWebhookLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_admin_waba_webhook_log(status: str | None = None, direction: str | None = None, limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
+    """Every call Meta has made to /v1/webhooks/waba, across every customer -- the GET verify
+    handshake and every POST event delivery, including rejections (bad signature, no matching
+    connection) that never made it into any customer-visible screen. Built specifically so "is
+    Meta even reaching us" is answerable from the admin panel during Embedded Signup/App Review
+    setup, instead of grepping container logs."""
+    limit = max(1, min(limit, MESSAGE_LOG_LIMIT))
+    offset = max(0, offset)
+    query = select(WabaWebhookLog).order_by(WabaWebhookLog.created_at.desc()).limit(limit).offset(offset)
+    if status:
+        query = query.where(WabaWebhookLog.status == status)
+    if direction:
+        query = query.where(WabaWebhookLog.direction == direction)
+    logs = db.scalars(query).all()
+    entity_ids = {l.entity_id for l in logs if l.entity_id}
+    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()} if entity_ids else {}
+    org_ids = {e.organization_id for e in entities.values()}
+    org_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
+    result = []
+    for l in logs:
+        entity = entities.get(l.entity_id) if l.entity_id else None
+        result.append(AdminWabaWebhookLogOut(
+            id=l.id, direction=l.direction, status=l.status, detail=l.detail, phone_number_id=l.phone_number_id,
+            entity_id=l.entity_id, entity_name=entity.name if entity else None,
+            organization_name=org_names.get(entity.organization_id) if entity else None,
+            ip_address=l.ip_address, created_at=l.created_at.isoformat(),
         ))
     return result
 

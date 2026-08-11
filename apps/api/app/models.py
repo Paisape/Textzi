@@ -1717,3 +1717,22 @@ class WabaWebhookSubscription(Base):
     url: Mapped[str] = mapped_column(String(500))
     secret: Mapped[str] = mapped_column(String(64))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+
+
+class WabaWebhookLog(Base):
+    """One row per inbound call from Meta to /v1/webhooks/waba -- both the one-time GET verify
+    handshake and every POST event delivery. Platform-admin-only visibility (mirrors ApiLog's
+    "API Log & Report" for the SMS send API), built specifically so a connection/App-Review
+    problem ("is Meta even calling us? did verification succeed? did we match a connection?") is
+    answerable from the admin panel instead of grepping container logs. entity_id is nullable --
+    unset whenever the phone_number_id in the payload doesn't match any connected WabaConnection,
+    which is itself one of the failure modes this log exists to surface."""
+    __tablename__ = "waba_webhook_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    direction: Mapped[str] = mapped_column(String(10))  # "verify" | "event"
+    status: Mapped[str] = mapped_column(String(20))  # "ok" | "rejected" | "error"
+    detail: Mapped[str] = mapped_column(String(300))
+    phone_number_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    entity_id: Mapped[str | None] = mapped_column(ForeignKey("entities.id"), nullable=True, index=True)
+    ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

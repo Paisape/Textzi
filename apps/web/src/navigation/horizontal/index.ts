@@ -246,6 +246,11 @@ export const adminNav = [
     icon: { icon: 'tabler-api' },
   },
   {
+    title: 'WhatsApp Webhook Log',
+    to: { name: 'admin-waba-webhook-log' },
+    icon: { icon: 'tabler-brand-whatsapp' },
+  },
+  {
     title: 'Contact Us Submissions',
     to: { name: 'admin-contact-messages' },
     icon: { icon: 'tabler-mail-question' },

@@ -19,9 +19,9 @@ from sqlalchemy.orm import Session
 
 from . import waba_media
 from .database import get_db
-from .models import BusinessHours, Contact, Conversation, ConversationMessage, CsatResponse, SlaPolicy, WabaConnection, WabaWebhookSubscription
+from .models import BusinessHours, Contact, Conversation, ConversationMessage, CsatResponse, SlaPolicy, WabaConnection, WabaWebhookLog, WabaWebhookSubscription
 from .security import decrypt_secret, sign_webhook_payload
-from .services import get_platform_waba_settings, get_platform_waba_webhook_verify_token
+from .services import client_ip, get_platform_waba_settings, get_platform_waba_webhook_verify_token
 from .waba_automation import apply_rules
 from .waba_meta import MetaApiError, download_media_bytes, fetch_media_url
 from .waba_realtime import message_payload, publish_event
@@ -31,8 +31,20 @@ logger = logging.getLogger("textzi.waba")
 router = APIRouter(prefix="/v1/webhooks", tags=["webhooks"])
 
 
+def _log_webhook(db: Session, direction: str, status: str, detail: str, phone_number_id: str | None = None, entity_id: str | None = None, ip_address: str | None = None) -> None:
+    """Best-effort -- a logging failure must never break webhook processing itself, so this
+    swallows its own exceptions rather than letting a DB hiccup turn into a 500 back to Meta."""
+    try:
+        db.add(WabaWebhookLog(direction=direction, status=status, detail=detail[:300], phone_number_id=phone_number_id, entity_id=entity_id, ip_address=ip_address))
+        db.commit()
+    except Exception:
+        db.rollback()
+        logger.warning("waba webhook: failed to write WabaWebhookLog row", exc_info=True)
+
+
 @router.get("/waba")
 def verify_waba_webhook(
+    request: Request,
     hub_mode: str = Query(alias="hub.mode"),
     hub_verify_token: str = Query(alias="hub.verify_token"),
     hub_challenge: str = Query(alias="hub.challenge"),
@@ -42,7 +54,9 @@ def verify_waba_webhook(
     must echo hub.challenge back as plain text on a match, per Meta's own docs."""
     expected = get_platform_waba_webhook_verify_token(db)
     if hub_mode != "subscribe" or not expected or not hmac.compare_digest(hub_verify_token, expected):
+        _log_webhook(db, "verify", "rejected", "hub.mode/hub.verify_token mismatch" if expected else "no verify token configured on this platform", ip_address=client_ip(request))
         raise HTTPException(status_code=403, detail="Verification token mismatch")
+    _log_webhook(db, "verify", "ok", "handshake succeeded", ip_address=client_ip(request))
     return PlainTextResponse(hub_challenge)
 
 
@@ -54,32 +68,43 @@ async def receive_waba_webhook(request: Request, db: Session = Depends(get_db), 
     or unrecognized entry is logged and skipped rather than raised, since a non-2xx response
     makes Meta retry (and, if it keeps happening, can get the webhook disabled entirely)."""
     raw_body = await request.body()
+    ip = client_ip(request)
     _, _, app_secret = get_platform_waba_settings(db)
     if not app_secret:
+        _log_webhook(db, "event", "rejected", "WhatsApp not configured on this platform (no App Secret saved)", ip_address=ip)
         raise HTTPException(status_code=403, detail="WhatsApp is not configured on this platform")
     if not x_hub_signature_256 or not x_hub_signature_256.startswith("sha256="):
+        _log_webhook(db, "event", "rejected", "missing X-Hub-Signature-256 header", ip_address=ip)
         raise HTTPException(status_code=403, detail="Missing signature")
     expected_signature = hmac.new(app_secret.encode(), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(x_hub_signature_256.removeprefix("sha256="), expected_signature):
+        _log_webhook(db, "event", "rejected", "signature did not match (wrong App Secret, or payload tampered)", ip_address=ip)
         raise HTTPException(status_code=403, detail="Invalid signature")
 
     try:
         payload = json.loads(raw_body)
     except ValueError:
+        _log_webhook(db, "event", "error", "invalid JSON body", ip_address=ip)
         return {"status": "ignored", "reason": "invalid_json"}
 
     new_messages: list[tuple[str, ConversationMessage]] = []
     status_updates: list[tuple[str, ConversationMessage]] = []
+    last_phone_number_id: str | None = None
+    last_entity_id: str | None = None
+    unmatched_phone_number_id: str | None = None
     for entry in payload.get("entry", []):
         for change in entry.get("changes", []):
             value = change.get("value", {})
             phone_number_id = value.get("metadata", {}).get("phone_number_id")
             if not phone_number_id:
                 continue
+            last_phone_number_id = phone_number_id
             connection = db.scalar(select(WabaConnection).where(WabaConnection.phone_number_id == phone_number_id, WabaConnection.status == "connected"))
             if not connection:
                 logger.warning("waba webhook: no connected WabaConnection for phone_number_id=%s", phone_number_id)
+                unmatched_phone_number_id = phone_number_id
                 continue
+            last_entity_id = connection.entity_id
             field = change.get("field")
             if field == "message_template_status_update":
                 logger.info("waba webhook: template status update for entity_id=%s: %s", connection.entity_id, value)
@@ -88,6 +113,14 @@ async def receive_waba_webhook(request: Request, db: Session = Depends(get_db), 
             status_updates += _handle_statuses(db, connection.entity_id, value)
             _log_errors(connection.entity_id, value)
     db.commit()
+
+    if unmatched_phone_number_id and not last_entity_id:
+        _log_webhook(db, "event", "error", f"no connected WabaConnection for phone_number_id={unmatched_phone_number_id}", phone_number_id=unmatched_phone_number_id, ip_address=ip)
+    else:
+        _log_webhook(
+            db, "event", "ok", f"processed {len(new_messages)} message(s), {len(status_updates)} status update(s)",
+            phone_number_id=last_phone_number_id, entity_id=last_entity_id, ip_address=ip,
+        )
 
     for entity_id, message in new_messages:
         db.refresh(message)
