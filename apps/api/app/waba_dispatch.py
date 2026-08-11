@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import waba_media
-from .models import Contact, Conversation, ConversationMessage, WabaConnection
+from .models import Contact, Conversation, ConversationMessage, WabaApiCallLog, WabaConnection
 from .security import decrypt_secret
 from .services import DomainError, channel_active, check_message_quota, increment_message_usage
 from .waba_meta import (
@@ -17,6 +17,15 @@ from .waba_meta import (
     send_text_message, upload_media,
 )
 from .waba_realtime import message_payload, publish_event
+
+
+def _log_api_call(db: Session, entity_id: str, action: str, status: str, detail: str, to_wa_id: str | None = None) -> None:
+    """Best-effort -- a logging failure must never break an otherwise-successful send."""
+    try:
+        db.add(WabaApiCallLog(entity_id=entity_id, action=action, status=status, detail=detail[:300], to_wa_id=to_wa_id))
+        db.commit()
+    except Exception:
+        db.rollback()
 
 
 def _resolve_send_target(db: Session, entity_id: str, to_wa_id: str) -> tuple[WabaConnection, Conversation]:
@@ -72,7 +81,12 @@ def send_whatsapp_text(db: Session, entity_id: str, to_wa_id: str, body: str, se
     MetaApiError, which callers already propagate as a clean 422)."""
     connection, conversation = _resolve_send_target(db, entity_id, to_wa_id)
     access_token = decrypt_secret(connection.access_token_encrypted)
-    wamid = send_text_message(connection.phone_number_id, access_token, to_wa_id, body)
+    try:
+        wamid = send_text_message(connection.phone_number_id, access_token, to_wa_id, body)
+    except MetaApiError as exc:
+        _log_api_call(db, entity_id, "send_text", "error", str(exc), to_wa_id)
+        raise
+    _log_api_call(db, entity_id, "send_text", "ok", "sent", to_wa_id)
     return _persist_outbound(db, entity_id, conversation, "text", body, None, wamid, sent_by_user_id)
 
 
@@ -82,8 +96,13 @@ def send_whatsapp_media(db: Session, entity_id: str, to_wa_id: str, content: byt
     Textzi's own storage/serving endpoint, never at Meta directly."""
     connection, conversation = _resolve_send_target(db, entity_id, to_wa_id)
     access_token = decrypt_secret(connection.access_token_encrypted)
-    meta_media_id = upload_media(connection.phone_number_id, access_token, content, filename, mime_type)
-    wamid = send_media_message(connection.phone_number_id, access_token, to_wa_id, media_type, meta_media_id, caption)
+    try:
+        meta_media_id = upload_media(connection.phone_number_id, access_token, content, filename, mime_type)
+        wamid = send_media_message(connection.phone_number_id, access_token, to_wa_id, media_type, meta_media_id, caption)
+    except MetaApiError as exc:
+        _log_api_call(db, entity_id, "send_media", "error", str(exc), to_wa_id)
+        raise
+    _log_api_call(db, entity_id, "send_media", "ok", "sent", to_wa_id)
     stored_path = waba_media.save_media(entity_id, content, mime_type, media_type)
     return _persist_outbound(db, entity_id, conversation, media_type, caption, stored_path, wamid, sent_by_user_id)
 
@@ -95,7 +114,12 @@ def send_whatsapp_template(db: Session, entity_id: str, to_wa_id: str, template_
     itself doesn't echo back the rendered template text in its response."""
     connection, conversation = _resolve_send_target(db, entity_id, to_wa_id)
     access_token = decrypt_secret(connection.access_token_encrypted)
-    wamid = send_template_message(connection.phone_number_id, access_token, to_wa_id, template_name, language_code, body_params)
+    try:
+        wamid = send_template_message(connection.phone_number_id, access_token, to_wa_id, template_name, language_code, body_params)
+    except MetaApiError as exc:
+        _log_api_call(db, entity_id, "send_template", "error", str(exc), to_wa_id)
+        raise
+    _log_api_call(db, entity_id, "send_template", "ok", f"sent template={template_name}", to_wa_id)
     return _persist_outbound(db, entity_id, conversation, "text", preview_body, None, wamid, sent_by_user_id)
 
 

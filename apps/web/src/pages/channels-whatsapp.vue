@@ -48,6 +48,23 @@ const connectError = ref('')
 const disconnecting = ref(false)
 const refreshingStatus = ref(false)
 const refreshStatusError = ref('')
+const registeringPhone = ref(false)
+const registerPhoneResult = ref<{ ok: boolean, detail: string } | null>(null)
+
+async function onRegisterPhone() {
+  registerPhoneResult.value = null
+  registeringPhone.value = true
+  try {
+    await $api('/v1/waba/register-phone', { method: 'POST' })
+    registerPhoneResult.value = { ok: true, detail: 'Registered successfully -- this number can now send messages.' }
+  }
+  catch (error: any) {
+    registerPhoneResult.value = { ok: false, detail: extractErrorMessage(error, 'Could not register this phone number.') }
+  }
+  finally {
+    registeringPhone.value = false
+  }
+}
 
 const qualityColor = computed(() => {
   const r = status.value?.quality_rating
@@ -575,9 +592,17 @@ watch(activeTab, tab => {
                 </tr>
               </tbody>
             </VTable>
-            <VBtn color="error" variant="tonal" :loading="disconnecting" @click="onDisconnect">
-              Disconnect
-            </VBtn>
+            <VAlert v-if="registerPhoneResult" :type="registerPhoneResult.ok ? 'success' : 'error'" variant="tonal" density="compact" class="mb-3">
+              {{ registerPhoneResult.detail }}
+            </VAlert>
+            <div class="d-flex ga-3">
+              <VBtn variant="tonal" :loading="registeringPhone" @click="onRegisterPhone">
+                Register phone number
+              </VBtn>
+              <VBtn color="error" variant="tonal" :loading="disconnecting" @click="onDisconnect">
+                Disconnect
+              </VBtn>
+            </div>
           </template>
 
           <template v-else>

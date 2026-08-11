@@ -22,10 +22,10 @@ from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
-    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaWebhookLogOut,
+    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaApiCallLogOut, AdminWabaWebhookLogOut,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
@@ -2089,6 +2089,35 @@ def list_admin_waba_webhook_log(status: str | None = None, direction: str | None
             entity_id=l.entity_id, entity_name=entity.name if entity else None,
             organization_name=org_names.get(entity.organization_id) if entity else None,
             ip_address=l.ip_address, created_at=l.created_at.isoformat(),
+        ))
+    return result
+
+
+@router.get("/waba-api-call-log", response_model=list[AdminWabaApiCallLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_admin_waba_api_call_log(status: str | None = None, action: str | None = None, limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
+    """The outbound counterpart to /waba-webhook-log -- every call Textzi made TO Meta (sends,
+    phone-number registration), across every customer, including the real Meta error text on
+    failure (e.g. 133010 "Account not registered")."""
+    limit = max(1, min(limit, MESSAGE_LOG_LIMIT))
+    offset = max(0, offset)
+    query = select(WabaApiCallLog).order_by(WabaApiCallLog.created_at.desc()).limit(limit).offset(offset)
+    if status:
+        query = query.where(WabaApiCallLog.status == status)
+    if action:
+        query = query.where(WabaApiCallLog.action == action)
+    logs = db.scalars(query).all()
+    entity_ids = {l.entity_id for l in logs if l.entity_id}
+    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()} if entity_ids else {}
+    org_ids = {e.organization_id for e in entities.values()}
+    org_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
+    result = []
+    for l in logs:
+        entity = entities.get(l.entity_id) if l.entity_id else None
+        result.append(AdminWabaApiCallLogOut(
+            id=l.id, action=l.action, status=l.status, detail=l.detail, to_wa_id=l.to_wa_id,
+            entity_id=l.entity_id, entity_name=entity.name if entity else None,
+            organization_name=org_names.get(entity.organization_id) if entity else None,
+            created_at=l.created_at.isoformat(),
         ))
     return result
 

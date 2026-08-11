@@ -1100,6 +1100,18 @@ class AdminWabaWebhookLogOut(BaseModel):
     created_at: str
 
 
+class AdminWabaApiCallLogOut(BaseModel):
+    id: str
+    action: str
+    status: str
+    detail: str
+    to_wa_id: str | None
+    entity_id: str | None
+    entity_name: str | None
+    organization_name: str | None
+    created_at: str
+
+
 class WalletCreditRequest(BaseModel):
     entity_id: str
     amount: float = Field(gt=0, le=1_000_000)

@@ -1736,3 +1736,19 @@ class WabaWebhookLog(Base):
     entity_id: Mapped[str | None] = mapped_column(ForeignKey("entities.id"), nullable=True, index=True)
     ip_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class WabaApiCallLog(Base):
+    """The outbound counterpart to WabaWebhookLog -- one row per call Textzi makes TO Meta's
+    Graph API (sending a message, registering a phone number), not the inbound webhook direction.
+    Exists because a send failure (e.g. Meta error 133010 "Account not registered") previously
+    only surfaced as a one-off error banner in whichever dialog triggered it, with no durable
+    record an admin could go back and check."""
+    __tablename__ = "waba_api_call_logs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str | None] = mapped_column(ForeignKey("entities.id"), nullable=True, index=True)
+    action: Mapped[str] = mapped_column(String(30))  # "send_text" | "send_media" | "send_template" | "register"
+    status: Mapped[str] = mapped_column(String(10))  # "ok" | "error"
+    detail: Mapped[str] = mapped_column(String(300))
+    to_wa_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)

@@ -17,6 +17,7 @@ from .schemas import (
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp
 from .services import DomainError, get_platform_waba_settings, log_activity, resolve_user_entity
+from .waba_dispatch import _log_api_call
 from .waba_meta import (
     MetaApiError, exchange_code_for_token, fetch_business_profile, fetch_phone_number_details, fetch_phone_number_status,
     register_phone_number, subscribe_app_to_waba, update_business_profile,
@@ -86,15 +87,17 @@ def connect_waba(payload: WabaConnectRequest, request: Request, user: User = Dep
     else:
         pin = generate_otp()
 
-    # Best-effort: not yet confirmed live whether this is required after embedded signup or
-    # already handled by it (see waba_meta.py's own docstring) -- a failure here doesn't roll
-    # back the connection, since the webhook subscription above is the part that actually matters
-    # for Textzi to function. The PIN is persisted below regardless of outcome, so a later retry
-    # (this same code path) reuses it rather than generating a new one every time.
+    # Best-effort: confirmed live this session that this genuinely is required (Meta error 133010
+    # "Account not registered" on the first send otherwise) -- still doesn't roll back the
+    # connection on failure, since the webhook subscription above is the part that matters most
+    # for Textzi to function, and POST /register-phone below lets the customer retry this specific
+    # step on its own once whatever caused it to fail is fixed. The PIN is persisted below
+    # regardless of outcome, so a later retry (this same code path, or /register-phone) reuses it.
     try:
         register_phone_number(payload.phone_number_id, access_token, pin)
-    except MetaApiError:
-        pass
+        _log_api_call(db, entity.id, "register", "ok", "registered", payload.phone_number_id)
+    except MetaApiError as exc:
+        _log_api_call(db, entity.id, "register", "error", str(exc), payload.phone_number_id)
 
     phone_number, verified_name = None, None
     try:
@@ -151,8 +154,9 @@ def connect_waba_direct(payload: WabaDirectConnectRequest, request: Request, use
         pin = generate_otp()
     try:
         register_phone_number(payload.phone_number_id, payload.access_token, pin)
-    except MetaApiError:
-        pass
+        _log_api_call(db, entity.id, "register", "ok", "registered", payload.phone_number_id)
+    except MetaApiError as exc:
+        _log_api_call(db, entity.id, "register", "error", str(exc), payload.phone_number_id)
 
     phone_number, verified_name = None, None
     try:
@@ -208,6 +212,31 @@ def _connected_waba(db: Session, entity_id: str) -> WabaConnection:
     if not connection or connection.status != "connected":
         raise HTTPException(status_code=422, detail="Connect a WhatsApp number first")
     return connection
+
+
+@router.post("/register-phone")
+def register_connected_phone(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Manual retry for phone-number registration -- connect_waba/connect_waba_direct already
+    attempt this automatically (best-effort, so a failure there doesn't undo an otherwise-working
+    connection), but that failure was previously silent. This surfaces the real Meta error (e.g.
+    133010 "Account not registered") back to the customer so they can act on it directly instead
+    of only finding out the first time an actual message send fails."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    connection = _connected_waba(db, entity.id)
+    access_token = decrypt_secret(connection.access_token_encrypted)
+    pin = decrypt_secret(connection.registration_pin_encrypted) if connection.registration_pin_encrypted else generate_otp()
+    try:
+        register_phone_number(connection.phone_number_id, access_token, pin)
+    except MetaApiError as exc:
+        _log_api_call(db, entity.id, "register", "error", str(exc), connection.phone_number_id)
+        raise HTTPException(status_code=422, detail=f"Meta rejected the registration: {exc}") from exc
+    _log_api_call(db, entity.id, "register", "ok", "registered", connection.phone_number_id)
+    connection.registration_pin_encrypted = encrypt_secret(pin)
+    db.commit()
+    return {"registered": True}
 
 
 @router.post("/refresh-status", response_model=WabaStatusRefreshOut)
