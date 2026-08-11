@@ -26,7 +26,7 @@ from .schemas import (
     ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut, ConversationOut, ConversationUpdateRequest,
     CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, InteractiveButtonRequest, InteractiveListRequest, LabelCreateRequest, LabelOut, LeadOut,
     LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest, SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest,
-    TemplateButtonOut, TemplateCreateRequest, TemplateMessageRequest, TicketSummary, WabaTemplateOut, WabaWebhookSubscriptionOut,
+    StartConversationRequest, TemplateButtonOut, TemplateCreateRequest, TemplateMessageRequest, TicketSummary, WabaTemplateOut, WabaWebhookSubscriptionOut,
     WabaWebhookSubscriptionUpdateRequest,
 )
 from . import waba_media
@@ -534,6 +534,34 @@ def send_conversation_template(conversation_id: str, payload: TemplateMessageReq
     except MetaApiError as exc:
         raise HTTPException(status_code=422, detail=f"Could not send this template: {exc}") from exc
     return _message_out(message)
+
+
+@router.post("/conversations/start", response_model=ConversationOut)
+def start_conversation(payload: StartConversationRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Kicks off a brand-new conversation to a number that's never messaged in -- the inbox's
+    "Reply" box only ever works inside an existing conversation, since there's nowhere to type a
+    destination number; this is the counterpart for starting one. send_whatsapp_template's own
+    _resolve_send_target already finds-or-creates the Contact/Conversation for a wa_id it's never
+    seen, so this just normalizes the number, optionally names the contact, and sends."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    wa_id = "".join(ch for ch in payload.wa_id if ch.isdigit())
+    if not wa_id:
+        raise HTTPException(status_code=422, detail="Enter a valid WhatsApp number")
+    try:
+        message = send_whatsapp_template(db, entity.id, wa_id, payload.template_name, payload.language_code, payload.body_params, payload.preview_body, sent_by_user_id=user.id)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not send this template: {exc}") from exc
+    conversation = db.get(Conversation, message.conversation_id)
+    contact = db.get(Contact, conversation.contact_id)
+    if payload.name and not contact.name:
+        contact.name = payload.name
+        db.commit()
+    return _conversation_out(db, conversation, contact, message)
 
 
 def _validate_template_buttons(buttons: list) -> None:

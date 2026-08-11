@@ -780,6 +780,80 @@ async function sendTemplate() {
   }
 }
 
+// --- New conversation (first-touch send to a number that's never messaged in) --------------
+
+const newConversationDialog = ref(false)
+const newConversationForm = ref({ wa_id: '', name: '' })
+const newConversationError = ref('')
+const newConversationSending = ref(false)
+const newConvSelectedTemplate = ref<WabaTemplate | null>(null)
+const newConvParamValues = ref<string[]>([])
+
+const newConvPreview = computed(() => {
+  if (!newConvSelectedTemplate.value?.body)
+    return ''
+  let text = newConvSelectedTemplate.value.body
+  newConvParamValues.value.forEach((value, i) => {
+    text = text.replace(`{{${i + 1}}}`, value || `{{${i + 1}}}`)
+  })
+  return text
+})
+
+async function openNewConversationDialog() {
+  newConversationDialog.value = true
+  newConversationError.value = ''
+  newConversationForm.value = { wa_id: '', name: '' }
+  newConvSelectedTemplate.value = null
+  newConvParamValues.value = []
+  if (templates.value.length)
+    return
+  templateLoading.value = true
+  try {
+    templates.value = await $api<WabaTemplate[]>('/v1/waba/templates')
+  }
+  catch (error: any) {
+    newConversationError.value = extractErrorMessage(error, 'Could not load templates from Meta.')
+  }
+  finally {
+    templateLoading.value = false
+  }
+}
+
+function selectNewConvTemplate(template: WabaTemplate) {
+  newConvSelectedTemplate.value = template
+  const matches = template.body?.match(/\{\{\d+\}\}/g) || []
+  newConvParamValues.value = matches.map(() => '')
+}
+
+async function sendNewConversation() {
+  if (!newConversationForm.value.wa_id.trim() || !newConvSelectedTemplate.value)
+    return
+  newConversationError.value = ''
+  newConversationSending.value = true
+  try {
+    const conversation = await $api<Conversation>('/v1/waba/conversations/start', {
+      method: 'POST',
+      body: {
+        wa_id: newConversationForm.value.wa_id.trim(),
+        name: newConversationForm.value.name.trim() || null,
+        template_name: newConvSelectedTemplate.value.name,
+        language_code: newConvSelectedTemplate.value.language,
+        body_params: newConvParamValues.value,
+        preview_body: newConvPreview.value,
+      },
+    })
+    newConversationDialog.value = false
+    await loadConversations()
+    await selectConversation(conversation.id)
+  }
+  catch (error: any) {
+    newConversationError.value = extractErrorMessage(error, 'Could not start this conversation.')
+  }
+  finally {
+    newConversationSending.value = false
+  }
+}
+
 // --- Location, contact card, interactive buttons/list, reactions ---------------------------
 
 const locationDialog = ref(false)
@@ -1088,9 +1162,14 @@ watch(ticketsView, () => {
 </script>
 
 <template>
-  <h1 class="text-h4 mb-4">
-    {{ ticketsView ? 'Tickets' : 'Inbox' }}
-  </h1>
+  <div class="d-flex align-center justify-space-between mb-4">
+    <h1 class="text-h4 mb-0">
+      {{ ticketsView ? 'Tickets' : 'Inbox' }}
+    </h1>
+    <VBtn v-if="!ticketsView" size="small" prepend-icon="tabler-plus" @click="openNewConversationDialog">
+      New Conversation
+    </VBtn>
+  </div>
 
   <VRow ref="panelRow" :style="{ minHeight: `${panelHeight}px` }">
     <VCol cols="12" md="4" lg="3" class="d-flex flex-column" :style="{ maxHeight: `${panelHeight}px` }">
@@ -1736,6 +1815,71 @@ watch(ticketsView, () => {
           </p>
           <VBtn :loading="templateSending" @click="sendTemplate">
             Send template
+          </VBtn>
+        </template>
+      </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="newConversationDialog" max-width="560">
+    <VCard>
+      <VCardTitle>New conversation</VCardTitle>
+      <VCardText>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          Starting a conversation with someone who's never messaged in requires an approved
+          template -- WhatsApp doesn't allow a free-form first message.
+        </p>
+        <VAlert v-if="newConversationError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ newConversationError }}
+        </VAlert>
+        <VTextField v-model="newConversationForm.wa_id" label="WhatsApp number" placeholder="91XXXXXXXXXX" density="compact" variant="outlined" class="mb-2" />
+        <VTextField v-model="newConversationForm.name" label="Contact name (optional)" density="compact" variant="outlined" class="mb-4" />
+
+        <VProgressLinear v-if="templateLoading" indeterminate class="mb-3" />
+
+        <template v-if="!newConvSelectedTemplate">
+          <p v-if="!templateLoading && !templates.length" class="text-medium-emphasis">
+            No templates found on this WhatsApp account.
+          </p>
+          <VList density="compact">
+            <VListItem
+              v-for="template in templates"
+              :key="template.name + template.language"
+              :disabled="template.status !== 'APPROVED'"
+              @click="selectNewConvTemplate(template)"
+            >
+              <VListItemTitle>
+                {{ template.name }}
+                <VChip size="x-small" :color="template.status === 'APPROVED' ? 'success' : 'warning'" class="ml-2">
+                  {{ template.status }}
+                </VChip>
+              </VListItemTitle>
+              <VListItemSubtitle>{{ template.body }}</VListItemSubtitle>
+            </VListItem>
+          </VList>
+        </template>
+
+        <template v-else>
+          <VBtn size="small" variant="text" prepend-icon="tabler-arrow-left" class="mb-3" @click="newConvSelectedTemplate = null">
+            Back
+          </VBtn>
+          <VTextField
+            v-for="(_, i) in newConvParamValues"
+            :key="i"
+            v-model="newConvParamValues[i]"
+            :label="`Variable {{${i + 1}}}`"
+            density="compact"
+            variant="outlined"
+            class="mb-2"
+          />
+          <p class="text-caption text-medium-emphasis mb-1">
+            Preview
+          </p>
+          <p class="mb-4" style="white-space: pre-wrap;">
+            {{ newConvPreview }}
+          </p>
+          <VBtn :loading="newConversationSending" :disabled="!newConversationForm.wa_id.trim()" @click="sendNewConversation">
+            Start conversation
           </VBtn>
         </template>
       </VCardText>

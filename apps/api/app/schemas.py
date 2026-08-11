@@ -1423,6 +1423,18 @@ class TemplateMessageRequest(BaseModel):
     preview_body: str = Field(min_length=1, max_length=4096)
 
 
+class StartConversationRequest(BaseModel):
+    """Kicks off a first-touch conversation to a number that's never messaged in -- WhatsApp only
+    allows this via an approved template (never free-form text), same restriction as re-engaging
+    a conversation whose 24-hour window has closed."""
+    wa_id: str = Field(min_length=1, max_length=30)
+    name: str | None = Field(default=None, max_length=160)
+    template_name: str = Field(min_length=1, max_length=512)
+    language_code: str = Field(min_length=1, max_length=20)
+    body_params: list[str] = []
+    preview_body: str = Field(min_length=1, max_length=4096)
+
+
 class TemplateButtonRequest(BaseModel):
     type: str = Field(pattern="^(QUICK_REPLY|URL|PHONE_NUMBER)$")
     text: str = Field(min_length=1, max_length=25)
