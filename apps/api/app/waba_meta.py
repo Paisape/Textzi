@@ -62,7 +62,22 @@ def _parse(response: requests.Response) -> dict:
         raise MetaApiError(f"Meta API returned a non-JSON response (HTTP {response.status_code})")
     if response.status_code >= 400:
         error = body.get("error", {}) if isinstance(body, dict) else {}
-        raise MetaApiError(error.get("message") or f"Meta API error (HTTP {response.status_code})", response_body=body)
+        # error.message alone is often just the generic error-code name (e.g. "Invalid
+        # parameter") -- error_user_msg/error_user_title and error_data.details carry Meta's
+        # actual human-readable explanation of WHICH parameter and why, when present. Building
+        # the fullest message available here means every caller's error surfaces it, not just the
+        # ones that happen to also log response_body.
+        parts = [error.get("message") or f"Meta API error (HTTP {response.status_code})"]
+        if error.get("error_user_title"):
+            parts.append(error["error_user_title"])
+        if error.get("error_user_msg"):
+            parts.append(error["error_user_msg"])
+        details = (error.get("error_data") or {}).get("details")
+        if details:
+            parts.append(details)
+        if error.get("error_subcode"):
+            parts.append(f"(subcode {error['error_subcode']})")
+        raise MetaApiError(" -- ".join(dict.fromkeys(parts)), response_body=body)
     return body
 
 
