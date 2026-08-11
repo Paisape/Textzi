@@ -2,13 +2,14 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from decimal import Decimal
 from fastapi import HTTPException, Request, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -48,21 +49,25 @@ GST_RATE = 0.18
 # (invoicing.py -> zoho_books.py already exists the other way).
 SAC_CODE_SMS_SERVICE = "998413"
 SAC_CODE_PLATFORM_FEE = "998314"
+SAC_CODE_CRM_QUOTE = "998399"
 INVOICE_TYPE_ITEM_GROUP = {
     "wallet_recharge": "sms_service",
     "admin_credit": "sms_service",
     "dlt_fee": "platform_fee_dlt",
     "channel_subscription": "platform_fee_whatsapp",
+    "crm_quote": "crm_quote",
 }
 ITEM_GROUP_SAC_CODES = {
     "sms_service": SAC_CODE_SMS_SERVICE,
     "platform_fee_dlt": SAC_CODE_PLATFORM_FEE,
     "platform_fee_whatsapp": SAC_CODE_PLATFORM_FEE,
+    "crm_quote": SAC_CODE_CRM_QUOTE,
 }
 ITEM_GROUP_LABELS = {
     "sms_service": "SMS Service",
     "platform_fee_dlt": "Platform fee (DLT Registration Service)",
     "platform_fee_whatsapp": "Platform fee (WhatsApp Business Platform Fee)",
+    "crm_quote": "CRM Quote",
 }
 
 
@@ -143,6 +148,39 @@ def get_platform_turnstile_settings(db: Session) -> tuple[str, str | None]:
     else:
         secret = None
     return site_key, secret
+
+
+def get_platform_waba_settings(db: Session) -> tuple[str | None, str | None, str | None]:
+    """Resolves the admin-UI-editable PlatformWabaSettings row -- unlike Turnstile there's no
+    .env fallback (no sensible placeholder Meta App ID exists), this is purely DB-configured.
+    Returns (app_id, config_id, app_secret); all three are None until an admin has actually
+    filled in Platform Settings > WhatsApp Setting."""
+    row = db.get(PlatformWabaSettings, "platform")
+    if not row:
+        return None, None, None
+    secret = decrypt_secret(row.app_secret_encrypted) if row.app_secret_encrypted else None
+    return row.app_id, row.config_id, secret
+
+
+def get_platform_waba_webhook_verify_token(db: Session) -> str | None:
+    """The value stored to compare against Meta's hub.verify_token GET handshake -- kept
+    separate from get_platform_waba_settings's return tuple so the many existing call sites
+    (connect flow, admin settings/test-connection) don't all need a 4th unused element."""
+    row = db.get(PlatformWabaSettings, "platform")
+    if not row or not row.webhook_verify_token_encrypted:
+        return None
+    return decrypt_secret(row.webhook_verify_token_encrypted)
+
+
+def waba_webhook_url(db: Session) -> str | None:
+    """The single, app-level callback URL every customer's WABA events arrive on -- registered
+    once with Meta (App Dashboard > WhatsApp > Configuration), not per customer; the incoming
+    payload's own phone_number_id is what tells waba_webhooks.py which customer a given event
+    belongs to."""
+    base_url = get_platform_company_info(db).public_api_base_url
+    if not base_url:
+        return None
+    return f"{base_url.rstrip('/')}/v1/webhooks/waba"
 
 
 def ttbs_webhook_url(db: Session, webhook_secret: str) -> str | None:
@@ -746,16 +784,48 @@ def resolve_channel_fees(db: Session, channel: str = "sms") -> ChannelFeeConfig:
     return fees
 
 
+def _channel_has_published_plans(db: Session, channel: str) -> bool:
+    return db.scalar(select(BillingPlan).where(BillingPlan.channel == channel, BillingPlan.active.is_(True)).limit(1)) is not None
+
+
+def _has_active_plan_subscription(db: Session, entity_id: str, channel: str) -> bool:
+    subscription = db.get(ChannelSubscription, (entity_id, channel))
+    return bool(subscription and subscription.plan_id and subscription.period_end and subscription.period_end > datetime.now(timezone.utc))
+
+
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
     """A channel is active once its (possibly-zero) subscription price is paid and the entity
-    has at least one DLT-approved PE ID. DLT approval is derived from PeId.status rather than a
-    separate flag, so it can never drift out of sync with the actual DLT assets."""
+    has completed that channel's own activation requirement. For SMS/DLT-based channels, DLT
+    approval is derived from PeId.status rather than a separate flag, so it can never drift out
+    of sync with the actual DLT assets. WABA has no DLT concept at all -- reusing the PE ID check
+    for it (the previous behavior) reported "WABA active" for any customer who merely had SMS DLT
+    active, which was never actually true; WABA's own readiness signal is a connected
+    WabaConnection instead.
+
+    WABA/CRM additionally require an active BillingPlan subscription (see
+    ChannelSubscription.plan_id/period_end and channel_billing.py) -- but only once that channel
+    actually has at least one published plan. Before any plan exists for a channel, it stays on
+    the older free/connection-only gate below, so introducing a plan catalog doesn't retroactively
+    lock out every entity that was already using the channel for free."""
     fees = db.get(ChannelFeeConfig, channel)
     subscription_price = float(fees.subscription_price) if fees else 0
     if subscription_price > 0:
         subscription = db.get(ChannelSubscription, (entity_id, channel))
         if not subscription or not subscription.paid_at:
             return False
+    if channel == "waba":
+        connection = db.get(WabaConnection, entity_id)
+        if not connection or connection.status != "connected":
+            return False
+        if _channel_has_published_plans(db, "waba"):
+            return _has_active_plan_subscription(db, entity_id, "waba")
+        return True
+    if channel == "crm":
+        if _channel_has_published_plans(db, "crm"):
+            return _has_active_plan_subscription(db, entity_id, "crm")
+        # No external connection step like WABA's Embedded Signup, and no plan published yet --
+        # the subscription-paid check above (or a zero price) is the whole readiness bar.
+        return True
     has_active_pe = db.scalar(select(PeId).where(PeId.entity_id == entity_id, PeId.status == Status.active).limit(1)) is not None
     return has_active_pe
 
@@ -763,6 +833,47 @@ def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
 def require_channel_active(db: Session, entity_id: str, channel: str = "sms") -> None:
     if not channel_active(db, entity_id, channel):
         raise DomainError(f"Activate the {channel.upper()} channel (complete DLT registration) before using this feature")
+
+
+def check_message_quota(db: Session, entity_id: str, channel: str) -> None:
+    """Hard-blocks a send once the entity's active plan's message_limit is reached -- a no-op if
+    the channel has no plan-based subscription (no plan published, or plan has no message_limit
+    set) since there's nothing to enforce. Call before sending; increment_message_usage after a
+    successful send."""
+    subscription = db.get(ChannelSubscription, (entity_id, channel))
+    if not subscription or not subscription.plan_id:
+        return
+    plan = db.get(BillingPlan, subscription.plan_id)
+    if not plan or not plan.message_limit:
+        return
+    if subscription.messages_used >= plan.message_limit:
+        raise DomainError(f"This account has used all {plan.message_limit} messages included in its {plan.name} plan this billing period. Upgrade your plan to send more.")
+
+
+def increment_message_usage(db: Session, entity_id: str, channel: str) -> None:
+    subscription = db.get(ChannelSubscription, (entity_id, channel))
+    if subscription and subscription.plan_id:
+        subscription.messages_used += 1
+
+
+def check_seat_quota(db: Session, organization_id: str) -> None:
+    """Hard-blocks inviting a new team member once the org's headcount would exceed the tightest
+    user_limit among its active plan-based channel subscriptions. Users aren't partitioned per
+    channel in this codebase (one invite grants access to everything the org has), so the binding
+    constraint is whichever active plan's seat limit is smallest."""
+    entity = db.scalar(select(Entity).where(Entity.organization_id == organization_id))
+    if not entity:
+        return
+    current_users = db.scalar(select(func.count()).select_from(User).where(User.organization_id == organization_id)) or 0
+    for channel in ("waba", "crm"):
+        subscription = db.get(ChannelSubscription, (entity.id, channel))
+        if not subscription or not subscription.plan_id:
+            continue
+        plan = db.get(BillingPlan, subscription.plan_id)
+        if not plan or not plan.user_limit:
+            continue
+        if current_users >= plan.user_limit:
+            raise DomainError(f"This account has reached the {plan.user_limit}-user limit on its {plan.name} plan. Upgrade your plan to add more team members.")
 
 
 def is_encryption_enabled(db: Session, entity_id: str, channel: str = "sms") -> bool:

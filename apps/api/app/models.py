@@ -77,6 +77,14 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(20), default=UserRole.enterprise_customer.value)
     failed_login_attempts: Mapped[int] = mapped_column(Integer, default=0)
     login_locked_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # WhatsApp inbox agent-capacity cap -- null means unlimited. Checked when assigning a
+    # conversation to this user (see waba_inbox.assign_conversation); not a hard cross-org
+    # constraint, just this one number an admin/teammate can set per agent.
+    max_open_conversations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # CRM team hierarchy -- who this person's manager is, within the same organization. Used for
+    # sales-target roll-ups and as a future approval-chain target; deliberately just one level
+    # (not a full org chart), matching the SME-appropriate scope decided for this CRM build.
+    manager_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -346,6 +354,62 @@ class WabaWallet(Base):
     credit_used: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
 
 
+class PlatformWabaSettings(Base):
+    """Singleton row. Textzi's own Meta Tech Provider app credentials for WhatsApp Embedded
+    Signup -- editable from the admin UI, not just `.env`, same convention as
+    PlatformTurnstileSettings/PlatformSmtpSettings/PlatformR2Settings above. app_id/config_id
+    aren't secrets (app_id ships to every customer's browser via the Facebook JS SDK regardless;
+    config_id is scoped to a specific embedded-signup configuration, not a credential) so they're
+    stored/returned plain; app_secret is write-only (encrypted at rest, never returned by GET) --
+    it's what lets anyone exchange a signup code for a real access token."""
+    __tablename__ = "platform_waba_settings"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
+    app_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    app_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    config_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The value Meta's own webhook GET handshake echoes back (hub.verify_token) -- chosen by us,
+    # pasted into Meta's App Dashboard webhook config, same "generate once, re-showable on
+    # demand" convention as TTBS's webhook_secret (provider_routes.py) since the worst case of a
+    # leak is low (it only lets someone complete the harmless GET handshake -- the real trust
+    # boundary for actual message events is the X-Hub-Signature-256/app-secret check).
+    webhook_verify_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class WabaConnection(Base):
+    """One row per entity that has connected a WhatsApp Business Account via Embedded Signup --
+    entity_id as the primary key mirrors TwoFactorAuth's user_id-as-PK convention (at most one
+    live connection per entity at a time; reconnecting overwrites it rather than accumulating
+    history rows, same reasoning as TwoFactorAuth re-enrollment). access_token is the long-lived
+    token Meta issues for this WABA, Fernet-encrypted like every other third-party credential in
+    this codebase (security.encrypt_secret) -- it's what actually lets Textzi send/receive on the
+    customer's behalf, so it's exactly as sensitive as the TTBS account password or a provider
+    route's auth token."""
+    __tablename__ = "waba_connections"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    waba_id: Mapped[str] = mapped_column(String(64))
+    phone_number_id: Mapped[str] = mapped_column(String(64))
+    business_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    phone_number: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    verified_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    # Meta's /register endpoint ties a phone number to a two-step-verification PIN on first
+    # registration; later /register calls for the SAME number are expected to supply the SAME
+    # PIN, not a fresh one -- persisted (Fernet-encrypted, like the access token) so a retry or a
+    # reconnect of the same number reuses it instead of registration silently failing every time
+    # after the first.
+    registration_pin_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="connected")
+    # Refreshed on-demand (not fetched on every page load -- these come from a real Meta call, no
+    # need to spend it that often) via POST .../refresh-status. GREEN/YELLOW/RED/UNKNOWN/NA per
+    # Meta's own quality_rating field; messaging_tier is the current 24h unique-conversation cap
+    # (TIER_250/TIER_2K/TIER_10K/TIER_100K/UNLIMITED, from the throughput field).
+    quality_rating: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    messaging_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    status_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WalletTransaction(Base):
     """Immutable ledger entry for every wallet-affecting event (recharge, message debit, manual
     adjustment, refund). `amount` is signed: positive credits the wallet, negative debits it.
@@ -464,11 +528,37 @@ class ChannelSubscription(Base):
     """Whether an entity has paid the (admin-set) one-time activation price for a channel.
     `paid_at` NULL means unpaid. When the channel's ChannelFeeConfig.subscription_price is 0,
     services.channel_active() treats this condition as automatically satisfied without
-    requiring a row here at all."""
+    requiring a row here at all. plan_id/period_start/period_end/messages_used are the newer,
+    tiered-plan path (WABA/CRM) -- set once an entity actually subscribes to a BillingPlan via
+    Razorpay (channel_billing.py); services.channel_active() only starts requiring an active plan
+    for a channel once that channel has at least one active BillingPlan published, so existing
+    free/unpriced access isn't retroactively revoked the moment plans are introduced."""
     __tablename__ = "channel_subscriptions"
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
     channel: Mapped[str] = mapped_column(String(10), primary_key=True)
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    plan_id: Mapped[str | None] = mapped_column(ForeignKey("billing_plans.id"), nullable=True)
+    period_start: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    messages_used: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BillingPlan(Base):
+    """Admin-managed catalog of subscription tiers for a channel (currently WABA and CRM) --
+    period is a property of the plan row itself (a "Growth" tier might have separate monthly/
+    quarterly/yearly rows at different prices) rather than a multiplier applied at purchase time,
+    since there's no guarantee the discount is a clean multiple. message_limit is WABA-only in
+    practice (CRM plans leave it null); user_limit applies to both."""
+    __tablename__ = "billing_plans"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    channel: Mapped[str] = mapped_column(String(10))
+    name: Mapped[str] = mapped_column(String(80))
+    period: Mapped[str] = mapped_column(String(10))  # "monthly" | "quarterly" | "yearly"
+    price: Mapped[float] = mapped_column(Numeric(12, 2))
+    message_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ChannelSettings(Base):
@@ -558,6 +648,37 @@ class DltOnboardingRequestDocument(Base):
     # mixed in anonymously with the general supporting-documents pile.
     document_type: Mapped[str] = mapped_column(String(50), default="supporting")
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProfileChangeRequest(Base):
+    """A customer's request to change their own or their organization's identity fields (name,
+    email, mobile, GST/company details) -- these aren't directly self-editable (unlike the
+    one-time initial company-profile submission in onboarding.py), so a change instead queues
+    here for admin review, same request/approval shape as DltOnboardingRequest above. Unlike that
+    one, approval here auto-applies the change (admin.py's review endpoint writes straight to the
+    User/Organization rows) rather than requiring the admin to separately go make the change
+    elsewhere -- there's no external, out-of-band process involved in renaming a user or updating
+    a GSTIN, so there's no reason to make the admin do it twice.
+
+    Every requested_* column is nullable -- only the fields the customer actually wants changed
+    are set, the rest stay null and are left untouched on approval."""
+    __tablename__ = "profile_change_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    requested_full_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    requested_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    requested_mobile: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    requested_company_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    requested_gstin: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    requested_pan: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    requested_address: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    requested_state_code: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    customer_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class RoutePolicy(Base):
@@ -1017,3 +1138,582 @@ class PageView(Base):
     viewport_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     viewport_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+# ---------------------------------------------------------------------------------------------
+# Native shared inbox (Phase A of the WABA/native-messaging plan) -- WhatsApp today, Email next.
+# Deliberately separate from every SMS/DLT table above: no FK from here into Message/Template/
+# PeId/Header, and nothing above ever references these. A bug in the inbox can't touch SMS.
+# ---------------------------------------------------------------------------------------------
+
+class Company(Base):
+    """A B2B account a Contact can belong to -- "multiple contacts per company" (e.g. a business's
+    owner, accountant, and store manager all messaging in separately) needs this rollup; without
+    it there's no way to see them as one account. Kept deliberately thin (name + a few identity
+    fields) rather than duplicating Organization's own GST/PAN fields -- a Company here is the
+    tenant's *customer's* business, not Textzi's own tenant."""
+    __tablename__ = "companies"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(160))
+    gstin: Mapped[str | None] = mapped_column(String(15), nullable=True)
+    industry: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    website: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Contact(Base):
+    """A person Textzi has exchanged messages with on behalf of an entity -- WhatsApp today
+    (identified by wa_id, Meta's own WhatsApp ID for the number), email accounts later
+    (identified by email address instead). custom_attributes is a JSON blob, not fixed columns --
+    confirmed this session that every competitor WABA platform researched (WATI/Interakt/
+    AiSensy/Gallabox) supports arbitrary custom fields per contact, not a rigid schema, so a
+    fixed-column design would mean a migration every time a customer wants to track one more
+    thing about their own contacts."""
+    __tablename__ = "contacts"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    company_id: Mapped[str | None] = mapped_column(ForeignKey("companies.id"), nullable=True)
+    wa_id: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    email: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    custom_attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+    # WhatsApp-specific opt-out -- a contact who's opted out must never receive another outbound
+    # message on this channel regardless of what any agent/automation/campaign tries to send.
+    # Deliberately its own column, not a custom_attributes entry, since enforcement code needs to
+    # read it on every single send without trusting a free-form JSON blob's shape.
+    opted_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Set when this contact is known to be the same real-world person/business as an existing
+    # CRM Customer -- either automatically (this contact was the one converted) or explicitly via
+    # "map to existing customer" (a second contact/number for a customer already converted from a
+    # different conversation). Many contacts can point at one Customer; a Customer's own
+    # contact_id is still the contact it was originally converted from.
+    customer_id: Mapped[str | None] = mapped_column(ForeignKey("customers.id"), nullable=True)
+    # DPDP Act (India's data protection law) -- consent_given_at null means no explicit consent on
+    # record (a WhatsApp contact who's simply messaged in has implicit consent for that
+    # conversation under DPDP's "legitimate use" ground; this is for an explicit opt-in, e.g. to a
+    # marketing segment/campaign). consent_source is free text (e.g. "whatsapp_optin_form",
+    # "manual_entry") for the audit trail DPDP expects.
+    consent_given_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    consent_source: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # One Contact row per (entity, WhatsApp number) -- prevents the same inbound number from
+        # ever silently fragmenting into two separate contact records for one entity.
+        UniqueConstraint("entity_id", "wa_id", name="uq_contacts_entity_wa_id"),
+    )
+
+
+class Conversation(Base):
+    """One open/pending/resolved thread with a Contact on a specific channel. status is the
+    near-universal three-state pattern across every shared-inbox tool researched this session
+    (Chatwoot, and the category generally) -- not WhatsApp/Meta's own concept, purely Textzi's
+    own inbox-management state."""
+    __tablename__ = "conversations"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(20), default="whatsapp")
+    status: Mapped[str] = mapped_column(String(20), default="open")
+    assigned_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set whenever an agent opens this conversation -- distinct from any individual message's own
+    # delivery `status`, since "has an agent seen this" is a conversation-level fact, not
+    # per-message. Drives both the unread indicator and whether a read receipt gets sent to Meta.
+    last_read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Not every conversation needs formal tracking -- a lot of WhatsApp traffic is a quick
+    # back-and-forth that doesn't warrant it. is_ticket is an explicit, agent-driven upgrade
+    # ("Convert to ticket"): general chats stay plain (this flag off, no ticket_number), tickets
+    # get a human-readable sequential number (waba_inbox.convert_conversation_to_ticket, same
+    # nextval()-backed sequence pattern as invoicing.py's invoice numbers) and show up in the
+    # dedicated Tickets view in addition to the regular inbox.
+    is_ticket: Mapped[bool] = mapped_column(Boolean, default=False)
+    ticket_number: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
+    ticket_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set from SlaPolicy.first_response_minutes the moment a new inbound message opens this
+    # conversation with no reply yet; cleared (both to null) the moment an agent's first outbound
+    # reply lands. sla_breached is stamped true (and left true, as a historical record) if
+    # first_response_due_at passes with no reply -- computed opportunistically wherever a
+    # conversation is read, not by a background job.
+    first_response_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    sla_breached: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConversationMessage(Base):
+    """One message (real, customer/agent-facing) or private note (internal only) within a
+    Conversation. meta_message_id is Meta's own wamid -- indexed so an incoming status webhook
+    (sent/delivered/read/failed) can find the row it's updating; nullable because inbound
+    messages and internal notes don't have one from our side to correlate against (inbound
+    messages get their own wamid from Meta, stored the same way, just never used for a status
+    update since Meta doesn't send delivery receipts for messages it sent to us)."""
+    __tablename__ = "conversation_messages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    direction: Mapped[str] = mapped_column(String(10))  # "inbound" | "outbound"
+    is_private: Mapped[bool] = mapped_column(Boolean, default=False)
+    message_type: Mapped[str] = mapped_column(String(20), default="text")
+    body: Mapped[str | None] = mapped_column(Text, nullable=True)
+    media_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Structured content for message types that don't fit body/media_url -- shape depends on
+    # message_type: location -> {latitude, longitude, name, address}; contacts -> Meta's own
+    # contacts array as-is; interactive_button/interactive_list (outbound) -> the buttons/rows
+    # offered; button_reply/list_reply (inbound) -> {id, title} of what the customer picked;
+    # reaction -> {emoji, reacted_to_wamid}. One flexible JSON column rather than a handful of
+    # sparse nullable ones per type, same reasoning as Contact.custom_attributes.
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    meta_message_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    status: Mapped[str | None] = mapped_column(String(20), nullable=True)  # sent|delivered|read|failed, outbound only
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    sent_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
+class Label(Base):
+    """A tag definition, scoped to either conversations or contacts -- kept as two logically
+    distinct pools (scope="conversation" vs scope="contact") even though they share one table,
+    since every competitor platform researched this session treats "urgent" (a conversation-level
+    label) and "VIP customer" (a contact-level label) as different concepts, not one shared tag
+    list that happens to apply to two kinds of things."""
+    __tablename__ = "labels"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    scope: Mapped[str] = mapped_column(String(20))  # "conversation" | "contact"
+    name: Mapped[str] = mapped_column(String(60))
+    color: Mapped[str] = mapped_column(String(20), default="primary")
+
+    __table_args__ = (
+        UniqueConstraint("entity_id", "scope", "name", name="uq_labels_entity_scope_name"),
+    )
+
+
+class ConversationLabel(Base):
+    __tablename__ = "conversation_labels"
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), primary_key=True)
+    label_id: Mapped[str] = mapped_column(ForeignKey("labels.id"), primary_key=True)
+
+
+class ContactLabel(Base):
+    __tablename__ = "contact_labels"
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), primary_key=True)
+    label_id: Mapped[str] = mapped_column(ForeignKey("labels.id"), primary_key=True)
+
+
+class CannedResponse(Base):
+    """A saved `/shortcut` -> message-body pair. body may contain {{contact.name}}/
+    {{agent.name}} placeholders -- confirmed this session as the baseline variable set every
+    competitor platform supports; resolved at send time, not stored pre-filled."""
+    __tablename__ = "canned_responses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    shortcut: Mapped[str] = mapped_column(String(25))
+    body: Mapped[str] = mapped_column(String(500))
+
+    __table_args__ = (
+        UniqueConstraint("entity_id", "shortcut", name="uq_canned_responses_entity_shortcut"),
+    )
+
+
+class AutomationRule(Base):
+    """A single trigger -> action rule, evaluated in `priority` order against every new inbound
+    message (waba_webhooks.py). Deliberately one action per rule rather than a multi-step tree --
+    that's the WhatsApp-Flow-style bot builder the plan scoped separately as its own product
+    surface (Phase B), not this. trigger_value/action_value are plain strings whose meaning
+    depends on the type (trigger_value is the keyword to match for "keyword", unused for
+    "new_contact"; action_value is a user_id/canned_response_id/label_id depending on action_type)
+    -- avoids a wide sparse-column table for what's fundamentally a handful of small variants."""
+    __tablename__ = "automation_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    trigger_type: Mapped[str] = mapped_column(String(20))  # "keyword" | "new_contact"
+    trigger_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    action_type: Mapped[str] = mapped_column(String(20))  # "assign" | "reply" | "label"
+    action_value: Mapped[str] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+# ---------------------------------------------------------------------------------------------
+# CRM (3rd channel, gated by channel_active(db, entity_id, "crm")) -- built on top of the same
+# Contact used by the WhatsApp inbox rather than a parallel contact table: a Contact with no
+# wa_id is a CRM-only contact (Postgres allows multiple NULL wa_id rows per entity under
+# uq_contacts_entity_wa_id, confirmed live, no migration needed).
+# ---------------------------------------------------------------------------------------------
+
+class Pipeline(Base):
+    """A named, ordered stage list an entity's leads move through -- an entity can have more than
+    one (e.g. "New Business" vs "Renewals"). Replaces CrmSettings.pipeline_stages as the source of
+    truth; that column's existing data gets migrated into one auto-created "Default" pipeline per
+    entity so nothing already using it breaks."""
+    __tablename__ = "pipelines"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    stages: Mapped[list] = mapped_column(JSON, default=lambda: list(DEFAULT_CRM_PIPELINE_STAGES))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Lead(Base):
+    """A sales-pipeline record for a Contact. Conversion to Lead is one of two independent paths
+    an agent can take from a WhatsApp conversation (the other being direct-to-Customer, see
+    Customer below) -- there's no forced Lead-first requirement. stage is free-text (not an enum)
+    since a payments business's own stage names (inquiry/KYC/onboarding/live/renewal) are a
+    product decision, not a platform one -- validated against pipeline.stages at write time, not
+    a DB-level constraint, so the pipeline's own stage list can change without a migration.
+    value/probability drive the forecast/pipeline-value reporting; status separately tracks
+    won/lost since a deal can lose from any stage, not just a terminal one."""
+    __tablename__ = "leads"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), index=True)
+    pipeline_id: Mapped[str | None] = mapped_column(ForeignKey("pipelines.id"), nullable=True)
+    stage: Mapped[str] = mapped_column(String(40), default="inquiry")
+    source: Mapped[str] = mapped_column(String(40), default="manual")  # "whatsapp_conversation" | "manual" | "csv_import"
+    converted_from_conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    value: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    probability: Mapped[int | None] = mapped_column(Integer, nullable=True)  # 0-100
+    expected_close_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="open")  # "open" | "won" | "lost"
+    lost_reason: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    custom_fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Rule-based (not AI/ML) lead score -- sum of ScoringRule.points for every rule this lead
+    # currently matches, recomputed on every relevant change (label added, custom field set,
+    # activity logged) by crm_scoring.rescore_lead rather than stored as a decaying/time-based
+    # score, keeping it simple and fully explainable to the sales rep.
+    score: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ScoringRule(Base):
+    """One rule contributing points to Lead.score -- e.g. "has label VIP" +20, "custom field
+    budget > 100000" +15. Deliberately simple point-sum scoring (matches the standing "no AI/LLM"
+    instruction) rather than a predictive model."""
+    __tablename__ = "scoring_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    condition_type: Mapped[str] = mapped_column(String(20))  # "has_label" | "custom_field_set" | "source"
+    condition_value: Mapped[str] = mapped_column(String(200))
+    points: Mapped[int] = mapped_column(Integer, default=10)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Territory(Base):
+    """A named group of pincodes routed to one owning user/team -- the concrete shape behind
+    "territory assignment": LeadRoutingRule's existing pincode trigger_type can reference a
+    Territory by name instead of a single raw pincode, so an admin manages the pincode list once
+    per territory rather than one routing rule per pincode."""
+    __tablename__ = "territories"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    pincodes: Mapped[list] = mapped_column(JSON, default=list)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SalesTarget(Base):
+    """A revenue target for one user over one period -- "actual" isn't stored here, it's computed
+    at read time from Σ Lead.value where owner_user_id/status="won"/closed within the period
+    (services-level query), so a target never drifts out of sync with the deals that actually
+    closed."""
+    __tablename__ = "sales_targets"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    period_start: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    period_end: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    target_value: Mapped[float] = mapped_column(Numeric(14, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Attachment(Base):
+    """A file attached to a Contact -- reuses services.save_upload, same extension-allowlist/
+    size-cap/uuid-filename convention as every other upload in this app."""
+    __tablename__ = "attachments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), index=True)
+    filename: Mapped[str] = mapped_column(String(255))
+    stored_path: Mapped[str] = mapped_column(String(500))
+    uploaded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Customer(Base):
+    """A converted, active tenant-of-the-tenant record (e.g. PAISAPE's own merchant) -- distinct
+    from Textzi's own Organization/"Customers" admin list, which is Textzi's paying tenant, not
+    the tenant's own customer. Reachable either from a Lead (lead_id set once a pipeline closes)
+    or directly from a WhatsApp conversation (converted_from_conversation_id set, lead_id null) --
+    both conversion paths land here."""
+    __tablename__ = "customers"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), index=True)
+    lead_id: Mapped[str | None] = mapped_column(ForeignKey("leads.id"), nullable=True)
+    converted_from_conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    custom_fields: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Task(Base):
+    """A CRM follow-up/call/meeting reminder against a Contact -- the "log a call, schedule a
+    follow-up" capability the earlier competitor gap-analysis found entirely missing. Deliberately
+    contact_id-scoped (not lead_id/customer_id) since a task can predate either conversion (e.g. a
+    reminder to follow up with a brand-new contact who isn't a lead yet)."""
+    __tablename__ = "tasks"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"), index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    type: Mapped[str] = mapped_column(String(20), default="follow_up")  # "call" | "meeting" | "follow_up" | "other"
+    due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    done: Mapped[bool] = mapped_column(Boolean, default=False)
+    assigned_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # "none" means one-off. A recurring task's due_at advances by this interval each time it's
+    # marked done, rather than spawning a new row -- one task, a repeating due date.
+    recurrence: Mapped[str] = mapped_column(String(10), default="none")  # "none" | "daily" | "weekly" | "monthly"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Quote(Base):
+    """A GST-aware proforma quote tied to a Lead -- deliberately not an IRN-registered e-invoice
+    (mandatory only above Rs 5 crore turnover, well past this product's SME target) so this stays
+    a simple PDF-generation feature, not an Invoice Registration Portal integration. line_items is
+    [{"description", "hsn_code", "quantity", "unit_price"}, ...]; CGST+SGST vs IGST is computed at
+    send time from services.state_code_from_gstin (entity state vs the lead's own state), not
+    stored, so a GSTIN correction before sending doesn't require editing stale stored tax lines."""
+    __tablename__ = "quotes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id"), index=True)
+    quote_number: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
+    line_items: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # "draft" | "sent" | "accepted" | "rejected"
+    pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # Light approval workflow -- a quote whose total exceeds CrmSettings.quote_approval_threshold
+    # can't be sent until the creator's manager (User.manager_id) approves it. "not_required" for
+    # anything under the threshold (or when no threshold is set), so this never gets in the way of
+    # the common case.
+    approval_status: Mapped[str] = mapped_column(String(20), default="not_required")  # "not_required" | "pending" | "approved" | "rejected"
+    approved_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set once "Convert to invoice" succeeds -- references invoices.id (Invoice lives in the
+    # SMS-billing section of this same models.py, reused as-is rather than a parallel CRM invoice
+    # table; a quote converts into exactly the same Invoice row type Textzi's own billing uses).
+    converted_invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class LeadRoutingRule(Base):
+    """Pincode/source/product-based auto-assignment for new leads -- a sibling of AutomationRule
+    (same trigger->action shape) rather than an extension of it, since AutomationRule fires on
+    inbound WhatsApp messages while this fires on lead creation, a genuinely different event with
+    its own trigger vocabulary (pincode/source/product, not keyword/new_contact)."""
+    __tablename__ = "lead_routing_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    trigger_type: Mapped[str] = mapped_column(String(20))  # "pincode" | "source" | "product" | "territory"
+    trigger_value: Mapped[str] = mapped_column(String(200))
+    assign_to_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    priority: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Sequence(Base):
+    """A named, ordered set of SequenceSteps a lead can be enrolled in -- a rule-based (not AI)
+    multi-touch cadence, e.g. day 0 WhatsApp template, day 2 SMS, day 5 task reminder."""
+    __tablename__ = "sequences"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SequenceStep(Base):
+    __tablename__ = "sequence_steps"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    sequence_id: Mapped[str] = mapped_column(ForeignKey("sequences.id"), index=True)
+    day_offset: Mapped[int] = mapped_column(Integer, default=0)
+    channel: Mapped[str] = mapped_column(String(20))  # "whatsapp_template" | "sms" | "task"
+    # whatsapp_template: {"template_name", "template_language", "body_params"}; sms: {"template_id"
+    # or "body"}; task: {"title", "type"} -- one flexible column, same reasoning as everywhere else
+    # in this schema a message/step shape varies by type (ConversationMessage.payload etc).
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class SequenceEnrollment(Base):
+    """One lead's progress through one Sequence -- next_step_due_at is what the scheduled runner
+    (crm_sequences.run_due_steps, called from the same daily-job hook archive_jobs.py already
+    registers) scans for."""
+    __tablename__ = "sequence_enrollments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    sequence_id: Mapped[str] = mapped_column(ForeignKey("sequences.id"), index=True)
+    lead_id: Mapped[str] = mapped_column(ForeignKey("leads.id"), index=True)
+    current_step_index: Mapped[int] = mapped_column(Integer, default=0)
+    next_step_due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # "active" | "completed" | "stopped"
+    enrolled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+DEFAULT_CRM_PIPELINE_STAGES = ["inquiry", "kyc", "onboarding", "live", "renewal"]
+
+
+class CrmSettings(Base):
+    """One row per entity -- pipeline stage names and cross-channel notification toggles. The
+    notify_* flags are read by the (not yet built) automation layer that auto-sends an
+    email/SMS/WhatsApp message on lead/customer/ticket events -- persisted here now so the
+    settings survive being configured before that consumer exists, per the phased CRM plan."""
+    __tablename__ = "crm_settings"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    pipeline_stages: Mapped[list] = mapped_column(JSON, default=lambda: list(DEFAULT_CRM_PIPELINE_STAGES))
+    notify_email: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_sms: Mapped[bool] = mapped_column(Boolean, default=False)
+    notify_whatsapp: Mapped[bool] = mapped_column(Boolean, default=False)
+    logo_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    brand_color: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Light quote-approval workflow (see Quote.approval_status) -- null means no threshold, every
+    # quote sends without approval. Set to require the creator's manager sign-off above this INR
+    # amount.
+    quote_approval_threshold: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+
+
+class WebForm(Base):
+    """One embeddable lead-capture form per entity -- deliberately singular (not a multi-form
+    builder) matching SME scope: one "Contact us" form covers the common case, and the public
+    submit endpoint (crm_public.py) is what actually creates the Contact+Lead, keyed by
+    entity_id in the embed snippet's URL, not by a form id."""
+    __tablename__ = "web_forms"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    fields: Mapped[list] = mapped_column(JSON, default=lambda: ["name", "email", "phone", "message"])
+    success_message: Mapped[str] = mapped_column(String(300), default="Thanks! We'll be in touch shortly.")
+    target_pipeline_id: Mapped[str | None] = mapped_column(ForeignKey("pipelines.id"), nullable=True)
+
+
+class Segment(Base):
+    """A saved contact filter -- AND semantics across both dimensions (a contact must have every
+    listed label AND match every listed custom_attributes key=value pair). Kept intentionally
+    simple (no OR/nested boolean logic) since that covers the real targeting need (campaigns,
+    contact filtering) without the complexity of a full query builder."""
+    __tablename__ = "segments"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(80))
+    label_ids: Mapped[list] = mapped_column(JSON, default=list)
+    custom_attributes: Mapped[dict] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Campaign(Base):
+    """A bulk template send to a segment -- always a template (never free text), since Meta only
+    allows business-initiated sends outside the 24h window via an approved template. Snapshots
+    total_recipients/sent_count/failed_count as it runs rather than deriving them from
+    CampaignRecipient on every read, so a large campaign's progress is a cheap read."""
+    __tablename__ = "campaigns"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    template_name: Mapped[str] = mapped_column(String(512))
+    template_language: Mapped[str] = mapped_column(String(20))
+    body_params: Mapped[list] = mapped_column(JSON, default=list)
+    segment_id: Mapped[str] = mapped_column(ForeignKey("segments.id"))
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|sending|completed|failed
+    total_recipients: Mapped[int] = mapped_column(Integer, default=0)
+    sent_count: Mapped[int] = mapped_column(Integer, default=0)
+    failed_count: Mapped[int] = mapped_column(Integer, default=0)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    campaign_id: Mapped[str] = mapped_column(ForeignKey("campaigns.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"))
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending|sent|failed|skipped_opted_out
+    error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class BusinessHours(Base):
+    """One row per entity. schedule is {"mon": {"open": "09:00", "close": "18:00"}, ...} -- a day
+    key absent (or null) means closed that day. outside_hours_message, if set, is auto-sent (as a
+    private-conversation reply, not a template -- see waba_automation.py) the first time a message
+    arrives outside these hours."""
+    __tablename__ = "business_hours"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    timezone: Mapped[str] = mapped_column(String(50), default="Asia/Kolkata")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    schedule: Mapped[dict] = mapped_column(JSON, default=dict)
+    outside_hours_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class SlaPolicy(Base):
+    """One row per entity -- how many minutes a first reply is due within. Conversation.
+    first_response_due_at/sla_breached (see Conversation) track this per-conversation once set
+    here; changing the policy only affects conversations started after the change."""
+    __tablename__ = "sla_policies"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    first_response_minutes: Mapped[int] = mapped_column(Integer, default=60)
+
+
+class Macro(Base):
+    """A saved, manually-triggered bundle of actions run against one conversation in a single
+    click -- distinct from AutomationRule (which fires automatically on a trigger). actions is an
+    ordered list of {"type": "reply"|"label"|"status"|"assign", ...type-specific fields}, executed
+    in order by waba_inbox.run_macro."""
+    __tablename__ = "macros"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    actions: Mapped[list] = mapped_column(JSON, default=list)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CsatSettings(Base):
+    __tablename__ = "csat_settings"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class CsatResponse(Base):
+    """One row per resolved conversation once CSAT is enabled -- created (rating null) the moment
+    the rating request is sent, filled in when the customer taps one of the 1-5 quick-reply
+    buttons (waba_webhooks.py matches the inbound button_reply against the newest unanswered row
+    for that conversation)."""
+    __tablename__ = "csat_responses"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WabaWebhookSubscription(Base):
+    """One outbound webhook URL per entity -- Textzi POSTs new-message and status-update events
+    here as they happen, HMAC-signed the same way Meta signs its own webhooks to Textzi (see
+    waba_webhooks.py's own signature check), so the customer's endpoint can verify authenticity."""
+    __tablename__ = "waba_webhook_subscriptions"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    url: Mapped[str] = mapped_column(String(500))
+    secret: Mapped[str] = mapped_column(String(64))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)

@@ -212,3 +212,10 @@ def hash_otp(code: str) -> str:
     # never-exposed secret -- see config.py's production fail-hard check) makes that
     # precomputation infeasible without also already holding the ability to forge JWTs.
     return hmac.new(settings.jwt_secret.encode(), code.encode(), hashlib.sha256).hexdigest()
+
+
+def sign_webhook_payload(secret: str, raw_body: bytes) -> str:
+    """Same construction Meta uses to sign its own webhooks to Textzi (see waba_webhooks.py's
+    HMAC-SHA256 verification) -- applied here in reverse, signing Textzi's own outbound webhook
+    payload with the customer's per-entity secret so their endpoint can verify authenticity."""
+    return hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()

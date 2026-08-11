@@ -26,7 +26,7 @@ const navItems = computed(() => {
     return adminNav
   if (authStore.staffArea)
     return STAFF_AREA_NAV[authStore.staffArea]
-  return customerNav
+  return customerNav({ wabaActive: authStore.wabaActive, crmActive: authStore.crmActive })
 })
 </script>
 

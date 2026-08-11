@@ -48,6 +48,16 @@ def sync_schema() -> None:
                 conn.execute(text(ddl))
                 print(f"added column: {name}.{column.name} ({col_type})")
                 added_any = True
+                # Rows that existed before this column did get NULL here regardless of the
+                # model's Python-side `default=` -- that only ever fires on INSERT through the
+                # ORM, never for rows added via this raw ALTER TABLE. Left unfixed, the first
+                # read of any such row throws a Pydantic validation error the moment a response
+                # schema declares the field as a required (non-Optional) type -- confirmed live
+                # against Conversation.is_ticket. Only backfills for a plain scalar default
+                # (bool/str/int literals), not a callable (e.g. uid()) or a DB sequence, since
+                # those need a value generated per-row, not one shared constant.
+                if column.default is not None and column.default.is_scalar:
+                    conn.execute(text(f'UPDATE "{name}" SET "{column.name}" = :default WHERE "{column.name}" IS NULL'), {"default": column.default.arg})
 
             existing_indexes = {idx["name"] for idx in inspector.get_indexes(name)}
             for index in table.indexes:

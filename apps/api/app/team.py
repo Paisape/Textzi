@@ -18,7 +18,7 @@ from .models import Invitation, User, UserRole, UserStatus
 from .permissions import require_capability
 from .schemas import AcceptInviteRequest, TeamInviteRequest, TeamInviteResponse, TeamMemberOut, TokenResponse
 from .security import create_access_token, hash_api_key, hash_password
-from .services import log_activity
+from .services import DomainError, check_seat_quota, log_activity
 
 router = APIRouter(prefix="/v1/team", tags=["team"])
 
@@ -41,6 +41,10 @@ def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = D
         raise HTTPException(status_code=422, detail="That role cannot be granted through a team invite")
     if db.scalar(select(User).where(User.email == payload.email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
+    try:
+        check_seat_quota(db, user.organization_id)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     token = secrets.token_urlsafe(32)
     invitation = Invitation(
@@ -73,7 +77,7 @@ def list_team_members(user: User = Depends(require_capability("team:view")), db:
     if not user.organization_id:
         raise HTTPException(status_code=422, detail="Complete organisation onboarding first")
     members = db.scalars(select(User).where(User.organization_id == user.organization_id).order_by(User.created_at.asc())).all()
-    return [TeamMemberOut(id=m.id, email=m.email, full_name=m.full_name, role=m.role, status=m.status) for m in members]
+    return [TeamMemberOut(id=m.id, email=m.email, full_name=m.full_name, role=m.role, status=m.status, manager_id=m.manager_id) for m in members]
 
 
 @router.post("/accept-invite", response_model=TokenResponse)

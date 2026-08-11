@@ -14,14 +14,15 @@ definePage({
     Manage the messaging channels connected to your account.
   </p>
 
-  <VRow>
+  <VRow class="align-stretch">
     <VCol
       cols="12"
       sm="6"
       lg="4"
+      class="d-flex"
     >
-      <VCard>
-        <VCardText>
+      <VCard class="h-100 d-flex flex-column flex-grow-1">
+        <VCardText class="flex-grow-1">
           <div class="d-flex align-center justify-space-between mb-4">
             <div class="d-flex align-center gap-2">
               <VIcon
@@ -38,7 +39,7 @@ definePage({
               Active
             </VChip>
           </div>
-          <p class="text-body-2 text-medium-emphasis mb-4">
+          <p class="text-body-2 text-medium-emphasis mb-0">
             Send DLT-compliant transactional, OTP, and promotional SMS across India.
           </p>
         </VCardText>
@@ -64,9 +65,10 @@ definePage({
       cols="12"
       sm="6"
       lg="4"
+      class="d-flex"
     >
-      <VCard>
-        <VCardText>
+      <VCard class="h-100 d-flex flex-column flex-grow-1">
+        <VCardText class="flex-grow-1">
           <div class="d-flex align-center justify-space-between mb-4">
             <div class="d-flex align-center gap-2">
               <VIcon
@@ -77,20 +79,77 @@ definePage({
               <span class="text-h6">WhatsApp</span>
             </div>
             <VChip
-              color="default"
+              color="info"
               size="small"
             >
-              Inactive
+              Connect
             </VChip>
           </div>
-          <p class="text-body-2 text-medium-emphasis mb-4">
-            Unlock the WhatsApp Business Platform to deliver conversational experiences at scale.
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Connect your own WhatsApp Business number through Meta and start messaging customers.
           </p>
         </VCardText>
         <VDivider />
         <VCardText class="d-flex gap-4">
-          <span class="text-disabled">Try Demo</span>
-          <span class="text-disabled">Plan</span>
+          <RouterLink
+            to="/channels-whatsapp"
+            class="font-weight-medium"
+          >
+            Manage
+          </RouterLink>
+          <RouterLink
+            to="/pricing"
+            class="font-weight-medium"
+          >
+            Pricing
+          </RouterLink>
+        </VCardText>
+      </VCard>
+    </VCol>
+
+    <VCol
+      cols="12"
+      sm="6"
+      lg="4"
+      class="d-flex"
+    >
+      <VCard class="h-100 d-flex flex-column flex-grow-1">
+        <VCardText class="flex-grow-1">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <div class="d-flex align-center gap-2">
+              <VIcon
+                icon="tabler-address-book"
+                color="primary"
+                size="24"
+              />
+              <span class="text-h6">CRM</span>
+            </div>
+            <VChip
+              color="success"
+              size="small"
+            >
+              Active
+            </VChip>
+          </div>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Convert WhatsApp conversations into leads and customers, and track them through your
+            own sales pipeline.
+          </p>
+        </VCardText>
+        <VDivider />
+        <VCardText class="d-flex gap-4">
+          <RouterLink
+            to="/channels-crm"
+            class="font-weight-medium"
+          >
+            Manage
+          </RouterLink>
+          <RouterLink
+            to="/pricing"
+            class="font-weight-medium"
+          >
+            Pricing
+          </RouterLink>
         </VCardText>
       </VCard>
     </VCol>

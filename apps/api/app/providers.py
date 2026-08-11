@@ -250,15 +250,20 @@ class TtbsSmsProvider:
         # it's already re-fetchable by an admin via the dedicated webhook-url endpoint, so
         # showing it again here isn't a new exposure).
         redacted_params = {**params, "pswd": "[REDACTED]"}
+        # method/endpoint included so admin telemetry shows the complete request (matches
+        # HttpsSmsProvider's request_payload shape above) -- previously only the query params were
+        # logged, so reconstructing the actual URL hit meant manually copying the endpoint from
+        # the provider route config and pasting the params back together by hand.
+        request_payload = {"method": "GET", "endpoint": self.endpoint, "params": redacted_params}
         url = f"{self.endpoint}?{urlencode(params)}"
         if len(url) > self.MAX_URL_LENGTH:
-            return ProviderResult(accepted=False, error=f"Message too long for the TTBS QS interface: request would be {len(url)} chars (limit {self.MAX_URL_LENGTH}). Shorten the message or switch this route to the TTBS REST API.", request_payload=redacted_params)
+            return ProviderResult(accepted=False, error=f"Message too long for the TTBS QS interface: request would be {len(url)} chars (limit {self.MAX_URL_LENGTH}). Shorten the message or switch this route to the TTBS REST API.", request_payload=request_payload)
         try:
             request = Request(url, method="GET")
             with urlopen(request, timeout=self.timeout_seconds) as response:
                 body = response.read().decode(errors="replace").strip()
                 accepted = 200 <= response.status < 300
-                return ProviderResult(accepted=accepted, provider_message_id=_extract_ttbs_message_id(body) if accepted else None, error=None if accepted else body[:200], request_payload=redacted_params, response_body=body[:2000])
+                return ProviderResult(accepted=accepted, provider_message_id=_extract_ttbs_message_id(body) if accepted else None, error=None if accepted else body[:200], request_payload=request_payload, response_body=body[:2000])
         except HTTPError as exc:
             # TTBS reports real failures (401 unauthorized, 402 insufficient balance, 400
             # missing fields, ...) as non-2xx HTTP responses, which urlopen raises rather than
@@ -268,11 +273,11 @@ class TtbsSmsProvider:
                 body = exc.read().decode(errors="replace").strip()
             except OSError:
                 body = ""
-            return ProviderResult(accepted=False, error=f"HTTP {exc.code}: {body[:150]}" if body else f"HTTP {exc.code}", request_payload=redacted_params, response_body=f"HTTP {exc.code}: {body[:2000]}" if body else f"HTTP {exc.code}")
+            return ProviderResult(accepted=False, error=f"HTTP {exc.code}: {body[:150]}" if body else f"HTTP {exc.code}", request_payload=request_payload, response_body=f"HTTP {exc.code}: {body[:2000]}" if body else f"HTTP {exc.code}")
         except URLError as exc:
             # Connection-level failure (DNS, timeout, refused, ...) -- exc.reason is a plain
             # socket-level message/exception, never the request URL, so it's safe to include.
-            return ProviderResult(accepted=False, error=f"{exc.__class__.__name__}: {exc.reason}", request_payload=redacted_params)
+            return ProviderResult(accepted=False, error=f"{exc.__class__.__name__}: {exc.reason}", request_payload=request_payload)
 
     def health_check(self) -> bool:
         try:

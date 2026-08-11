@@ -1,6 +1,8 @@
 """Admin-only configuration for the platform's own operational sending -- its SMS sender
 identity, its SMTP config, and its wallet. Deliberately separate from every tenant-facing router:
 this is Textzi's own infrastructure, not something any customer sees or touches."""
+import secrets
+
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
@@ -10,16 +12,17 @@ from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
-from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
+from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
     PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
-    PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
-    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
+    PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWabaSettingsOut, PlatformWabaSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, WabaTestConnectionResponse, WabaWebhookTokenOut, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
-from .services import DomainError, credit_platform_wallet, get_platform_company_info, get_platform_turnstile_settings, log_activity, mask_mobile
+from .services import DomainError, credit_platform_wallet, get_platform_company_info, get_platform_turnstile_settings, get_platform_waba_settings, get_platform_waba_webhook_verify_token, log_activity, mask_mobile, waba_webhook_url
 from .turnstile import SITEVERIFY_URL
+from .waba_meta import GRAPH_API_BASE
 from .zoho_books import ZohoCallError, exchange_grant_code, get_zoho_settings, list_accounts, list_tax_rates
 
 router = APIRouter(prefix="/v1/admin/platform", tags=["platform-admin"])
@@ -186,6 +189,78 @@ def test_turnstile_connection(db: Session = Depends(get_db)):
     if result.get("success") is True or "invalid-input-response" in codes:
         return TurnstileTestConnectionResponse(ok=True, detail="Secret key is valid and recognized by Cloudflare.")
     return TurnstileTestConnectionResponse(ok=False, detail=f"Unexpected response from Cloudflare: {result}")
+
+
+@router.get("/waba-settings", response_model=PlatformWabaSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_waba_settings(db: Session = Depends(get_db)):
+    app_id, config_id, secret = get_platform_waba_settings(db)
+    return PlatformWabaSettingsOut(
+        app_id=app_id, config_id=config_id, configured=bool(secret),
+        webhook_url=waba_webhook_url(db), webhook_verify_token=get_platform_waba_webhook_verify_token(db),
+    )
+
+
+@router.put("/waba-settings", response_model=PlatformWabaSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_waba_settings(payload: PlatformWabaSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """app_secret is write-only, same convention as Turnstile's secret_key/SMTP's password/R2's
+    secret_access_key -- GET never returns it, and a blank value on PUT keeps whatever was
+    already stored."""
+    row = db.get(PlatformWabaSettings, "platform")
+    if not row:
+        row = PlatformWabaSettings(id="platform")
+        db.add(row)
+    row.app_id = payload.app_id
+    row.config_id = payload.config_id
+    if payload.app_secret:
+        row.app_secret_encrypted = encrypt_secret(payload.app_secret)
+    log_activity(db, None, "platform_waba_settings_updated", "Platform WhatsApp settings updated.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit(); db.refresh(row)
+    return PlatformWabaSettingsOut(
+        app_id=row.app_id, config_id=row.config_id, configured=bool(row.app_secret_encrypted),
+        webhook_url=waba_webhook_url(db), webhook_verify_token=get_platform_waba_webhook_verify_token(db),
+    )
+
+
+@router.post("/waba-settings/generate-webhook-token", response_model=WabaWebhookTokenOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def generate_waba_webhook_token(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Generates (or rotates) the hub.verify_token value Meta's webhook GET handshake must echo
+    back -- re-run this and re-save the returned token in Meta's App Dashboard whenever it needs
+    rotating; the old value stops being accepted the moment this runs, same rotation semantics as
+    TTBS's regenerate-webhook-secret."""
+    row = db.get(PlatformWabaSettings, "platform")
+    if not row:
+        row = PlatformWabaSettings(id="platform")
+        db.add(row)
+    token = secrets.token_urlsafe(24)
+    row.webhook_verify_token_encrypted = encrypt_secret(token)
+    log_activity(db, None, "platform_waba_webhook_token_generated", "Platform WhatsApp webhook verify token generated.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return WabaWebhookTokenOut(webhook_url=waba_webhook_url(db), webhook_verify_token=token)
+
+
+@router.post("/waba-settings/test-connection", response_model=WabaTestConnectionResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def test_waba_connection(db: Session = Depends(get_db)):
+    """Exercises the saved App ID/Secret against Meta's real Graph API via the client_credentials
+    grant (a genuine app access token request that only needs these two values, no config_id or
+    a real user flow) -- confirms the credentials are actually valid and recognized by Meta,
+    rather than just checking the fields are non-empty."""
+    app_id, _, secret = get_platform_waba_settings(db)
+    if not app_id or not secret:
+        return WabaTestConnectionResponse(ok=False, detail="WhatsApp is not configured -- save an App ID and App Secret first.")
+    try:
+        response = requests.get(
+            f"{GRAPH_API_BASE}/oauth/access_token",
+            params={"client_id": app_id, "client_secret": secret, "grant_type": "client_credentials"},
+            timeout=10,
+        )
+        result = response.json()
+    except Exception as exc:
+        return WabaTestConnectionResponse(ok=False, detail=f"Could not reach Meta's Graph API: {exc}")
+    if isinstance(result, dict) and result.get("error"):
+        return WabaTestConnectionResponse(ok=False, detail=f"Meta rejected these credentials: {result['error'].get('message', 'unknown error')}")
+    if isinstance(result, dict) and result.get("access_token"):
+        return WabaTestConnectionResponse(ok=True, detail="App ID and Secret are valid and recognized by Meta.")
+    return WabaTestConnectionResponse(ok=False, detail=f"Unexpected response from Meta: {result}")
 
 
 @router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

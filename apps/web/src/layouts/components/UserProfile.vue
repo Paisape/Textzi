@@ -70,7 +70,7 @@ onMounted(() => authStore.load())
           <VDivider class="my-2" />
 
           <!-- 👉 Profile -->
-          <VListItem link>
+          <VListItem link to="/profile">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -99,7 +99,7 @@ onMounted(() => authStore.load())
           </VListItem>
 
           <!-- 👉 Pricing -->
-          <VListItem link>
+          <VListItem link to="/pricing">
             <template #prepend>
               <VIcon
                 class="me-2"
@@ -112,7 +112,7 @@ onMounted(() => authStore.load())
           </VListItem>
 
           <!-- 👉 FAQ -->
-          <VListItem link>
+          <VListItem link to="/knowledge-base">
             <template #prepend>
               <VIcon
                 class="me-2"

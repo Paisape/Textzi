@@ -5,6 +5,7 @@ import uuid
 from contextlib import asynccontextmanager
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import ValidationError
@@ -15,7 +16,12 @@ from .config import settings
 from .admin import router as admin_router, require_admin
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
+from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
+from .crm import router as crm_router
+from .crm_quotes import router as crm_quotes_router
+from .crm_public import router as crm_public_router
+from .crm_sequences import router as crm_sequences_router, run_due_steps as run_due_sequence_steps
 from .database import Base, engine, get_db
 from .dispatch import dispatch_message as run_dispatch
 from .invoices import router as invoices_router
@@ -30,6 +36,12 @@ from .sms import router as sms_router
 from .team import router as team_router
 from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
+from .waba import router as waba_router
+from .waba_campaigns import router as waba_campaigns_router
+from .waba_inbox import router as waba_inbox_router
+from .waba_realtime import router as waba_realtime_router
+from .waba_reports import router as waba_reports_router
+from .waba_webhooks import router as waba_webhooks_router
 from .wallet import router as wallet_router
 from .webhooks import router as webhooks_router
 from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
@@ -67,8 +79,11 @@ async def lifespan(_: FastAPI):
     # double-processing.
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(run_archive_job, CronTrigger(hour=2, minute=0), id="daily_archive_job", misfire_grace_time=3600)
+    # CRM sales-sequence steps (Addendum 4 Phase 4) -- same in-process scheduler, no separate
+    # infra. Hourly is granular enough for day-offset-based steps and cheap enough to just poll.
+    scheduler.add_job(run_due_sequence_steps, IntervalTrigger(hours=1), id="crm_sequence_runner", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC)")
+    logger.info("scheduled daily archive job (02:00 UTC) and hourly CRM sequence runner")
 
     yield
 
@@ -79,7 +94,12 @@ app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 app.include_router(admin_router)
 app.include_router(auth_router)
+app.include_router(channel_billing_router)
 app.include_router(channels_router)
+app.include_router(crm_router)
+app.include_router(crm_public_router)
+app.include_router(crm_quotes_router)
+app.include_router(crm_sequences_router)
 app.include_router(invoices_router)
 app.include_router(onboarding_router)
 app.include_router(payments_router)
@@ -91,6 +111,12 @@ app.include_router(sms_router)
 app.include_router(team_router)
 app.include_router(testimonials_router)
 app.include_router(two_factor_router)
+app.include_router(waba_router)
+app.include_router(waba_campaigns_router)
+app.include_router(waba_inbox_router)
+app.include_router(waba_realtime_router)
+app.include_router(waba_reports_router)
+app.include_router(waba_webhooks_router)
 app.include_router(wallet_router)
 app.include_router(webhooks_router)
 

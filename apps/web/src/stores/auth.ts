@@ -24,6 +24,11 @@ export const useAuthStore = defineStore('auth', () => {
   const profile = ref<AuthProfile | null>(null)
   const loaded = ref(false)
   const capabilities = ref<Set<string>>(new Set())
+  // Drives whether the WhatsApp/CRM nav groups show at all -- a tenant with neither channel
+  // active still reaches them via the always-visible Channels marketplace page, same as before
+  // either channel is subscribed/connected.
+  const wabaActive = ref(false)
+  const crmActive = ref(false)
 
   const isAdmin = computed(() => !!profile.value && ADMIN_ROLES.has(profile.value.role))
   const staffArea = computed(() => profile.value ? STAFF_AREA_BY_ROLE[profile.value.role] ?? null : null)
@@ -39,6 +44,14 @@ export const useAuthStore = defineStore('auth', () => {
       profile.value = await $api<AuthProfile>('/v1/auth/me')
       const perms = await $api<{ capabilities: string[] }>('/v1/auth/permissions')
       capabilities.value = new Set(perms.capabilities)
+      if (!isAdmin.value && !staffArea.value) {
+        const [wabaStatus, crmStatus] = await Promise.all([
+          $api<{ connected: boolean }>('/v1/waba/status').catch(() => ({ connected: false })),
+          $api<{ active: boolean }>('/v1/crm/status').catch(() => ({ active: false })),
+        ])
+        wabaActive.value = wabaStatus.connected
+        crmActive.value = crmStatus.active
+      }
     }
     catch {
       profile.value = null
@@ -52,8 +65,10 @@ export const useAuthStore = defineStore('auth', () => {
   function clear() {
     profile.value = null
     capabilities.value = new Set()
+    wabaActive.value = false
+    crmActive.value = false
     loaded.value = false
   }
 
-  return { profile, loaded, isAdmin, staffArea, capabilities, can, load, clear }
+  return { profile, loaded, isAdmin, staffArea, capabilities, wabaActive, crmActive, can, load, clear }
 })

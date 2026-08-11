@@ -23,6 +23,7 @@ INVOICE_TYPE_LABELS = {
     "dlt_fee": "DLT Registration Fee",
     "channel_subscription": "Channel Subscription Fee",
     "admin_credit": "Manual SMS Credit",
+    "crm_quote": "CRM Quote",
 }
 
 
@@ -294,6 +295,7 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
     # instant can never compute the same number -- nextval() is atomic regardless of concurrent
     # transactions. The year is cosmetic; uniqueness comes entirely from the sequence.
     year = datetime.now(timezone.utc).year
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS invoice_number_seq"))
     seq_val = db.execute(text("SELECT nextval('invoice_number_seq')")).scalar()
     invoice.invoice_number = f"INV-{year}-{seq_val:06d}"
     invoice.status = "issued"

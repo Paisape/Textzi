@@ -20,17 +20,17 @@ from .database import get_db
 from .email_service import render_email, send_email
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, ChannelFeeConfig, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaWallet, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
-    ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
-    PlatformMessageTelemetryOut, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
+    PlatformMessageTelemetryOut, ProfileChangeRequestAdminOut, ProfileChangeRequestStatusUpdate, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletAdjustmentQuoteOut, WalletCreditRequest, WalletCreditResponse, WalletDebitRequest, WalletDebitResponse, WalletTopupReportRowOut, EntityWalletSummaryOut,
@@ -497,6 +497,66 @@ def update_channel_fees(channel: str, payload: ChannelFeeConfigUpdate, db: Sessi
     return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee))
 
 
+def _billing_plan_out(plan: BillingPlan) -> BillingPlanOut:
+    return BillingPlanOut(
+        id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price),
+        message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active,
+    )
+
+
+@router.get("/billing-plans", response_model=list[BillingPlanOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_billing_plans(channel: str | None = None, db: Session = Depends(get_db)):
+    query = select(BillingPlan)
+    if channel:
+        query = query.where(BillingPlan.channel == channel)
+    plans = db.scalars(query.order_by(BillingPlan.channel, BillingPlan.price)).all()
+    return [_billing_plan_out(p) for p in plans]
+
+
+@router.post("/billing-plans", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def create_billing_plan(payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
+    plan = BillingPlan(
+        channel=payload.channel, name=payload.name, period=payload.period, price=payload.price,
+        message_limit=payload.message_limit, user_limit=payload.user_limit, active=payload.active,
+    )
+    db.add(plan)
+    db.commit(); db.refresh(plan)
+    return _billing_plan_out(plan)
+
+
+@router.put("/billing-plans/{plan_id}", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_billing_plan(plan_id: str, payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
+    plan = db.get(BillingPlan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    plan.channel = payload.channel
+    plan.name = payload.name
+    plan.period = payload.period
+    plan.price = payload.price
+    plan.message_limit = payload.message_limit
+    plan.user_limit = payload.user_limit
+    plan.active = payload.active
+    db.commit(); db.refresh(plan)
+    return _billing_plan_out(plan)
+
+
+@router.delete("/billing-plans/{plan_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def delete_billing_plan(plan_id: str, db: Session = Depends(get_db)):
+    plan = db.get(BillingPlan, plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plan not found")
+    # Never hard-delete a plan that's actively subscribed-to -- would orphan
+    # ChannelSubscription.plan_id and break channel_active()'s lookup for that entity. Deactivate
+    # instead; existing subscribers keep working until their period naturally lapses.
+    if db.scalar(select(ChannelSubscription).where(ChannelSubscription.plan_id == plan_id).limit(1)):
+        plan.active = False
+        db.commit()
+        return {"deactivated": True}
+    db.delete(plan)
+    db.commit()
+    return {"deleted": True}
+
+
 @router.get("/delivery-status-rules", response_model=list[DeliveryStatusCodeRuleOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_delivery_status_rules(db: Session = Depends(get_db)):
     """Every DeliveryStatusCode NOT listed here defaults to a billable success -- only codes an
@@ -874,6 +934,87 @@ def admin_reset_password(user_id: str, request: Request, db: Session = Depends(g
         message=f"Password reset. A new temporary password has been emailed to {user.email}.",
         dev_generated_password=generated_password if settings.environment == "development" else None,
     )
+
+
+def _profile_change_request_admin_out(db: Session, r: ProfileChangeRequest) -> ProfileChangeRequestAdminOut:
+    user = db.get(User, r.user_id)
+    return ProfileChangeRequestAdminOut(
+        id=r.id, status=r.status, requested_full_name=r.requested_full_name, requested_email=r.requested_email,
+        requested_mobile=r.requested_mobile, requested_company_name=r.requested_company_name, requested_gstin=r.requested_gstin,
+        requested_pan=r.requested_pan, requested_address=r.requested_address, requested_state_code=r.requested_state_code,
+        customer_note=r.customer_note, admin_note=r.admin_note, created_at=r.created_at.isoformat(),
+        reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
+        user_id=r.user_id, user_email=user.email if user else "", user_full_name=user.full_name if user else "",
+    )
+
+
+@router.get("/profile-change-requests", response_model=list[ProfileChangeRequestAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_profile_change_requests(request_status: str | None = None, db: Session = Depends(get_db)):
+    query = select(ProfileChangeRequest).order_by(ProfileChangeRequest.created_at.desc())
+    if request_status:
+        query = query.where(ProfileChangeRequest.status == request_status)
+    rows = db.scalars(query).all()
+    return [_profile_change_request_admin_out(db, r) for r in rows]
+
+
+@router.patch("/profile-change-requests/{request_id}", response_model=ProfileChangeRequestAdminOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_profile_change_request(request_id: str, payload: ProfileChangeRequestStatusUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Approving auto-applies every requested_* field that was set straight onto the User/
+    Organization rows -- see ProfileChangeRequest's own docstring for why this differs from
+    DltOnboardingRequest's manual-apply-out-of-band pattern. An email or mobile change resets
+    that field's verified flag: the new value hasn't actually been proven to belong to this
+    person yet (an admin approving the *request* isn't the same as the customer proving
+    possession), so it shouldn't inherit the old value's verified=True."""
+    row = db.get(ProfileChangeRequest, request_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Profile change request not found")
+    if row.status != "pending":
+        raise HTTPException(status_code=422, detail="This request has already been reviewed")
+    caller = None
+    if authorization and authorization.startswith("Bearer "):
+        try:
+            claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
+            caller = db.get(User, claims.get("sub"))
+        except jwt.PyJWTError:
+            caller = None
+    user = db.get(User, row.user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    if payload.status == "approved":
+        if row.requested_full_name:
+            user.full_name = row.requested_full_name
+        if row.requested_email:
+            new_email = row.requested_email.strip().lower()
+            if new_email != user.email.lower():
+                if db.scalar(select(User).where(func.lower(User.email) == new_email, User.id != user.id)):
+                    raise HTTPException(status_code=422, detail="Another account already uses that email address")
+                user.email = new_email
+                user.email_verified = False
+        if row.requested_mobile and row.requested_mobile != user.mobile:
+            user.mobile = row.requested_mobile
+            user.mobile_verified = False
+        org = db.get(Organization, user.organization_id) if user.organization_id else None
+        if org:
+            if row.requested_company_name and row.requested_company_name != org.name:
+                if db.scalar(select(Organization).where(Organization.name == row.requested_company_name, Organization.id != org.id)):
+                    raise HTTPException(status_code=422, detail="Another organization already uses that name")
+                org.name = row.requested_company_name
+            if row.requested_gstin:
+                org.gstin = row.requested_gstin
+            if row.requested_pan:
+                org.pan = row.requested_pan
+            if row.requested_address:
+                org.address = row.requested_address
+            if row.requested_state_code:
+                org.state_code = row.requested_state_code
+    row.status = payload.status
+    row.admin_note = payload.admin_note
+    row.reviewed_by = caller.id if caller else None
+    row.reviewed_at = datetime.now(timezone.utc)
+    log_activity(db, user.organization_id, "profile_change_request_reviewed", f"Profile change request for {user.email} {payload.status}.", user_id=user.id, actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    db.refresh(row)
+    return _profile_change_request_admin_out(db, row)
 
 
 @router.post("/users/{user_id}/resend-verification", response_model=AdminResendVerificationResponse, dependencies=[Depends(require_staff("sales")), Depends(require_admin_recent_2fa)])
@@ -2122,6 +2263,13 @@ def get_admin_notifications(db: Session = Depends(get_db)):
         notifications.append(NotificationOut(
             id="dlt-pending", severity="info", title=f"{pending_dlt} DLT request{'s' if pending_dlt != 1 else ''} awaiting review",
             description="Pending DLT onboarding requests need a status update.", link="/dlt-requests",
+        ))
+
+    pending_profile_changes = db.scalar(select(func.count()).select_from(ProfileChangeRequest).where(ProfileChangeRequest.status == "pending")) or 0
+    if pending_profile_changes:
+        notifications.append(NotificationOut(
+            id="profile-change-pending", severity="info", title=f"{pending_profile_changes} profile change request{'s' if pending_profile_changes != 1 else ''} awaiting review",
+            description="Customers are waiting on a profile/company detail change to be approved.", link="/profile-change-requests",
         ))
 
     platform_wallet = db.get(PlatformWallet, "platform")

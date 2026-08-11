@@ -261,6 +261,7 @@ class UserProfile(BaseModel):
     id: str
     email: str
     full_name: str
+    mobile: str | None = None
     email_verified: bool
     mobile_verified: bool
     status: str
@@ -377,6 +378,40 @@ class RazorpayVerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
     razorpay_signature: str
+
+
+class BillingPlanOut(BaseModel):
+    id: str
+    channel: str
+    name: str
+    period: str
+    price: float
+    message_limit: int | None
+    user_limit: int | None
+    active: bool
+
+
+class BillingPlanCreateRequest(BaseModel):
+    channel: str = Field(pattern="^(waba|crm)$")
+    name: str = Field(min_length=1, max_length=80)
+    period: str = Field(pattern="^(monthly|quarterly|yearly)$")
+    price: float = Field(gt=0, le=1_000_000)
+    message_limit: int | None = Field(default=None, gt=0)
+    user_limit: int | None = Field(default=None, gt=0)
+    active: bool = True
+
+
+class ChannelSubscriptionStatusOut(BaseModel):
+    channel: str
+    plan: BillingPlanOut | None
+    period_start: str | None
+    period_end: str | None
+    messages_used: int
+    seats_used: int
+
+
+class PlanOrderRequest(BaseModel):
+    plan_id: str
 
 
 class UserAdminOut(BaseModel):
@@ -803,6 +838,53 @@ class DltOnboardingRequestStatusUpdate(BaseModel):
     status: str = Field(pattern="^(in_progress|completed|rejected)$")
 
 
+class ProfileChangeRequestCreate(BaseModel):
+    requested_full_name: str | None = Field(default=None, min_length=2, max_length=160)
+    requested_email: EmailStr | None = None
+    requested_mobile: str | None = Field(default=None, pattern=r"^[1-9][0-9]{9,14}$")
+    requested_company_name: str | None = Field(default=None, min_length=2, max_length=160)
+    requested_gstin: str | None = Field(default=None, min_length=15, max_length=15)
+    requested_pan: str | None = Field(default=None, min_length=10, max_length=10)
+    requested_address: str | None = Field(default=None, min_length=1, max_length=300)
+    requested_state_code: str | None = Field(default=None, min_length=2, max_length=2)
+    customer_note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("requested_email", mode="before")
+    @classmethod
+    def _blank_email_is_none(cls, v):
+        # EmailStr rejects "" outright -- an empty string here just means "not requesting this
+        # field changed", same as every other requested_* field being omitted/null.
+        return v or None
+
+
+class ProfileChangeRequestOut(BaseModel):
+    id: str
+    status: str
+    requested_full_name: str | None
+    requested_email: str | None
+    requested_mobile: str | None
+    requested_company_name: str | None
+    requested_gstin: str | None
+    requested_pan: str | None
+    requested_address: str | None
+    requested_state_code: str | None
+    customer_note: str | None
+    admin_note: str | None
+    created_at: str
+    reviewed_at: str | None
+
+
+class ProfileChangeRequestAdminOut(ProfileChangeRequestOut):
+    user_id: str
+    user_email: str
+    user_full_name: str
+
+
+class ProfileChangeRequestStatusUpdate(BaseModel):
+    status: str = Field(pattern="^(approved|rejected)$")
+    admin_note: str | None = Field(default=None, max_length=1000)
+
+
 class InvoiceOut(BaseModel):
     id: str
     entity_id: str
@@ -1159,6 +1241,284 @@ class PublicTurnstileConfigOut(BaseModel):
     site_key: str
 
 
+class PlatformWabaSettingsOut(BaseModel):
+    app_id: str | None
+    config_id: str | None
+    configured: bool
+    webhook_url: str | None
+    webhook_verify_token: str | None
+
+
+class PlatformWabaSettingsUpdate(BaseModel):
+    app_id: str | None = None
+    config_id: str | None = None
+    app_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
+
+
+class WabaTestConnectionResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
+class WabaWebhookTokenOut(BaseModel):
+    webhook_url: str | None
+    webhook_verify_token: str
+
+
+class WabaConfigOut(BaseModel):
+    app_id: str
+    config_id: str
+
+
+class WabaConnectRequest(BaseModel):
+    code: str = Field(min_length=1, max_length=2000)
+    waba_id: str = Field(min_length=1, max_length=64)
+    phone_number_id: str = Field(min_length=1, max_length=64)
+    business_id: str | None = None
+
+
+class WabaStatusOut(BaseModel):
+    connected: bool
+    phone_number: str | None = None
+    verified_name: str | None = None
+    waba_id: str | None = None
+    connected_at: str | None = None
+    quality_rating: str | None = None
+    messaging_tier: str | None = None
+    status_checked_at: str | None = None
+
+
+class LabelOut(BaseModel):
+    id: str
+    scope: str
+    name: str
+    color: str
+
+
+class LabelCreateRequest(BaseModel):
+    scope: str = Field(pattern="^(conversation|contact)$")
+    name: str = Field(min_length=1, max_length=60)
+    color: str = Field(default="primary", max_length=20)
+
+
+class ContactOut(BaseModel):
+    id: str
+    wa_id: str | None
+    email: str | None
+    name: str | None
+    custom_attributes: dict
+    opted_out: bool
+    labels: list[LabelOut] = []
+    company_id: str | None = None
+    consent_given_at: str | None = None
+    consent_source: str | None = None
+    created_at: str
+
+
+class ContactUpdateRequest(BaseModel):
+    name: str | None = None
+    custom_attributes: dict | None = None
+    opted_out: bool | None = None
+
+
+class ConversationMessageOut(BaseModel):
+    id: str
+    direction: str
+    is_private: bool
+    message_type: str
+    body: str | None
+    media_url: str | None
+    payload: dict | None = None
+    status: str | None
+    error: str | None = None
+    sent_by_user_id: str | None
+    created_at: str
+
+
+class ConversationOut(BaseModel):
+    id: str
+    contact: ContactOut
+    channel: str
+    status: str
+    assigned_user_id: str | None
+    last_message_at: str | None
+    last_read_at: str | None
+    last_message_preview: str | None = None
+    unread: bool = False
+    is_ticket: bool = False
+    ticket_number: str | None = None
+    created_at: str
+    labels: list[LabelOut] = []
+    first_response_due_at: str | None = None
+    sla_breached: bool = False
+
+
+class ConversationCountsOut(BaseModel):
+    unassigned: int
+    assigned_to_me: int
+    all: int
+
+
+class ConversationDetailOut(ConversationOut):
+    messages: list[ConversationMessageOut]
+
+
+class ConversationUpdateRequest(BaseModel):
+    status: str | None = Field(default=None, pattern="^(open|pending|resolved)$")
+    assigned_user_id: str | None = None
+
+
+class AssignableUserOut(BaseModel):
+    id: str
+    full_name: str
+    email: str
+
+
+class TemplateButtonOut(BaseModel):
+    type: str
+    text: str
+    url: str | None = None
+    phone_number: str | None = None
+
+
+class WabaTemplateOut(BaseModel):
+    name: str
+    status: str
+    language: str
+    category: str
+    header_text: str | None = None
+    body: str | None
+    footer_text: str | None = None
+    buttons: list[TemplateButtonOut] = []
+
+
+class TemplateMessageRequest(BaseModel):
+    template_name: str = Field(min_length=1, max_length=512)
+    language_code: str = Field(min_length=1, max_length=20)
+    body_params: list[str] = []
+    preview_body: str = Field(min_length=1, max_length=4096)
+
+
+class TemplateButtonRequest(BaseModel):
+    type: str = Field(pattern="^(QUICK_REPLY|URL|PHONE_NUMBER)$")
+    text: str = Field(min_length=1, max_length=25)
+    url: str | None = Field(default=None, max_length=2000)
+    phone_number: str | None = Field(default=None, max_length=20)
+
+
+class TemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=512, pattern="^[a-z0-9_]+$")
+    category: str = Field(pattern="^(MARKETING|UTILITY|AUTHENTICATION)$")
+    language: str = Field(min_length=1, max_length=20)
+    header_text: str | None = Field(default=None, max_length=60)
+    body_text: str = Field(min_length=1, max_length=1024)
+    example_params: list[str] = []
+    footer_text: str | None = Field(default=None, max_length=60)
+    buttons: list[TemplateButtonRequest] = []
+
+
+class LocationMessageRequest(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    name: str | None = Field(default=None, max_length=200)
+    address: str | None = Field(default=None, max_length=300)
+
+
+class ContactCardEntry(BaseModel):
+    """Mirrors Meta's own contacts-message shape closely enough to pass straight through --
+    only the fields this composer actually collects, not the full breadth Meta's schema allows
+    (addresses, org, birthday, urls) since nothing in the UI collects those yet."""
+    formatted_name: str = Field(min_length=1, max_length=200)
+    phone: str = Field(min_length=1, max_length=30)
+
+
+class ContactMessageRequest(BaseModel):
+    contacts: list[ContactCardEntry] = Field(min_length=1, max_length=10)
+
+
+class InteractiveButtonRequest(BaseModel):
+    body_text: str = Field(min_length=1, max_length=1024)
+    button_labels: list[str] = Field(min_length=1, max_length=3)
+
+
+class InteractiveListRow(BaseModel):
+    title: str = Field(min_length=1, max_length=24)
+    description: str | None = Field(default=None, max_length=72)
+
+
+class InteractiveListRequest(BaseModel):
+    body_text: str = Field(min_length=1, max_length=1024)
+    button_label: str = Field(min_length=1, max_length=20)
+    rows: list[InteractiveListRow] = Field(min_length=1, max_length=10)
+
+
+class ReactionRequest(BaseModel):
+    message_id: str = Field(min_length=1)
+    emoji: str = Field(max_length=8)
+
+
+class BusinessProfileOut(BaseModel):
+    about: str | None = None
+    address: str | None = None
+    description: str | None = None
+    email: str | None = None
+    profile_picture_url: str | None = None
+    websites: list[str] = []
+    vertical: str | None = None
+
+
+class BusinessProfileUpdateRequest(BaseModel):
+    about: str | None = Field(default=None, max_length=139)
+    address: str | None = Field(default=None, max_length=256)
+    description: str | None = Field(default=None, max_length=512)
+    email: str | None = Field(default=None, max_length=128)
+    vertical: str | None = None
+    websites: list[str] | None = None
+
+
+class WabaStatusRefreshOut(BaseModel):
+    quality_rating: str | None
+    messaging_tier: str | None
+    status_checked_at: str | None
+
+
+class AutomationRuleOut(BaseModel):
+    id: str
+    name: str
+    trigger_type: str
+    trigger_value: str | None
+    action_type: str
+    action_value: str
+    active: bool
+    priority: int
+
+
+class AutomationRuleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    trigger_type: str = Field(pattern="^(keyword|new_contact)$")
+    trigger_value: str | None = Field(default=None, max_length=200)
+    action_type: str = Field(pattern="^(assign|reply|label)$")
+    action_value: str = Field(min_length=1, max_length=64)
+    active: bool = True
+    priority: int = 0
+
+
+class ConversationMessageCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=4096)
+    is_private: bool = False
+
+
+class CannedResponseOut(BaseModel):
+    id: str
+    shortcut: str
+    body: str
+
+
+class CannedResponseCreateRequest(BaseModel):
+    shortcut: str = Field(min_length=1, max_length=25)
+    body: str = Field(min_length=1, max_length=500)
+
+
 class PlatformZohoSettingsOut(BaseModel):
     client_id: str | None
     accounts_domain: str | None
@@ -1333,6 +1693,7 @@ class TeamMemberOut(BaseModel):
     full_name: str
     role: str
     status: str
+    manager_id: str | None = None
 
 
 class AcceptInviteRequest(BaseModel):
@@ -1451,3 +1812,553 @@ class OrganizationOverviewResponse(BaseModel):
     invoices: list[InvoiceOut]
     recharges: list[RechargeDetailOut]
     payments: list[PaymentDetailOut]
+
+
+# --- CRM (3rd channel) -----------------------------------------------------------------------
+
+class LeadOut(BaseModel):
+    id: str
+    contact: ContactOut
+    pipeline_id: str | None
+    stage: str
+    source: str
+    converted_from_conversation_id: str | None
+    owner_user_id: str | None
+    notes: str | None
+    value: float | None
+    probability: int | None
+    expected_close_date: str | None
+    status: str
+    lost_reason: str | None
+    custom_fields: dict
+    score: int
+    created_at: str
+
+
+class LeadDealUpdateRequest(BaseModel):
+    value: float | None = Field(default=None, ge=0)
+    probability: int | None = Field(default=None, ge=0, le=100)
+    expected_close_date: str | None = None
+    custom_fields: dict | None = None
+
+
+class LeadStatusUpdateRequest(BaseModel):
+    status: str = Field(pattern="^(open|won|lost)$")
+    lost_reason: str | None = Field(default=None, max_length=200)
+
+
+class PipelineOut(BaseModel):
+    id: str
+    name: str
+    stages: list[str]
+
+
+class PipelineCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    stages: list[str] = Field(min_length=1, max_length=15)
+
+
+class CrmFunnelStage(BaseModel):
+    stage: str
+    count: int
+    value: float
+
+
+class CrmReportsOut(BaseModel):
+    funnel: list[CrmFunnelStage]
+    forecast: float
+    open_value: float
+    won_value: float
+    lost_value: float
+    open_count: int
+    won_count: int
+    lost_count: int
+    win_rate: float | None
+
+
+class EmployeeSalesRow(BaseModel):
+    user_id: str
+    full_name: str
+    won_count: int
+    won_value: float
+
+
+class ProductSalesRow(BaseModel):
+    description: str
+    count: int
+    value: float
+
+
+class FollowUpPerformanceOut(BaseModel):
+    total: int
+    done: int
+    overdue: int
+    done_rate: float | None
+
+
+class CrmExtendedReportsOut(BaseModel):
+    by_employee: list[EmployeeSalesRow]
+    by_product: list[ProductSalesRow]
+    outstanding_count: int
+    outstanding_value: float
+    follow_up: FollowUpPerformanceOut
+
+
+class TaskOut(BaseModel):
+    id: str
+    contact_id: str
+    title: str
+    type: str
+    due_at: str | None
+    done: bool
+    assigned_user_id: str | None
+    recurrence: str
+    created_at: str
+
+
+class TaskCreateRequest(BaseModel):
+    contact_id: str
+    title: str = Field(min_length=1, max_length=200)
+    type: str = Field(default="follow_up", pattern="^(call|meeting|follow_up|other)$")
+    due_at: str | None = None
+    assigned_user_id: str | None = None
+    recurrence: str = Field(default="none", pattern="^(none|daily|weekly|monthly)$")
+
+
+class TaskUpdateRequest(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=200)
+    type: str | None = Field(default=None, pattern="^(call|meeting|follow_up|other)$")
+    due_at: str | None = None
+    done: bool | None = None
+    assigned_user_id: str | None = None
+    recurrence: str | None = Field(default=None, pattern="^(none|daily|weekly|monthly)$")
+
+
+class QuoteLineItem(BaseModel):
+    description: str = Field(min_length=1, max_length=200)
+    hsn_code: str = Field(default="", max_length=20)
+    quantity: float = Field(gt=0)
+    unit_price: float = Field(ge=0)
+
+
+class QuoteOut(BaseModel):
+    id: str
+    lead_id: str
+    quote_number: str | None
+    line_items: list[QuoteLineItem]
+    status: str
+    subtotal: float
+    cgst: float
+    sgst: float
+    igst: float
+    total: float
+    has_pdf: bool
+    approval_status: str
+    converted_invoice_id: str | None
+    created_at: str
+    sent_at: str | None
+
+
+class QuoteCreateRequest(BaseModel):
+    lead_id: str
+    line_items: list[QuoteLineItem] = Field(min_length=1)
+
+
+class CompanyOut(BaseModel):
+    id: str
+    name: str
+    gstin: str | None
+    industry: str | None
+    website: str | None
+    notes: str | None
+    contact_count: int
+    created_at: str
+
+
+class CompanyCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    gstin: str | None = Field(default=None, max_length=15)
+    industry: str | None = Field(default=None, max_length=80)
+    website: str | None = Field(default=None, max_length=255)
+    notes: str | None = None
+
+
+class ScoringRuleOut(BaseModel):
+    id: str
+    name: str
+    condition_type: str
+    condition_value: str
+    points: int
+    active: bool
+
+
+class ScoringRuleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    condition_type: str = Field(pattern="^(has_label|custom_field_set|source)$")
+    condition_value: str = Field(min_length=1, max_length=200)
+    points: int = Field(default=10, ge=-100, le=100)
+    active: bool = True
+
+
+class TerritoryOut(BaseModel):
+    id: str
+    name: str
+    pincodes: list[str]
+    owner_user_id: str | None
+
+
+class TerritoryCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    pincodes: list[str] = Field(min_length=1)
+    owner_user_id: str | None = None
+
+
+class SalesTargetOut(BaseModel):
+    id: str
+    user_id: str
+    period_start: str
+    period_end: str
+    target_value: float
+    actual_value: float
+
+
+class SalesTargetCreateRequest(BaseModel):
+    user_id: str
+    period_start: str
+    period_end: str
+    target_value: float = Field(gt=0)
+
+
+class AttachmentOut(BaseModel):
+    id: str
+    contact_id: str
+    filename: str
+    uploaded_by_user_id: str | None
+    created_at: str
+
+
+class WebFormOut(BaseModel):
+    enabled: bool
+    fields: list[str]
+    success_message: str
+    target_pipeline_id: str | None
+    embed_snippet: str
+
+
+class WebFormUpdateRequest(BaseModel):
+    enabled: bool
+    fields: list[str] = Field(min_length=1)
+    success_message: str = Field(min_length=1, max_length=300)
+    target_pipeline_id: str | None = None
+
+
+class WebFormSubmitRequest(BaseModel):
+    values: dict[str, str]
+    turnstile_token: str | None = None
+
+
+class WebFormSubmitResponse(BaseModel):
+    message: str
+
+
+class PublicWebFormOut(BaseModel):
+    enabled: bool
+    fields: list[str]
+
+
+class ManagerUpdateRequest(BaseModel):
+    manager_id: str | None = None
+
+
+class LeadRoutingRuleOut(BaseModel):
+    id: str
+    name: str
+    trigger_type: str
+    trigger_value: str
+    assign_to_user_id: str
+    active: bool
+    priority: int
+
+
+class LeadRoutingRuleCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    trigger_type: str = Field(pattern="^(pincode|source|product|territory)$")
+    trigger_value: str = Field(min_length=1, max_length=200)
+    assign_to_user_id: str
+    active: bool = True
+    priority: int = 0
+
+
+class SequenceStepIn(BaseModel):
+    day_offset: int = Field(ge=0, le=365)
+    channel: str = Field(pattern="^(whatsapp_template|sms|task)$")
+    content: dict
+
+
+class SequenceStepOut(SequenceStepIn):
+    id: str
+
+
+class SequenceOut(BaseModel):
+    id: str
+    name: str
+    active: bool
+    steps: list[SequenceStepOut]
+    enrolled_count: int
+    created_at: str
+
+
+class SequenceCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    steps: list[SequenceStepIn] = Field(min_length=1)
+
+
+class SequenceEnrollRequest(BaseModel):
+    lead_id: str
+
+
+class ConsentUpdateRequest(BaseModel):
+    consent_source: str = Field(min_length=1, max_length=60)
+
+
+class LeadCreateFromConversationRequest(BaseModel):
+    stage: str = Field(default="inquiry", min_length=1, max_length=40)
+    owner_user_id: str | None = None
+    notes: str | None = None
+
+
+class CustomerCreateFromConversationRequest(BaseModel):
+    owner_user_id: str | None = None
+    notes: str | None = None
+
+
+class LeadStageUpdateRequest(BaseModel):
+    stage: str = Field(min_length=1, max_length=40)
+
+
+class LeadOwnerUpdateRequest(BaseModel):
+    owner_user_id: str | None = None
+
+
+class LeadNotesUpdateRequest(BaseModel):
+    notes: str | None = None
+
+
+class CustomerOut(BaseModel):
+    id: str
+    contact: ContactOut
+    lead_id: str | None
+    converted_from_conversation_id: str | None
+    owner_user_id: str | None
+    notes: str | None
+    created_at: str
+
+
+class MapToCustomerRequest(BaseModel):
+    customer_id: str
+
+
+class TicketSummary(BaseModel):
+    open: int
+    resolved: int
+
+
+class ContactDirectoryEntryOut(BaseModel):
+    contact: ContactOut
+    conversation_id: str | None
+    last_message_at: str | None
+    last_reply_at: str | None
+    is_ticket: bool
+    ticket_number: str | None
+    ticket_status: str | None
+    lead_id: str | None
+    customer_id: str | None
+
+
+class CrmSettingsOut(BaseModel):
+    pipeline_stages: list[str]
+    notify_email: bool
+    notify_sms: bool
+    notify_whatsapp: bool
+    logo_url: str | None
+    brand_color: str | None
+
+
+class CrmSettingsUpdateRequest(BaseModel):
+    notify_email: bool
+    notify_sms: bool
+    notify_whatsapp: bool
+    brand_color: str | None = Field(default=None, max_length=20)
+
+
+class PipelineStagesUpdateRequest(BaseModel):
+    stages: list[str] = Field(min_length=1, max_length=15)
+
+
+class ContactTimelineOut(BaseModel):
+    contact: ContactOut
+    conversation_id: str | None
+    lead: LeadOut | None
+    customer: CustomerOut | None
+    tickets: TicketSummary
+    messages: list[ConversationMessageOut]
+
+
+# --- Segments & campaigns ----------------------------------------------------------------------
+
+class SegmentOut(BaseModel):
+    id: str
+    name: str
+    label_ids: list[str]
+    custom_attributes: dict
+    contact_count: int
+    created_at: str
+
+
+class SegmentCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    label_ids: list[str] = []
+    custom_attributes: dict = {}
+
+
+class CampaignOut(BaseModel):
+    id: str
+    name: str
+    template_name: str
+    template_language: str
+    body_params: list[str]
+    segment_id: str
+    status: str
+    total_recipients: int
+    sent_count: int
+    failed_count: int
+    created_at: str
+    completed_at: str | None
+
+
+class CampaignCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    template_name: str = Field(min_length=1, max_length=512)
+    template_language: str = Field(min_length=1, max_length=20)
+    body_params: list[str] = []
+    segment_id: str
+
+
+# --- Business hours & SLA ----------------------------------------------------------------------
+
+class DayHours(BaseModel):
+    open: str
+    close: str
+
+
+class BusinessHoursOut(BaseModel):
+    enabled: bool
+    timezone: str
+    schedule: dict[str, DayHours]
+    outside_hours_message: str | None
+
+
+class BusinessHoursUpdateRequest(BaseModel):
+    enabled: bool
+    timezone: str = Field(default="Asia/Kolkata", max_length=50)
+    schedule: dict[str, DayHours] = {}
+    outside_hours_message: str | None = Field(default=None, max_length=500)
+
+
+class SlaPolicyOut(BaseModel):
+    enabled: bool
+    first_response_minutes: int
+
+
+class SlaPolicyUpdateRequest(BaseModel):
+    enabled: bool
+    first_response_minutes: int = Field(gt=0, le=10080)
+
+
+class AgentCapacityUpdateRequest(BaseModel):
+    max_open_conversations: int | None = Field(default=None, gt=0)
+
+
+# --- Macros --------------------------------------------------------------------------------------
+
+class MacroAction(BaseModel):
+    type: str = Field(pattern="^(reply|label|status|assign)$")
+    value: str | None = None
+
+
+class MacroOut(BaseModel):
+    id: str
+    name: str
+    actions: list[MacroAction]
+    created_at: str
+
+
+class MacroCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    actions: list[MacroAction] = Field(min_length=1)
+
+
+# --- CSAT ----------------------------------------------------------------------------------------
+
+class CsatSettingsOut(BaseModel):
+    enabled: bool
+
+
+class CsatSettingsUpdateRequest(BaseModel):
+    enabled: bool
+
+
+class CsatResponseOut(BaseModel):
+    id: str
+    conversation_id: str
+    rating: int | None
+    requested_at: str
+    responded_at: str | None
+
+
+# --- Outbound webhooks -----------------------------------------------------------------------
+
+class WabaWebhookSubscriptionOut(BaseModel):
+    url: str | None
+    enabled: bool
+    secret: str | None = None
+
+
+class WabaWebhookSubscriptionUpdateRequest(BaseModel):
+    url: str = Field(min_length=1, max_length=500)
+    enabled: bool = True
+
+
+# --- Reporting -------------------------------------------------------------------------------
+
+class ReportVolumePoint(BaseModel):
+    date: str
+    inbound: int
+    outbound: int
+
+
+class ReportAgentRow(BaseModel):
+    user_id: str
+    full_name: str
+    messages_sent: int
+    conversations_resolved: int
+    avg_first_response_minutes: float | None
+
+
+class ReportLabelRow(BaseModel):
+    label_id: str
+    name: str
+    color: str
+    conversation_count: int
+
+
+class WabaReportsOut(BaseModel):
+    volume: list[ReportVolumePoint]
+    agents: list[ReportAgentRow]
+    labels: list[ReportLabelRow]
+    total_conversations: int
+    open_conversations: int
+    resolved_conversations: int
+    sla_breached_count: int
+    avg_csat: float | None
+    csat_response_count: int

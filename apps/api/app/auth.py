@@ -18,10 +18,10 @@ from .config import settings
 from .database import get_db
 from .dispatch import provider_for_route
 from .email_service import render_email, send_email
-from .models import EmailVerification, MobileVerification, Organization, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, TwoFactorAuth, TwoFactorRecoveryCode, User, UserSession, UserStatus, uid
+from .models import EmailVerification, MobileVerification, Organization, PasswordReset, PLATFORM_INTERNAL_ROLES, PlatformMessage, ProfileChangeRequest, TwoFactorAuth, TwoFactorRecoveryCode, User, UserSession, UserStatus, uid
 from .providers import ProviderMessage
 from .schemas import (
-    ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, PermissionsResponse, RegisterRequest, RegisterResponse,
+    ChangePasswordRequest, ForgotPasswordRequest, ForgotPasswordResponse, LoginRequest, PermissionsResponse, ProfileChangeRequestCreate, ProfileChangeRequestOut, RegisterRequest, RegisterResponse,
     RequestMobileOtpRequest, RequestMobileOtpResponse, ResetPasswordRequest, SessionOut,
     RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
@@ -503,9 +503,49 @@ def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
         org = db.get(Organization, user.organization_id)
         profile_completed = bool(org and org.profile_completed_at)
     return UserProfile(
-        id=user.id, email=user.email, full_name=user.full_name, email_verified=user.email_verified, mobile_verified=user.mobile_verified,
+        id=user.id, email=user.email, full_name=user.full_name, mobile=user.mobile, email_verified=user.email_verified, mobile_verified=user.mobile_verified,
         status=user.status, organization_id=user.organization_id, role=user.role, profile_completed=profile_completed,
     )
+
+
+@router.post("/profile-change-requests", response_model=ProfileChangeRequestOut)
+def create_profile_change_request(payload: ProfileChangeRequestCreate, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Name/email/mobile/GST-company details aren't directly self-editable -- a change instead
+    queues here for admin review (models.ProfileChangeRequest's own docstring has the full
+    reasoning). One at a time: a second request while one is still pending would leave two
+    conflicting sets of proposed values in the admin's queue for the same account."""
+    existing = db.scalar(select(ProfileChangeRequest).where(ProfileChangeRequest.user_id == user.id, ProfileChangeRequest.status == "pending"))
+    if existing:
+        raise HTTPException(status_code=422, detail="You already have a pending change request; wait for it to be reviewed before submitting another")
+    requested_fields = payload.model_dump(exclude={"customer_note"}, exclude_none=True)
+    if not requested_fields:
+        raise HTTPException(status_code=422, detail="Request at least one field to change")
+    row = ProfileChangeRequest(user_id=user.id, **payload.model_dump())
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return ProfileChangeRequestOut(
+        id=row.id, status=row.status, requested_full_name=row.requested_full_name, requested_email=row.requested_email,
+        requested_mobile=row.requested_mobile, requested_company_name=row.requested_company_name, requested_gstin=row.requested_gstin,
+        requested_pan=row.requested_pan, requested_address=row.requested_address, requested_state_code=row.requested_state_code,
+        customer_note=row.customer_note, admin_note=row.admin_note, created_at=row.created_at.isoformat(),
+        reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+    )
+
+
+@router.get("/profile-change-requests", response_model=list[ProfileChangeRequestOut])
+def list_my_profile_change_requests(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    rows = db.scalars(select(ProfileChangeRequest).where(ProfileChangeRequest.user_id == user.id).order_by(ProfileChangeRequest.created_at.desc())).all()
+    return [
+        ProfileChangeRequestOut(
+            id=r.id, status=r.status, requested_full_name=r.requested_full_name, requested_email=r.requested_email,
+            requested_mobile=r.requested_mobile, requested_company_name=r.requested_company_name, requested_gstin=r.requested_gstin,
+            requested_pan=r.requested_pan, requested_address=r.requested_address, requested_state_code=r.requested_state_code,
+            customer_note=r.customer_note, admin_note=r.admin_note, created_at=r.created_at.isoformat(),
+            reviewed_at=r.reviewed_at.isoformat() if r.reviewed_at else None,
+        )
+        for r in rows
+    ]
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
