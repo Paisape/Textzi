@@ -76,6 +76,40 @@ async function refreshWabaStatus() {
   }
 }
 
+// --- Direct connect (fallback when Embedded Signup isn't configured yet) ------------------
+
+const directConnectOpen = ref(false)
+const directConnecting = ref(false)
+const directConnectError = ref('')
+const directForm = ref({ waba_id: '', phone_number_id: '', access_token: '', business_id: '' })
+
+async function onDirectConnect() {
+  directConnectError.value = ''
+  directConnecting.value = true
+  try {
+    status.value = await $api<WabaStatus>('/v1/waba/connect-direct', {
+      method: 'POST',
+      body: {
+        waba_id: directForm.value.waba_id.trim(),
+        phone_number_id: directForm.value.phone_number_id.trim(),
+        access_token: directForm.value.access_token.trim(),
+        business_id: directForm.value.business_id.trim() || null,
+      },
+    })
+    if (status.value.connected) {
+      directConnectOpen.value = false
+      directForm.value = { waba_id: '', phone_number_id: '', access_token: '', business_id: '' }
+      loadBusinessProfile()
+    }
+  }
+  catch (error: any) {
+    directConnectError.value = extractErrorMessage(error, 'Could not complete the WhatsApp connection.')
+  }
+  finally {
+    directConnecting.value = false
+  }
+}
+
 // --- Business profile ---------------------------------------------------------------------
 
 const profile = ref<BusinessProfile | null>(null)
@@ -556,6 +590,34 @@ watch(activeTab, tab => {
             <VBtn prepend-icon="tabler-brand-whatsapp" :loading="connecting" @click="onConnect">
               Connect WhatsApp
             </VBtn>
+
+            <div class="mt-4">
+              <VBtn size="small" variant="text" @click="directConnectOpen = !directConnectOpen">
+                {{ directConnectOpen ? 'Hide direct connect' : 'Or connect directly with a token' }}
+              </VBtn>
+              <div v-if="directConnectOpen" class="mt-3" style="max-width: 480px;">
+                <p class="text-caption text-medium-emphasis mb-3">
+                  For when Embedded Signup isn't set up yet, or you already manage your own Meta
+                  access token. Get these from Meta App Dashboard &gt; WhatsApp &gt; API Setup (a
+                  free temporary token + test number, no App Review needed) or a permanent System
+                  User token from Business Settings.
+                </p>
+                <VAlert v-if="directConnectError" type="error" variant="tonal" density="compact" class="mb-3">
+                  {{ directConnectError }}
+                </VAlert>
+                <VTextField v-model="directForm.waba_id" label="WhatsApp Business Account ID" density="compact" class="mb-3" />
+                <VTextField v-model="directForm.phone_number_id" label="Phone number ID" density="compact" class="mb-3" />
+                <VTextField v-model="directForm.access_token" label="Access token" type="password" density="compact" class="mb-3" />
+                <VTextField v-model="directForm.business_id" label="Business ID (optional)" density="compact" class="mb-4" />
+                <VBtn
+                  :loading="directConnecting"
+                  :disabled="!directForm.waba_id.trim() || !directForm.phone_number_id.trim() || !directForm.access_token.trim()"
+                  @click="onDirectConnect"
+                >
+                  Connect directly
+                </VBtn>
+              </div>
+            </div>
           </template>
         </VCardText>
       </VCard>

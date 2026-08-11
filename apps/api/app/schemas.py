@@ -1277,6 +1277,17 @@ class WabaConnectRequest(BaseModel):
     business_id: str | None = None
 
 
+class WabaDirectConnectRequest(BaseModel):
+    """Fallback path when Embedded Signup isn't set up yet (no Configuration ID) -- the caller
+    already has a real access token from Meta directly (WhatsApp > API Setup's temporary token,
+    or a permanent System User token from Business Settings), so there's no authorization code
+    to exchange, just the token itself plus the IDs Meta's API Setup page already shows."""
+    waba_id: str = Field(min_length=1, max_length=64)
+    phone_number_id: str = Field(min_length=1, max_length=64)
+    access_token: str = Field(min_length=1, max_length=4000)
+    business_id: str | None = None
+
+
 class WabaStatusOut(BaseModel):
     connected: bool
     phone_number: str | None = None

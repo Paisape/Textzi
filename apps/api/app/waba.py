@@ -12,7 +12,8 @@ from .auth import require_user
 from .database import get_db
 from .models import User, WabaConnection
 from .schemas import (
-    BusinessProfileOut, BusinessProfileUpdateRequest, WabaConfigOut, WabaConnectRequest, WabaStatusOut, WabaStatusRefreshOut,
+    BusinessProfileOut, BusinessProfileUpdateRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest, WabaStatusOut,
+    WabaStatusRefreshOut,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp
 from .services import DomainError, get_platform_waba_settings, log_activity, resolve_user_entity
@@ -116,6 +117,64 @@ def connect_waba(payload: WabaConnectRequest, request: Request, user: User = Dep
     connection.connected_at = datetime.now(timezone.utc)
     connection.disconnected_at = None
     log_activity(db, user.organization_id, "waba_connected", f"WhatsApp Business Account connected (waba_id={payload.waba_id}).", user_id=user.id, actor_email=user.email, request=request)
+    db.commit()
+    db.refresh(connection)
+    return WabaStatusOut(
+        connected=True, phone_number=connection.phone_number, verified_name=connection.verified_name,
+        waba_id=connection.waba_id, connected_at=connection.connected_at.isoformat(),
+    )
+
+
+@router.post("/connect-direct", response_model=WabaStatusOut)
+def connect_waba_direct(payload: WabaDirectConnectRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Manual fallback for when Embedded Signup isn't configured yet (no Configuration ID saved
+    in platform settings) -- same end state as connect_waba, just skipping the authorization-code
+    exchange since the caller already has a real access token in hand. Meta's WhatsApp > API
+    Setup page hands out a temporary (24h) token plus the waba_id/phone_number_id for free,
+    no App Review needed, which is enough to test with or record the App Review demo videos; a
+    permanent System User token (Business Settings > System Users) works the same way for
+    ongoing use."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        subscribe_app_to_waba(payload.waba_id, payload.access_token)
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not complete the WhatsApp connection: {exc}") from exc
+
+    connection = db.get(WabaConnection, entity.id)
+    if connection and connection.phone_number_id == payload.phone_number_id and connection.registration_pin_encrypted:
+        pin = decrypt_secret(connection.registration_pin_encrypted)
+    else:
+        pin = generate_otp()
+    try:
+        register_phone_number(payload.phone_number_id, payload.access_token, pin)
+    except MetaApiError:
+        pass
+
+    phone_number, verified_name = None, None
+    try:
+        details = fetch_phone_number_details(payload.phone_number_id, payload.access_token)
+        phone_number, verified_name = details.get("display_phone_number"), details.get("verified_name")
+    except MetaApiError:
+        pass
+
+    if not connection:
+        connection = WabaConnection(entity_id=entity.id)
+        db.add(connection)
+    connection.waba_id = payload.waba_id
+    connection.phone_number_id = payload.phone_number_id
+    connection.business_id = payload.business_id
+    connection.phone_number = phone_number
+    connection.verified_name = verified_name
+    connection.access_token_encrypted = encrypt_secret(payload.access_token)
+    connection.registration_pin_encrypted = encrypt_secret(pin)
+    connection.status = "connected"
+    connection.connected_at = datetime.now(timezone.utc)
+    connection.disconnected_at = None
+    log_activity(db, user.organization_id, "waba_connected", f"WhatsApp Business Account connected directly (waba_id={payload.waba_id}).", user_id=user.id, actor_email=user.email, request=request)
     db.commit()
     db.refresh(connection)
     return WabaStatusOut(
