@@ -1302,6 +1302,15 @@ class WabaConnectRequest(BaseModel):
     business_id: str | None = None
 
 
+class RegisterPhoneRequest(BaseModel):
+    """pin is optional -- omit it to reuse whatever PIN is already stored (or a freshly generated
+    one on first-ever registration). Pass it explicitly when the number already had two-step
+    verification enabled on Meta's side before it was connected here, so the auto-generated PIN
+    Textzi would otherwise try doesn't mismatch Meta's real one (surfaces as a 400 "Invalid
+    parameter" from Meta's own /register endpoint)."""
+    pin: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
 class WabaDirectConnectRequest(BaseModel):
     """Fallback path when Embedded Signup isn't set up yet (no Configuration ID) -- the caller
     already has a real access token from Meta directly (WhatsApp > API Setup's temporary token,

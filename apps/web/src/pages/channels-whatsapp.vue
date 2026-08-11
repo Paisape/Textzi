@@ -50,12 +50,13 @@ const refreshingStatus = ref(false)
 const refreshStatusError = ref('')
 const registeringPhone = ref(false)
 const registerPhoneResult = ref<{ ok: boolean, detail: string } | null>(null)
+const registerPhonePin = ref('')
 
 async function onRegisterPhone() {
   registerPhoneResult.value = null
   registeringPhone.value = true
   try {
-    await $api('/v1/waba/register-phone', { method: 'POST' })
+    await $api('/v1/waba/register-phone', { method: 'POST', body: { pin: registerPhonePin.value.trim() || null } })
     registerPhoneResult.value = { ok: true, detail: 'Registered successfully -- this number can now send messages.' }
   }
   catch (error: any) {
@@ -595,14 +596,18 @@ watch(activeTab, tab => {
             <VAlert v-if="registerPhoneResult" :type="registerPhoneResult.ok ? 'success' : 'error'" variant="tonal" density="compact" class="mb-3">
               {{ registerPhoneResult.detail }}
             </VAlert>
-            <div class="d-flex ga-3">
+            <div class="d-flex align-center flex-wrap ga-3 mb-3">
+              <VTextField
+                v-model="registerPhonePin" label="Two-step verification PIN (only if this number already had one set on Meta)"
+                placeholder="6 digits" density="compact" style="max-width: 380px;" hide-details
+              />
               <VBtn variant="tonal" :loading="registeringPhone" @click="onRegisterPhone">
                 Register phone number
               </VBtn>
-              <VBtn color="error" variant="tonal" :loading="disconnecting" @click="onDisconnect">
-                Disconnect
-              </VBtn>
             </div>
+            <VBtn color="error" variant="tonal" :loading="disconnecting" @click="onDisconnect">
+              Disconnect
+            </VBtn>
           </template>
 
           <template v-else>

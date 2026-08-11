@@ -12,8 +12,8 @@ from .auth import require_user
 from .database import get_db
 from .models import User, WabaConnection
 from .schemas import (
-    BusinessProfileOut, BusinessProfileUpdateRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest, WabaStatusOut,
-    WabaStatusRefreshOut,
+    BusinessProfileOut, BusinessProfileUpdateRequest, RegisterPhoneRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest,
+    WabaStatusOut, WabaStatusRefreshOut,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp
 from .services import DomainError, get_platform_waba_settings, log_activity, resolve_user_entity
@@ -215,19 +215,26 @@ def _connected_waba(db: Session, entity_id: str) -> WabaConnection:
 
 
 @router.post("/register-phone")
-def register_connected_phone(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def register_connected_phone(payload: RegisterPhoneRequest = RegisterPhoneRequest(), user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Manual retry for phone-number registration -- connect_waba/connect_waba_direct already
     attempt this automatically (best-effort, so a failure there doesn't undo an otherwise-working
     connection), but that failure was previously silent. This surfaces the real Meta error (e.g.
-    133010 "Account not registered") back to the customer so they can act on it directly instead
-    of only finding out the first time an actual message send fails."""
+    133010 "Account not registered", or 400 "Invalid parameter" when payload.pin doesn't match a
+    two-step verification PIN the number already had set on Meta's side before connecting here)
+    back to the customer so they can act on it directly instead of only finding out the first time
+    an actual message send fails."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     connection = _connected_waba(db, entity.id)
     access_token = decrypt_secret(connection.access_token_encrypted)
-    pin = decrypt_secret(connection.registration_pin_encrypted) if connection.registration_pin_encrypted else generate_otp()
+    if payload.pin:
+        pin = payload.pin
+    elif connection.registration_pin_encrypted:
+        pin = decrypt_secret(connection.registration_pin_encrypted)
+    else:
+        pin = generate_otp()
     try:
         register_phone_number(connection.phone_number_id, access_token, pin)
     except MetaApiError as exc:
