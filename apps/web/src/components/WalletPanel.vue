@@ -25,6 +25,7 @@ type WalletData = {
   credit_used: number
   available_balance: number
   transactions: WalletTransaction[]
+  dev_recharge_available: boolean
 }
 
 const wallet = ref<WalletData | null>(null)
@@ -234,7 +235,7 @@ defineExpose({ loadWallet })
         </VBtn>
 
         <VForm
-          v-else
+          v-else-if="wallet?.dev_recharge_available"
           @submit.prevent="onSimulatedRecharge"
         >
           <VRow align="center">
@@ -263,6 +264,13 @@ defineExpose({ loadWallet })
             </VCol>
           </VRow>
         </VForm>
+        <VAlert
+          v-else
+          type="info"
+          variant="tonal"
+        >
+          Wallet top-up isn't self-service yet for this channel — contact support to add funds.
+        </VAlert>
       </VCardText>
     </VCard>
 

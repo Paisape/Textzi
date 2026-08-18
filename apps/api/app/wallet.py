@@ -45,6 +45,7 @@ def _get_wallet(db: Session, user: User, wallet_model: type[Wallet] | type[WabaW
         credit_used=float(wallet.credit_used),
         available_balance=float(wallet.prepaid_balance) + max(0, float(wallet.credit_limit) - float(wallet.credit_used)),
         transactions=[WalletTransactionOut(id=t.id, type=t.type, amount=float(t.amount), balance_after=float(t.balance_after), reference=t.reference, created_at=t.created_at.isoformat()) for t in transactions],
+        dev_recharge_available=settings.environment == "development",
     )
 
 
@@ -124,6 +125,7 @@ def quote_recharge(payload: WalletQuoteRequest, user: User = Depends(require_use
         price_per_sms=float(slab.price_per_sms),
         rate_card_name=rate_card.name,
         min_recharge_amount=float(rate_card.min_recharge_amount),
+        dev_recharge_available=settings.environment == "development",
     )
 
 

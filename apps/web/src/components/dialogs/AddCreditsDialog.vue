@@ -20,6 +20,7 @@ type Quote = {
   price_per_sms: number
   rate_card_name: string
   min_recharge_amount: number
+  dev_recharge_available: boolean
 }
 
 const amount = ref(500)
@@ -256,7 +257,7 @@ async function onSimulateRecharge() {
             Continue to Pay
           </VBtn>
         </div>
-        <div class="text-end">
+        <div v-if="quote?.dev_recharge_available" class="text-end">
           <VBtn
             variant="text"
             size="small"

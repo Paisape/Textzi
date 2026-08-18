@@ -338,6 +338,7 @@ class WalletResponse(BaseModel):
     credit_used: float
     available_balance: float
     transactions: list[WalletTransactionOut]
+    dev_recharge_available: bool
 
 
 class RechargeRequest(BaseModel):
@@ -558,6 +559,7 @@ class WalletQuoteResponse(BaseModel):
     price_per_sms: float
     rate_card_name: str
     min_recharge_amount: float
+    dev_recharge_available: bool
 
 
 class RateCardSummary(BaseModel):
