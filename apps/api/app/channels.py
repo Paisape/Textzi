@@ -34,7 +34,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, expected_order_paise, flag_suspicious_payment, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
+from .services import GST_RATE, DomainError, channel_active, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -150,10 +150,11 @@ def _build_authorization_letter_sample() -> bytes:
     return buffer.getvalue()
 
 
-def _razorpay_client() -> razorpay.Client:
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
-        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env.")
-    return razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+def _razorpay_client(db: Session) -> tuple[razorpay.Client, str]:
+    key_id, key_secret = get_platform_razorpay_keys(db)
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set it from Platform Settings > Razorpay Setting, or RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET in .env.")
+    return razorpay.Client(auth=(key_id, key_secret)), key_id
 
 
 def _dlt_status(db: Session, entity_id: str) -> str:
@@ -433,7 +434,7 @@ def simulate_dlt_request_payment(request_id: str, user: User = Depends(require_u
 
 @router.post("/dlt/request/{request_id}/razorpay/order", response_model=RazorpayOrderResponse)
 def create_dlt_request_order(request_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _razorpay_client()
+    client, key_id = _razorpay_client(db)
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
@@ -454,12 +455,12 @@ def create_dlt_request_order(request_id: str, user: User = Depends(require_user)
         raise HTTPException(status_code=422, detail=f"Razorpay rejected the order request: {exc}") from exc
     db.add(PaymentOrder(entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=request_row.total_amount, purpose="dlt_request", reference_id=request_row.id, status="created"))
     db.commit()
-    return RazorpayOrderResponse(order_id=order["id"], key_id=settings.razorpay_key_id, amount_paise=amount_paise)
+    return RazorpayOrderResponse(order_id=order["id"], key_id=key_id, amount_paise=amount_paise)
 
 
 @router.post("/dlt/request/{request_id}/razorpay/verify", response_model=DltOnboardingRequestOut)
 def verify_dlt_request_payment(request_id: str, payload: RazorpayVerifyRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _razorpay_client()
+    client, _ = _razorpay_client(db)
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:

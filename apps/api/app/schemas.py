@@ -1274,6 +1274,16 @@ class PublicTurnstileConfigOut(BaseModel):
     site_key: str
 
 
+class PlatformRazorpaySettingsOut(BaseModel):
+    key_id: str | None
+    key_secret_configured: bool
+
+
+class PlatformRazorpaySettingsUpdate(BaseModel):
+    key_id: str | None = None
+    key_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
+
+
 class PlatformStalwartSettingsOut(BaseModel):
     admin_url: str | None
     admin_user: str | None

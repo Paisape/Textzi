@@ -18,20 +18,21 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import PaymentOrder, User
 from .schemas import RazorpayOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse
-from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet/recharge/razorpay", tags=["wallet"])
 
 
-def _client() -> razorpay.Client:
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
-        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET (test-mode keys from your Razorpay dashboard) in .env.")
-    return razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+def _client(db: Session) -> tuple[razorpay.Client, str]:
+    key_id, key_secret = get_platform_razorpay_keys(db)
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set it from Platform Settings > Razorpay Setting, or RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET in .env.")
+    return razorpay.Client(auth=(key_id, key_secret)), key_id
 
 
 @router.post("/order", response_model=RazorpayOrderResponse)
 def create_order(payload: RazorpayOrderRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _client()
+    client, key_id = _client(db)
     try:
         entity = resolve_user_entity(db, user)
         require_channel_active(db, entity.id, "sms")
@@ -59,12 +60,12 @@ def create_order(payload: RazorpayOrderRequest, request: Request, user: User = D
         rate_card_id=rate_card.id, price_per_sms=slab.price_per_sms, user_id=user.id, ip_address=client_ip(request),
     ))
     db.commit()
-    return RazorpayOrderResponse(order_id=order["id"], key_id=settings.razorpay_key_id, amount_paise=amount_paise)
+    return RazorpayOrderResponse(order_id=order["id"], key_id=key_id, amount_paise=amount_paise)
 
 
 @router.post("/verify", response_model=RechargeResponse)
 def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _client()
+    client, _ = _client(db)
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:

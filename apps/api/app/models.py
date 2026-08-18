@@ -980,6 +980,21 @@ class PlatformTurnstileSettings(Base):
     secret_key_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class PlatformRazorpaySettings(Base):
+    """Singleton row. Live Razorpay credentials for wallet recharge + channel-billing checkout
+    (payments.py, channel_billing.py, channels.py, admin.py) -- admin-UI-editable, same convention
+    as PlatformSmtpSettings/PlatformStalwartSettings above, superseding the .env-only
+    Settings.razorpay_key_* fields (those stay the fallback until this row is configured, same
+    fallback contract as get_platform_company_info -- this is on production for SMS today, so the
+    .env values must keep working unchanged until an admin explicitly saves here). key_secret is
+    write-only (encrypted at rest, never returned by GET); key_id isn't a secret in the same sense
+    (it's echoed back to the browser on every order-create call already) so it's stored plain."""
+    __tablename__ = "platform_razorpay_settings"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
+    key_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    key_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class PlatformStalwartSettings(Base):
     """Singleton row. Connection details for Textzi's own self-hosted Stalwart mail server
     (crm_mailserver.py) -- admin-UI-editable, same convention as PlatformSmtpSettings/

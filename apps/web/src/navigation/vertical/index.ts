@@ -421,6 +421,11 @@ export const adminNav = [
         icon: { icon: 'tabler-settings-cog' },
       },
       {
+        title: 'Razorpay Setting',
+        to: { name: 'platform-razorpay-settings' },
+        icon: { icon: 'tabler-credit-card' },
+      },
+      {
         title: 'SMS Setting',
         to: { name: 'platform-sms-settings' },
         icon: { icon: 'tabler-message-cog' },

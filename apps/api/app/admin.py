@@ -40,7 +40,7 @@ from .security import decode_access_token, decrypt_recipient_lenient, decrypt_se
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
 from . import archive_jobs
-from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_suspicious_payment, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -1450,10 +1450,11 @@ def wallet_topup_report(mismatches_only: bool = False, db: Session = Depends(get
     return rows
 
 
-def _razorpay_client() -> razorpay.Client:
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
-        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env.")
-    return razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+def _razorpay_client(db: Session) -> razorpay.Client:
+    key_id, key_secret = get_platform_razorpay_keys(db)
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set it from Platform Settings > Razorpay Setting, or RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET in .env.")
+    return razorpay.Client(auth=(key_id, key_secret))
 
 
 @router.get("/payment-orders", response_model=list[PaymentOrderAdminOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -1485,7 +1486,7 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
     order = db.get(PaymentOrder, order_id, with_for_update=True)
     if not order:
         raise HTTPException(status_code=404, detail="Payment order not found")
-    client = _razorpay_client()
+    client = _razorpay_client(db)
     before_status = order.status
     try:
         razorpay_order = client.order.fetch(order.provider_order_id)

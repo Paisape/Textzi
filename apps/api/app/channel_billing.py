@@ -19,17 +19,18 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import BillingPlan, ChannelSubscription, Entity, PaymentOrder, User
 from .schemas import BillingPlanOut, ChannelSubscriptionStatusOut, PlanOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest
-from .services import GST_RATE, DomainError, expected_order_paise, flag_suspicious_payment, resolve_user_entity
+from .services import GST_RATE, DomainError, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, resolve_user_entity
 
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
 
 PERIOD_DAYS = {"monthly": 30, "quarterly": 90, "yearly": 365}
 
 
-def _razorpay_client() -> razorpay.Client:
-    if not settings.razorpay_key_id or not settings.razorpay_key_secret:
-        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in .env.")
-    return razorpay.Client(auth=(settings.razorpay_key_id, settings.razorpay_key_secret))
+def _razorpay_client(db: Session) -> tuple[razorpay.Client, str]:
+    key_id, key_secret = get_platform_razorpay_keys(db)
+    if not key_id or not key_secret:
+        raise HTTPException(status_code=503, detail="Razorpay is not configured. Set it from Platform Settings > Razorpay Setting, or RAZORPAY_KEY_ID/RAZORPAY_KEY_SECRET in .env.")
+    return razorpay.Client(auth=(key_id, key_secret)), key_id
 
 
 def _plan_out(plan: BillingPlan) -> BillingPlanOut:
@@ -73,7 +74,7 @@ def get_subscription(channel: str, user: User = Depends(require_user), db: Sessi
 
 @router.post("/razorpay/order", response_model=RazorpayOrderResponse)
 def create_plan_order(payload: PlanOrderRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _razorpay_client()
+    client, key_id = _razorpay_client(db)
     entity = _resolve_entity(db, user)
     plan = db.get(BillingPlan, payload.plan_id)
     if not plan or not plan.active:
@@ -91,12 +92,12 @@ def create_plan_order(payload: PlanOrderRequest, user: User = Depends(require_us
         raise HTTPException(status_code=422, detail=f"Razorpay rejected the order request: {exc}") from exc
     db.add(PaymentOrder(entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=plan.price, purpose="channel_subscription", reference_id=plan.id, status="created", user_id=user.id))
     db.commit()
-    return RazorpayOrderResponse(order_id=order["id"], key_id=settings.razorpay_key_id, amount_paise=amount_paise)
+    return RazorpayOrderResponse(order_id=order["id"], key_id=key_id, amount_paise=amount_paise)
 
 
 @router.post("/razorpay/verify", response_model=ChannelSubscriptionStatusOut)
 def verify_plan_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    client = _razorpay_client()
+    client, _ = _razorpay_client(db)
     entity = _resolve_entity(db, user)
 
     order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == payload.razorpay_order_id, PaymentOrder.entity_id == entity.id).with_for_update())
