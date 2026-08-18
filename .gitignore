@@ -1,4 +1,6 @@
 .env
+.local/
+.venv/
 .env.bak
 
 # Claude Code's own local settings -- has held real secrets/credentials in its permission-
