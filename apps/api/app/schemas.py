@@ -2909,6 +2909,24 @@ class DealBulkDeleteRequest(BaseModel):
     deal_ids: list[str] = Field(min_length=1, max_length=200)
 
 
+class DealBulkStageRequest(BaseModel):
+    deal_ids: list[str] = Field(min_length=1, max_length=200)
+    stage: str
+
+
+class DealBulkStageResult(BaseModel):
+    updated: list[DealOut]
+    skipped: dict[str, str]  # deal_id -> why it couldn't move (missing required fields / approval)
+
+
+class CompanyBulkDeleteRequest(BaseModel):
+    company_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class CustomerBulkDeleteRequest(BaseModel):
+    customer_ids: list[str] = Field(min_length=1, max_length=200)
+
+
 class SavedViewOut(BaseModel):
     id: str
     applies_to: str

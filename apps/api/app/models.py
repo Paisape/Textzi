@@ -91,9 +91,10 @@ class User(Base):
     channel_scope: Mapped[str | None] = mapped_column(String(10), nullable=True)
     # null = every page within channel_scope (today's behavior). A list of frontend route names
     # (e.g. ["crm-leads", "crm-contacts"]) narrows further -- only meaningful alongside a single
-    # channel_scope, set at invite time. Frontend-enforced only (nav filtering + router guard);
-    # the real security boundary is channel_scope itself, hard-enforced backend-side via
-    # permissions.require_channel_scope.
+    # channel_scope, set at invite time. Enforced both ways: the frontend nav/router guard hides
+    # and blocks navigation to unscoped pages, and permissions.require_page_scope/
+    # require_page_scope_for reject the matching backend endpoints directly, so a restricted
+    # teammate can't bypass the UI by calling the API.
     page_scope: Mapped[list | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

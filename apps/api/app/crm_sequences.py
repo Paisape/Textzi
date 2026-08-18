@@ -15,7 +15,7 @@ from .auth import require_user
 from .database import get_db
 from .database import SessionLocal
 from .models import CrmContact, Deal, Lead, LeadRoutingRule, Sequence, SequenceEnrollment, SequenceStep, Territory, User, WabaConnection
-from .permissions import require_channel_scope
+from .permissions import require_channel_scope, require_page_scope_for
 from .schemas import (
     LeadRoutingRuleCreateRequest, LeadRoutingRuleOut, LeadRoutingRuleUpdateRequest, SequenceCreateRequest, SequenceEnrollRequest, SequenceOut,
     SequenceStepOut, SequenceUpdateRequest,
@@ -24,7 +24,7 @@ from .services import DomainError, channel_active, resolve_user_entity
 
 logger = logging.getLogger("textzi.crm_sequences")
 
-router = APIRouter(prefix="/v1/crm", tags=["crm-sequences"], dependencies=[Depends(require_channel_scope("crm"))])
+router = APIRouter(prefix="/v1/crm", tags=["crm-sequences"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-automation"))])
 
 
 def _resolve_entity(db: Session, user: User):

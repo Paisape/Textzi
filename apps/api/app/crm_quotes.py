@@ -23,11 +23,11 @@ from .config import settings
 from .database import get_db
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import Company, CrmContact, CrmSettings, Deal, Entity, Organization, Product, Quote, User, WabaConnection
-from .permissions import require_channel_scope
+from .permissions import require_channel_scope, require_page_scope_for
 from .schemas import ProductCreateRequest, ProductOut, ProductUpdateRequest, QuoteCreateRequest, QuoteLineItemsUpdateRequest, QuoteOut
 from .services import GST_RATE, DomainError, channel_active, notify_user, resolve_user_entity, state_code_from_gstin
 
-router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm"))])
+router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-quotes"))])
 
 
 def _resolve_entity(db: Session, user: User) -> Entity:

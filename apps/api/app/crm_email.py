@@ -29,14 +29,14 @@ from .auth import require_user
 from .crm_quotes import _get_pdf_bytes
 from .database import SessionLocal, get_db
 from .models import Contact, Conversation, ConversationMessage, EmailAccount, Entity, Quote, User
-from .permissions import require_channel_scope
+from .permissions import require_channel_scope, require_page_scope_for
 from .schemas import EmailAccountOut, EmailAccountTestResult, EmailAccountUpdateRequest, EmailSendRequest
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, resolve_user_entity
 
 logger = logging.getLogger("textzi.crm_email")
 
-router = APIRouter(prefix="/v1/crm/email", tags=["crm-email"], dependencies=[Depends(require_channel_scope("crm"))])
+router = APIRouter(prefix="/v1/crm/email", tags=["crm-email"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-email"))])
 
 
 def _resolve_entity(db: Session, user: User) -> Entity:

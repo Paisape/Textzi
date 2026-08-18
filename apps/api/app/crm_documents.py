@@ -18,11 +18,11 @@ from .auth import require_user
 from .database import get_db
 from .invoicing import _safe_text
 from .models import Company, CrmContact, Deal, DocumentTemplate, Entity, Organization, User
-from .permissions import require_channel_scope
+from .permissions import require_channel_scope, require_page_scope_for
 from .schemas import DocumentTemplateCreateRequest, DocumentTemplateOut, DocumentTemplateUpdateRequest
 from .services import DomainError, channel_active, resolve_user_entity
 
-router = APIRouter(prefix="/v1/crm/document-templates", tags=["crm-documents"], dependencies=[Depends(require_channel_scope("crm"))])
+router = APIRouter(prefix="/v1/crm/document-templates", tags=["crm-documents"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("channels-crm"))])
 
 
 def _resolve_entity(db: Session, user: User) -> Entity:

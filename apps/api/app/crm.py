@@ -29,11 +29,11 @@ from .models import (
     Task, Territory, User, UserRole, WebForm,
 )
 from .schemas import (
-    ActivityMessageOut, AttachmentOut, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
+    ActivityMessageOut, AttachmentOut, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut,
-    CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerCreateFromConversationRequest,
+    CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
     CustomerCreateRequest, CustomerDetailOut, CustomerOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
-    DealBulkDeleteRequest, DealBulkOwnerRequest, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
+    DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
     DealUpdateRequest, DuplicateGroupOut, EmployeeSalesRow, FollowUpPerformanceOut, ImportResultOut, LeadBulkDeleteRequest, LeadBulkOwnerRequest,
     LeadConvertRequest, LeadCreateFromConversationRequest,
@@ -45,12 +45,12 @@ from .schemas import (
     ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskCreateRequest, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
     TerritoryOut, TerritoryUpdateRequest, WebFormOut, WebFormUpdateRequest,
 )
-from .permissions import require_channel_scope
+from .permissions import require_channel_scope, require_page_scope
 from .services import DomainError, channel_active, log_activity, notify_user, resolve_user_entity, save_upload
 
 logger = logging.getLogger("textzi.crm")
 
-router = APIRouter(prefix="/v1/crm", tags=["crm"], dependencies=[Depends(require_channel_scope("crm"))])
+router = APIRouter(prefix="/v1/crm", tags=["crm"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope())])
 
 
 def _require_crm(db: Session, entity_id: str) -> None:
@@ -838,6 +838,37 @@ def bulk_delete_deals(payload: DealBulkDeleteRequest, user: User = Depends(requi
     return {"deleted": len(deletable), "skipped": len(deals) - len(deletable)}
 
 
+@router.post("/deals/bulk-stage", response_model=DealBulkStageResult)
+def bulk_update_deal_stage(payload: DealBulkStageRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Same required-fields/approval gates as the single-deal PATCH .../stage -- a deal that can't
+    leave its current stage yet is skipped (with why), not silently forced or bulk-failed."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    deals = db.scalars(select(Deal).where(Deal.id.in_(payload.deal_ids), Deal.entity_id == entity.id)).all()
+    updated: list[Deal] = []
+    skipped: dict[str, str] = {}
+    for deal in deals:
+        if deal.stage == payload.stage:
+            updated.append(deal)
+            continue
+        pipeline = db.get(Pipeline, deal.pipeline_id) if deal.pipeline_id else None
+        missing_fields = _missing_stage_requirements(deal, pipeline)
+        if missing_fields:
+            skipped[deal.id] = f"Missing: {', '.join(missing_fields)}"
+            continue
+        missing_approvers = _missing_stage_approvals(deal, pipeline)
+        if missing_approvers:
+            skipped[deal.id] = "Needs stage approval"
+            continue
+        _close_open_deal_stage_event(db, deal.id)
+        deal.stage = payload.stage
+        _open_deal_stage_event(db, deal, changed_by_user_id=user.id)
+        updated.append(deal)
+    db.commit()
+    contacts = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_([d.contact_id for d in updated]))).all()} if updated else {}
+    return DealBulkStageResult(updated=[_deal_out(d, contacts.get(d.contact_id)) for d in updated], skipped=skipped)
+
+
 @router.get("/customers", response_model=list[CustomerOut])
 def list_customers(user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
@@ -914,6 +945,17 @@ def delete_customer(customer_id: str, user: User = Depends(require_user), db: Se
     db.delete(customer)
     db.commit()
     return {"deleted": True}
+
+
+@router.post("/customers/bulk-delete")
+def bulk_delete_customers(payload: CustomerBulkDeleteRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    customers = db.scalars(select(Customer).where(Customer.id.in_(payload.customer_ids), Customer.entity_id == entity.id)).all()
+    for customer in customers:
+        db.delete(customer)
+    db.commit()
+    return {"deleted": len(customers)}
 
 
 @router.post("/conversations/{conversation_id}/convert-to-lead", response_model=LeadOut)
@@ -2073,6 +2115,21 @@ def delete_company(company_id: str, user: User = Depends(require_user), db: Sess
     db.delete(company)
     db.commit()
     return {"deleted": True}
+
+
+@router.post("/companies/bulk-delete")
+def bulk_delete_companies(payload: CompanyBulkDeleteRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    companies = db.scalars(select(Company).where(Company.id.in_(payload.company_ids), Company.entity_id == entity.id)).all()
+    ids = [c.id for c in companies]
+    if ids:
+        db.query(CrmContact).filter(CrmContact.company_id.in_(ids)).update({"company_id": None}, synchronize_session=False)
+        db.query(Company).filter(Company.parent_company_id.in_(ids)).update({"parent_company_id": None}, synchronize_session=False)
+    for company in companies:
+        db.delete(company)
+    db.commit()
+    return {"deleted": len(companies)}
 
 
 @router.put("/contacts/{contact_id}/company", response_model=CrmContactOut)
