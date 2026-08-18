@@ -23,36 +23,6 @@ services:
     image: rabbitmq:3.13-management-alpine
     restart: unless-stopped
     # ports: ["5672:5672", "15672:15672"]
-  stalwart:
-    # Local dev only for now -- Textzi-hosted CRM mailboxes (plan doc Chapter 14). Production
-    # (mail.textzi.in, real DNS, a real VPS with port 25 open) is a separate later chapter, not
-    # this service. Pinned to a minor version, not `latest`, per Stalwart's own install docs.
-    image: stalwartlabs/stalwart:v0.16
-    restart: unless-stopped
-    environment:
-      # Pins the bootstrap-mode admin credential so the api service can authenticate against
-      # Stalwart's admin API immediately on first boot, with no manual setup-wizard step -- see
-      # stalw.art/docs/configuration/bootstrap-mode/. Must match STALWART_ADMIN_PASSWORD in .env.
-      STALWART_RECOVERY_ADMIN: admin:${STALWART_ADMIN_PASSWORD:-change-me-local-dev-only}
-    # /etc/stalwart is a host bind mount (not a named volume) so ops/stalwart-config.json --
-    # pre-selecting RocksDB as the datastore, skipping that step of the setup wizard, see
-    # stalw.art/docs/configuration/overview/ -- seeds the directory on first boot. A named volume
-    # would shadow that seed file instead of starting from it. Stalwart writes back into this same
-    # directory as it runs (e.g. after completing the wizard), so it persists across restarts.
-    volumes:
-      - ./ops/stalwart-etc:/etc/stalwart
-      - stalwart_data:/var/lib/stalwart
-    # SMTP/IMAP/admin ports all published, unlike postgres/redis/rabbitmq -- the api container
-    # needs to reach them (smtplib/imaplib calls), and unlike those internal-only services, real
-    # mail delivery will eventually need these reachable from outside Docker too (production
-    # chapter), so local dev exercises the same port shape from the start.
-    ports:
-      - "8080:8080"
-      - "25:25"
-      - "587:587"
-      - "465:465"
-      - "143:143"
-      - "993:993"
   api:
     build: ./apps/api
     restart: unless-stopped
@@ -68,7 +38,6 @@ services:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
       rabbitmq: { condition: service_started }
-      stalwart: { condition: service_started }
   web:
     build:
       context: ./apps/web
@@ -80,4 +49,3 @@ services:
 volumes:
   postgres_data:
   uploads_data:
-  stalwart_data:
