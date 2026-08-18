@@ -983,34 +983,16 @@ class PlatformTurnstileSettings(Base):
 class PlatformRazorpaySettings(Base):
     """Singleton row. Live Razorpay credentials for wallet recharge + channel-billing checkout
     (payments.py, channel_billing.py, channels.py, admin.py) -- admin-UI-editable, same convention
-    as PlatformSmtpSettings/PlatformStalwartSettings above, superseding the .env-only
-    Settings.razorpay_key_* fields (those stay the fallback until this row is configured, same
-    fallback contract as get_platform_company_info -- this is on production for SMS today, so the
-    .env values must keep working unchanged until an admin explicitly saves here). key_secret is
-    write-only (encrypted at rest, never returned by GET); key_id isn't a secret in the same sense
-    (it's echoed back to the browser on every order-create call already) so it's stored plain."""
+    as PlatformSmtpSettings above, superseding the .env-only Settings.razorpay_key_* fields (those
+    stay the fallback until this row is configured, same fallback contract as
+    get_platform_company_info -- this is on production for SMS today, so the .env values must keep
+    working unchanged until an admin explicitly saves here). key_secret is write-only (encrypted
+    at rest, never returned by GET); key_id isn't a secret in the same sense (it's echoed back to
+    the browser on every order-create call already) so it's stored plain."""
     __tablename__ = "platform_razorpay_settings"
     id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
     key_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     key_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
-
-
-class PlatformStalwartSettings(Base):
-    """Singleton row. Connection details for Textzi's own self-hosted Stalwart mail server
-    (crm_mailserver.py) -- admin-UI-editable, same convention as PlatformSmtpSettings/
-    PlatformR2Settings above, superseding the .env-only Settings.stalwart_* fields from local dev
-    (those stay as the fallback until this row is configured, mirroring how company_name/
-    support_email fall back to .env -- see services.get_platform_company_info's own docstring for
-    the same pattern). cloudflare_api_token is optional -- only needed once a real domain's DNS is
-    on Cloudflare and automatic MX/SPF/DKIM/DMARC record management (Stalwart's own DnsServer
-    integration) is wanted; local dev on a placeholder domain has no use for it."""
-    __tablename__ = "platform_stalwart_settings"
-    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
-    admin_url: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    admin_user: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    admin_password_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
-    mail_domain: Mapped[str | None] = mapped_column(String(255), nullable=True)
-    cloudflare_api_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class PlatformZohoSettings(Base):
@@ -1960,24 +1942,14 @@ class WebForm(Base):
 
 
 class EmailAccount(Base):
-    """One row per entity -- either a tenant's own bring-your-own SMTP/IMAP mailbox, or a mailbox
-    Textzi itself provisioned on its own Stalwart mail server (provider="stalwart", crm_mailserver.py)
-    -- connected as a CRM channel either way (Textzi never operates this infrastructure or bills
-    per message, unlike SMS/WhatsApp; it's a CRM-plan capability, gated the same way quotes/
-    sequences are). Password fields store security.encrypt_secret(...) output, the same Fernet
-    helper already used for the WABA App Secret and TOTP secrets -- no new crypto code. Both
-    providers share every other field/column and the entire send/poll code path in crm_email.py
-    unmodified -- Stalwart speaks standard SMTP/IMAP like any other mailbox, it's just one Textzi's
-    own backend provisioned and holds the only copy of the generated password for."""
+    """One row per entity -- a tenant's own bring-your-own SMTP/IMAP mailbox, connected as a CRM
+    channel (Textzi never operates this infrastructure or bills per message, unlike SMS/WhatsApp;
+    it's a CRM-plan capability, gated the same way quotes/sequences are). Password fields store
+    security.encrypt_secret(...) output, the same Fernet helper already used for the WABA App
+    Secret and TOTP secrets -- no new crypto code."""
     __tablename__ = "email_accounts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), unique=True, index=True)
-    provider: Mapped[str] = mapped_column(String(20), default="byo")  # "byo"|"stalwart"
-    # Local-part only (e.g. "acme" for acme@mail.textzi.local) -- only set when provider="stalwart".
-    # Kept separate from smtp_username/imap_username (which store the full login identifier, same
-    # as any BYO account) so a provisioned mailbox's short handle is queryable/unique-checkable on
-    # its own, without parsing it back out of a full email address.
-    stalwart_username: Mapped[str | None] = mapped_column(String(80), nullable=True, unique=True)
     from_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     from_email: Mapped[str] = mapped_column(String(255))
     smtp_host: Mapped[str] = mapped_column(String(255))

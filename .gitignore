@@ -21,13 +21,6 @@ dist/
 # Local uploads (real deployments use the uploads_data Docker volume, never committed)
 uploads/
 
-# Stalwart writes its own generated config (DKIM keys, admin session tokens, the post-wizard
-# config.json) into this directory at runtime -- never commit it. The one seed file we do want
-# tracked (ops/stalwart-etc/config.json, which only pre-selects RocksDB as the datastore) is
-# re-added via the negation pattern below.
-ops/stalwart-etc/*
-!ops/stalwart-etc/config.json
-
 # Business/product docs -- kept locally, left out of the repo by default (unclear if this repo
 # will end up public); ask to include them if you want them versioned too.
 /*.docx

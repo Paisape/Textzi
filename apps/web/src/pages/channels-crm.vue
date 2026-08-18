@@ -335,8 +335,6 @@ async function deleteDocumentTemplate(template: DocumentTemplate) {
 
 type EmailAccount = {
   connected: boolean
-  provider: 'byo' | 'stalwart'
-  stalwart_username: string | null
   from_name: string | null
   from_email: string | null
   smtp_host: string | null
@@ -366,7 +364,6 @@ async function loadEmailAccount() {
   try {
     emailAccount.value = await $api<EmailAccount>('/v1/crm/email/account')
     if (emailAccount.value.connected) {
-      emailSetupMode.value = emailAccount.value.provider
       emailForm.from_name = emailAccount.value.from_name || ''
       emailForm.from_email = emailAccount.value.from_email || ''
       emailForm.smtp_host = emailAccount.value.smtp_host || ''
@@ -415,48 +412,18 @@ async function testEmailAccount() {
   }
 }
 
-// --- Textzi-hosted mailbox (quick-start alternative to the BYO form above) ---
-
-const emailSetupMode = ref<'byo' | 'stalwart'>('byo')
-const mailboxUsername = ref('')
-const mailboxProvisioning = ref(false)
-const mailboxError = ref('')
-// Local dev only, matches the api service's STALWART_MAIL_DOMAIN -- no endpoint exposes this
-// today since only one placeholder domain exists pre-production; revisit once mail.textzi.in
-// (or a per-deployment configurable domain) replaces it.
-const stalwartMailDomain = 'mail.textzi.local'
-
-async function provisionMailbox() {
-  if (!mailboxUsername.value.trim())
-    return
-  mailboxProvisioning.value = true
-  mailboxError.value = ''
-  try {
-    emailAccount.value = await $api<EmailAccount>('/v1/crm/email/account/provision-mailbox', {
-      method: 'POST',
-      body: { username: mailboxUsername.value.trim().toLowerCase() },
-    })
-  }
-  catch (error: any) {
-    mailboxError.value = extractErrorMessage(error, 'Could not create this mailbox.')
-  }
-  finally {
-    mailboxProvisioning.value = false
-  }
-}
-
 const disconnecting = ref(false)
+const disconnectError = ref('')
 
 async function disconnectEmailAccount() {
   disconnecting.value = true
-  mailboxError.value = ''
+  disconnectError.value = ''
   try {
     await $api('/v1/crm/email/account', { method: 'DELETE' })
     emailAccount.value = null
-    mailboxUsername.value = ''
   }
   catch (error: any) {
-    mailboxError.value = extractErrorMessage(error, 'Could not disconnect this mailbox.')
+    disconnectError.value = extractErrorMessage(error, 'Could not disconnect this mailbox.')
   }
   finally {
     disconnecting.value = false
@@ -1153,14 +1120,14 @@ onMounted(() => {
                 Email
               </h2>
               <p class="text-body-2 text-medium-emphasis mb-4">
-                Connect your own mailbox, or create a free Textzi-hosted one to get started right
-                away. Either way, this is a CRM-plan capability, not a metered channel.
+                Connect your own mailbox -- any SMTP/IMAP provider works. This is a CRM-plan
+                capability, not a metered channel.
               </p>
               <VAlert v-if="emailError" type="error" variant="tonal" density="compact" class="mb-3">
                 {{ emailError }}
               </VAlert>
-              <VAlert v-if="mailboxError" type="error" variant="tonal" density="compact" class="mb-3">
-                {{ mailboxError }}
+              <VAlert v-if="disconnectError" type="error" variant="tonal" density="compact" class="mb-3">
+                {{ disconnectError }}
               </VAlert>
               <VAlert v-if="emailTestResult" :type="emailTestResult.ok ? 'success' : 'error'" variant="tonal" density="compact" class="mb-3">
                 {{ emailTestResult.ok ? 'Connected successfully.' : emailTestResult.error }}
@@ -1169,104 +1136,53 @@ onMounted(() => {
                 {{ emailAccount.status === 'connected' ? 'Connected' : emailAccount.status === 'error' ? 'Error' : 'Unverified' }}
               </VChip>
 
-              <div v-if="!emailAccount?.connected" class="d-flex flex-wrap ga-2 mb-4">
-                <VBtn
-                  size="small" class="text-none"
-                  :variant="emailSetupMode === 'stalwart' ? 'flat' : 'outlined'"
-                  :color="emailSetupMode === 'stalwart' ? 'primary' : undefined"
-                  @click="emailSetupMode = 'stalwart'"
-                >
-                  Create a Textzi mailbox
+              <VRow>
+                <VCol cols="12" sm="6">
+                  <VTextField v-model="emailForm.from_name" label="From name" density="compact" class="mb-3" />
+                </VCol>
+                <VCol cols="12" sm="6">
+                  <VTextField v-model="emailForm.from_email" label="From email" type="email" density="compact" class="mb-3" />
+                </VCol>
+              </VRow>
+              <p class="text-subtitle-2 mb-2">
+                Outgoing (SMTP)
+              </p>
+              <VRow>
+                <VCol cols="12" sm="8">
+                  <VTextField v-model="emailForm.smtp_host" label="SMTP host" density="compact" class="mb-3" />
+                </VCol>
+                <VCol cols="12" sm="4">
+                  <VTextField v-model.number="emailForm.smtp_port" label="Port" type="number" density="compact" class="mb-3" />
+                </VCol>
+              </VRow>
+              <VTextField v-model="emailForm.smtp_username" label="SMTP username" density="compact" class="mb-3" />
+              <VTextField v-model="emailForm.smtp_password" label="SMTP password" type="password" density="compact" class="mb-3" />
+              <VSwitch v-model="emailForm.smtp_use_tls" label="Use TLS" density="compact" class="mb-3" />
+              <p class="text-subtitle-2 mb-2">
+                Incoming (IMAP)
+              </p>
+              <VRow>
+                <VCol cols="12" sm="8">
+                  <VTextField v-model="emailForm.imap_host" label="IMAP host" density="compact" class="mb-3" />
+                </VCol>
+                <VCol cols="12" sm="4">
+                  <VTextField v-model.number="emailForm.imap_port" label="Port" type="number" density="compact" class="mb-3" />
+                </VCol>
+              </VRow>
+              <VTextField v-model="emailForm.imap_username" label="IMAP username" density="compact" class="mb-3" />
+              <VTextField v-model="emailForm.imap_password" label="IMAP password" type="password" density="compact" class="mb-3" />
+              <VSwitch v-model="emailForm.imap_use_ssl" label="Use SSL" density="compact" class="mb-4" />
+              <div class="d-flex ga-3">
+                <VBtn :loading="emailSaving" @click="saveEmailAccount">
+                  {{ emailAccount?.connected ? 'Save' : 'Connect' }}
                 </VBtn>
-                <VBtn
-                  size="small" class="text-none"
-                  :variant="emailSetupMode === 'byo' ? 'flat' : 'outlined'"
-                  :color="emailSetupMode === 'byo' ? 'primary' : undefined"
-                  @click="emailSetupMode = 'byo'"
-                >
-                  Connect your own
+                <VBtn v-if="emailAccount?.connected" variant="tonal" :loading="emailTesting" @click="testEmailAccount">
+                  Test connection
                 </VBtn>
-              </div>
-
-              <template v-if="emailAccount?.connected && emailAccount.provider === 'stalwart'">
-                <p class="text-body-2 mb-1">
-                  Mailbox address
-                </p>
-                <p class="text-h6 mb-4">
-                  {{ emailAccount.from_email }}
-                </p>
-                <p class="text-body-2 text-medium-emphasis mb-4">
-                  Textzi hosts and manages this mailbox for you -- there's no password to keep
-                  track of. Reply and send from the Email inbox page.
-                </p>
-                <VBtn variant="text" color="error" :loading="disconnecting" @click="disconnectEmailAccount">
+                <VBtn v-if="emailAccount?.connected" variant="text" color="error" :loading="disconnecting" @click="disconnectEmailAccount">
                   Disconnect
                 </VBtn>
-                <p class="text-caption text-medium-emphasis mt-2">
-                  Disconnecting lets you connect a different mailbox -- your own credentials, for
-                  example. This mailbox itself keeps working and stays reachable.
-                </p>
-              </template>
-
-              <template v-else-if="emailSetupMode === 'stalwart'">
-                <VTextField
-                  v-model="mailboxUsername" label="Choose a mailbox username" density="compact" class="mb-1"
-                  :suffix="`@${stalwartMailDomain}`" placeholder="yourcompany"
-                />
-                <p class="text-caption text-medium-emphasis mb-4">
-                  Lowercase letters, numbers, and dots only.
-                </p>
-                <VBtn :loading="mailboxProvisioning" :disabled="!mailboxUsername.trim()" @click="provisionMailbox">
-                  Create mailbox
-                </VBtn>
-              </template>
-
-              <template v-else>
-                <VRow>
-                  <VCol cols="12" sm="6">
-                    <VTextField v-model="emailForm.from_name" label="From name" density="compact" class="mb-3" />
-                  </VCol>
-                  <VCol cols="12" sm="6">
-                    <VTextField v-model="emailForm.from_email" label="From email" type="email" density="compact" class="mb-3" />
-                  </VCol>
-                </VRow>
-                <p class="text-subtitle-2 mb-2">
-                  Outgoing (SMTP)
-                </p>
-                <VRow>
-                  <VCol cols="12" sm="8">
-                    <VTextField v-model="emailForm.smtp_host" label="SMTP host" density="compact" class="mb-3" />
-                  </VCol>
-                  <VCol cols="12" sm="4">
-                    <VTextField v-model.number="emailForm.smtp_port" label="Port" type="number" density="compact" class="mb-3" />
-                  </VCol>
-                </VRow>
-                <VTextField v-model="emailForm.smtp_username" label="SMTP username" density="compact" class="mb-3" />
-                <VTextField v-model="emailForm.smtp_password" label="SMTP password" type="password" density="compact" class="mb-3" />
-                <VSwitch v-model="emailForm.smtp_use_tls" label="Use TLS" density="compact" class="mb-3" />
-                <p class="text-subtitle-2 mb-2">
-                  Incoming (IMAP)
-                </p>
-                <VRow>
-                  <VCol cols="12" sm="8">
-                    <VTextField v-model="emailForm.imap_host" label="IMAP host" density="compact" class="mb-3" />
-                  </VCol>
-                  <VCol cols="12" sm="4">
-                    <VTextField v-model.number="emailForm.imap_port" label="Port" type="number" density="compact" class="mb-3" />
-                  </VCol>
-                </VRow>
-                <VTextField v-model="emailForm.imap_username" label="IMAP username" density="compact" class="mb-3" />
-                <VTextField v-model="emailForm.imap_password" label="IMAP password" type="password" density="compact" class="mb-3" />
-                <VSwitch v-model="emailForm.imap_use_ssl" label="Use SSL" density="compact" class="mb-4" />
-                <div class="d-flex ga-3">
-                  <VBtn :loading="emailSaving" @click="saveEmailAccount">
-                    {{ emailAccount?.connected ? 'Save' : 'Connect' }}
-                  </VBtn>
-                  <VBtn v-if="emailAccount?.connected" variant="tonal" :loading="emailTesting" @click="testEmailAccount">
-                    Test connection
-                  </VBtn>
-                </div>
-              </template>
+              </div>
             </VCardText>
           </VCard>
         </VCol>

@@ -8,21 +8,19 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import crm_mailserver
 from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
-from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformStalwartSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
+from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
     PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformRazorpaySettingsOut, PlatformRazorpaySettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
-    PlatformStalwartSettingsOut, PlatformStalwartSettingsUpdate,
     PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWabaSettingsOut, PlatformWabaSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
-    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, StalwartTestConnectionResponse, TurnstileTestConnectionResponse, WabaTestConnectionResponse, WabaWebhookTokenOut, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, WabaTestConnectionResponse, WabaWebhookTokenOut, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
-from .services import DomainError, credit_platform_wallet, get_platform_cloudflare_token, get_platform_company_info, get_platform_razorpay_keys, get_platform_stalwart_settings, get_platform_turnstile_settings, get_platform_waba_settings, get_platform_waba_webhook_verify_token, log_activity, mask_mobile, waba_webhook_url
+from .services import DomainError, credit_platform_wallet, get_platform_company_info, get_platform_razorpay_keys, get_platform_turnstile_settings, get_platform_waba_settings, get_platform_waba_webhook_verify_token, log_activity, mask_mobile, waba_webhook_url
 from .turnstile import SITEVERIFY_URL
 from .waba_meta import GRAPH_API_BASE
 from .zoho_books import ZohoCallError, exchange_grant_code, get_zoho_settings, list_accounts, list_tax_rates
@@ -204,11 +202,10 @@ def get_razorpay_settings(db: Session = Depends(get_db)):
 def update_razorpay_settings(payload: PlatformRazorpaySettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """key_secret is write-only, same convention as SMTP's password / R2's secret_access_key --
     GET never returns it, a blank value on PUT keeps whatever was already stored. A blank key_id
-    also keeps the existing value rather than clearing it, same reasoning as Stalwart's own
-    admin_url/admin_user/mail_domain fields -- get_platform_razorpay_keys only falls back to .env
-    when the DB row's field is None, so an explicit blank-out would otherwise silently break the
-    .env-based keys already live in production for SMS the moment this page is opened without
-    both fields filled in."""
+    also keeps the existing value rather than clearing it -- get_platform_razorpay_keys only falls
+    back to .env when the DB row's field is None, so an explicit blank-out would otherwise silently
+    break the .env-based keys already live in production for SMS the moment this page is opened
+    without both fields filled in."""
     row = db.get(PlatformRazorpaySettings, "platform")
     if not row:
         row = PlatformRazorpaySettings(id="platform")
@@ -221,62 +218,6 @@ def update_razorpay_settings(payload: PlatformRazorpaySettingsUpdate, request: R
     db.commit(); db.refresh(row)
     key_id, _ = get_platform_razorpay_keys(db)
     return PlatformRazorpaySettingsOut(key_id=key_id, key_secret_configured=bool(row.key_secret_encrypted))
-
-
-@router.get("/stalwart-settings", response_model=PlatformStalwartSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def get_stalwart_settings(db: Session = Depends(get_db)):
-    row = db.get(PlatformStalwartSettings, "platform")
-    admin_url, admin_user, _, mail_domain = get_platform_stalwart_settings(db)
-    return PlatformStalwartSettingsOut(
-        admin_url=admin_url, admin_user=admin_user, mail_domain=mail_domain,
-        admin_password_configured=bool(row and row.admin_password_encrypted),
-        cloudflare_configured=bool(row and row.cloudflare_api_token_encrypted),
-    )
-
-
-@router.put("/stalwart-settings", response_model=PlatformStalwartSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_stalwart_settings(payload: PlatformStalwartSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """admin_password/cloudflare_api_token are write-only, same convention as SMTP's password / R2's
-    secret_access_key -- GET never returns them, a blank value on PUT keeps whatever was already
-    stored. Blank admin_url/admin_user/mail_domain also keep the existing value rather than
-    clearing it, since get_platform_stalwart_settings falls back to .env only when the DB row's
-    field is None -- an explicit blank-out would otherwise silently break local dev's working
-    .env-based config the moment this settings page is opened without every field filled in."""
-    row = db.get(PlatformStalwartSettings, "platform")
-    if not row:
-        row = PlatformStalwartSettings(id="platform")
-        db.add(row)
-    if payload.admin_url:
-        row.admin_url = payload.admin_url
-    if payload.admin_user:
-        row.admin_user = payload.admin_user
-    if payload.admin_password:
-        row.admin_password_encrypted = encrypt_secret(payload.admin_password)
-    if payload.mail_domain:
-        row.mail_domain = payload.mail_domain
-    if payload.cloudflare_api_token:
-        row.cloudflare_api_token_encrypted = encrypt_secret(payload.cloudflare_api_token)
-    log_activity(db, None, "platform_stalwart_settings_updated", "Platform Stalwart mail server settings updated.", actor_email=_caller_email(authorization, db), request=request)
-    db.commit(); db.refresh(row)
-    admin_url, admin_user, _, mail_domain = get_platform_stalwart_settings(db)
-    return PlatformStalwartSettingsOut(
-        admin_url=admin_url, admin_user=admin_user, mail_domain=mail_domain,
-        admin_password_configured=bool(row.admin_password_encrypted),
-        cloudflare_configured=bool(row.cloudflare_api_token_encrypted),
-    )
-
-
-@router.post("/stalwart-settings/test-connection", response_model=StalwartTestConnectionResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def test_stalwart_connection(db: Session = Depends(get_db)):
-    """Exercises the currently-saved admin credential against Stalwart's own JMAP session
-    endpoint -- the same one every real provisioning call implicitly relies on being reachable."""
-    try:
-        responses = crm_mailserver._jmap_call(db, [["x:Domain/query", {}, "0"]])
-    except Exception as exc:
-        return StalwartTestConnectionResponse(ok=False, detail=f"Could not reach Stalwart: {exc}")
-    if responses and responses[0][0] == "error":
-        return StalwartTestConnectionResponse(ok=False, detail=f"Stalwart rejected this request: {responses[0][1]}")
-    return StalwartTestConnectionResponse(ok=True, detail="Connected successfully.")
 
 
 @router.get("/waba-settings", response_model=PlatformWabaSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

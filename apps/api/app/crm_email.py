@@ -25,13 +25,12 @@ from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import crm_mailserver
 from .auth import require_user
 from .crm_quotes import _get_pdf_bytes
 from .database import SessionLocal, get_db
 from .models import Contact, Conversation, ConversationMessage, EmailAccount, Entity, Quote, User
 from .permissions import require_channel_scope
-from .schemas import EmailAccountOut, EmailAccountTestResult, EmailAccountUpdateRequest, EmailSendRequest, MailboxProvisionRequest
+from .schemas import EmailAccountOut, EmailAccountTestResult, EmailAccountUpdateRequest, EmailSendRequest
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, resolve_user_entity
 
@@ -56,8 +55,7 @@ def _account_out(account: EmailAccount | None) -> EmailAccountOut:
     if not account:
         return EmailAccountOut(connected=False)
     return EmailAccountOut(
-        connected=True, provider=account.provider, stalwart_username=account.stalwart_username,
-        from_name=account.from_name, from_email=account.from_email,
+        connected=True, from_name=account.from_name, from_email=account.from_email,
         smtp_host=account.smtp_host, smtp_port=account.smtp_port, smtp_username=account.smtp_username,
         smtp_use_tls=account.smtp_use_tls, imap_host=account.imap_host, imap_port=account.imap_port,
         imap_username=account.imap_username, imap_use_ssl=account.imap_use_ssl, status=account.status,
@@ -105,26 +103,9 @@ def save_email_account(payload: EmailAccountUpdateRequest, user: User = Depends(
     return _account_out(account)
 
 
-@router.post("/account/provision-mailbox", response_model=EmailAccountOut)
-def provision_mailbox(payload: MailboxProvisionRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Creates username@<stalwart_mail_domain> on Textzi's own Stalwart mail server, as a
-    quick-start alternative to the manual BYO SMTP/IMAP form above -- offered free/interim
-    alongside it, not a replacement (see crm_mailserver.py's own docstring for the full design)."""
-    entity = _resolve_entity(db, user)
-    _require_crm(db, entity.id)
-    account = crm_mailserver.provision_mailbox(db, entity, payload.username)
-    db.commit()
-    db.refresh(account)
-    return _account_out(account)
-
-
 @router.delete("/account")
 def disconnect_email_account(user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Detaches this entity's mailbox (BYO or Textzi-hosted) so a different one -- typically the
-    user's own credentials -- can be connected instead. For a Textzi-hosted mailbox, this only
-    deletes the EmailAccount row; the mailbox itself stays provisioned on Stalwart untouched (an
-    admin can still see/suspend/delete it from the platform Mailboxes page), matching the decision
-    that disconnecting is a detach, not a mailbox teardown."""
+    """Removes this entity's connected mailbox so a different one can be connected instead."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     account = db.scalar(select(EmailAccount).where(EmailAccount.entity_id == entity.id))

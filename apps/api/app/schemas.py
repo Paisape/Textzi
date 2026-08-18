@@ -1286,60 +1286,6 @@ class PlatformRazorpaySettingsUpdate(BaseModel):
     key_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
 
 
-class PlatformStalwartSettingsOut(BaseModel):
-    admin_url: str | None
-    admin_user: str | None
-    mail_domain: str | None
-    admin_password_configured: bool
-    cloudflare_configured: bool
-
-
-class PlatformStalwartSettingsUpdate(BaseModel):
-    admin_url: str | None = None
-    admin_user: str | None = None
-    admin_password: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
-    mail_domain: str | None = None
-    cloudflare_api_token: str | None = None  # blank = keep the existing one
-
-
-class StalwartTestConnectionResponse(BaseModel):
-    ok: bool
-    detail: str
-
-
-class AdminMailboxOut(BaseModel):
-    """A Textzi-hosted CRM mailbox (EmailAccount with provider="stalwart"), viewed cross-org by an
-    admin -- distinct from AdminMessageOut/SMS's masked view: Textzi genuinely operates this mail
-    server (unlike the SMS carrier it merely routes through), so there's no third party's data
-    being exposed by showing it in full."""
-    id: str
-    organization_name: str | None
-    entity_name: str
-    address: str
-    status: str
-    last_synced_at: str | None
-    created_at: str
-
-
-class AdminMailboxStatusUpdateRequest(BaseModel):
-    status: str = Field(pattern="^(connected|suspended)$")
-
-
-class AdminMailboxMessageOut(BaseModel):
-    """One email (real message, not a private note) sent or received through any Textzi-hosted
-    mailbox, viewed cross-org by an admin -- full content, no masking (see AdminMailboxOut's own
-    docstring for why that's the deliberate difference from the SMS log)."""
-    id: str
-    organization_name: str | None
-    entity_name: str
-    mailbox_address: str
-    direction: str
-    contact_address: str | None
-    subject: str | None
-    body: str | None
-    created_at: str
-
-
 class PlatformWabaSettingsOut(BaseModel):
     app_id: str | None
     config_id: str | None
@@ -2581,8 +2527,6 @@ class WebFormSubmitRequest(BaseModel):
 
 class EmailAccountOut(BaseModel):
     connected: bool
-    provider: str = "byo"  # "byo"|"stalwart"
-    stalwart_username: str | None = None
     from_name: str | None = None
     from_email: str | None = None
     smtp_host: str | None = None

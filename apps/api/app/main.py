@@ -14,7 +14,6 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .admin import router as admin_router, require_admin
-from .admin_stalwart import router as admin_stalwart_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
 from .channel_billing import router as channel_billing_router
@@ -104,7 +103,6 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 app.include_router(admin_router)
-app.include_router(admin_stalwart_router)
 app.include_router(auth_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)

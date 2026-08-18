@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformStalwartSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -165,39 +165,15 @@ def get_platform_waba_settings(db: Session) -> tuple[str | None, str | None, str
 def get_platform_razorpay_keys(db: Session) -> tuple[str | None, str | None]:
     """Resolves the DB-backed, admin-UI-editable PlatformRazorpaySettings row, falling back
     field-by-field to the .env defaults in config.py wherever the admin hasn't set one -- same
-    convention as get_platform_stalwart_settings above. Returns (key_id, key_secret); both are
-    None if neither the DB row nor .env has ever been set, which every existing call site already
-    treats as "Razorpay unconfigured" (see payments.py/channel_billing.py/channels.py/admin.py's
-    own `if not key_id or not key_secret` guards -- unchanged by this helper's introduction)."""
+    convention as get_platform_company_info/get_platform_turnstile_settings above. Returns
+    (key_id, key_secret); both are None if neither the DB row nor .env has ever been set, which
+    every existing call site already treats as "Razorpay unconfigured" (see
+    payments.py/channel_billing.py/channels.py/admin.py's own `if not key_id or not key_secret`
+    guards -- unchanged by this helper's introduction)."""
     row = db.get(PlatformRazorpaySettings, "platform")
     key_id = row.key_id if row and row.key_id else settings.razorpay_key_id
     key_secret = decrypt_secret(row.key_secret_encrypted) if row and row.key_secret_encrypted else settings.razorpay_key_secret
     return key_id, key_secret
-
-
-def get_platform_stalwart_settings(db: Session) -> tuple[str, str, str, str]:
-    """Resolves the DB-backed, admin-UI-editable PlatformStalwartSettings row, falling back
-    field-by-field to the .env defaults in config.py wherever the admin hasn't set one -- same
-    convention as get_platform_company_info/get_platform_turnstile_settings above. Returns
-    (admin_url, admin_user, admin_password, mail_domain); cloudflare_api_token isn't included
-    here since only crm_mailserver.py's DNS-automation path (not the ordinary provisioning path)
-    needs it -- see get_platform_cloudflare_token below."""
-    row = db.get(PlatformStalwartSettings, "platform")
-    admin_url = row.admin_url if row and row.admin_url else settings.stalwart_admin_url
-    admin_user = row.admin_user if row and row.admin_user else settings.stalwart_admin_user
-    admin_password = decrypt_secret(row.admin_password_encrypted) if row and row.admin_password_encrypted else settings.stalwart_admin_password
-    mail_domain = row.mail_domain if row and row.mail_domain else settings.stalwart_mail_domain
-    return admin_url, admin_user, admin_password, mail_domain
-
-
-def get_platform_cloudflare_token(db: Session) -> str | None:
-    """The Cloudflare API token used for Stalwart's own automatic MX/SPF/DKIM/DMARC DNS record
-    management -- purely DB-configured, no .env fallback (no sensible placeholder exists), None
-    until an admin sets it on Platform Settings > Stalwart Setting."""
-    row = db.get(PlatformStalwartSettings, "platform")
-    if not row or not row.cloudflare_api_token_encrypted:
-        return None
-    return decrypt_secret(row.cloudflare_api_token_encrypted)
 
 
 def get_platform_waba_webhook_verify_token(db: Session) -> str | None:

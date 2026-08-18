@@ -331,16 +331,6 @@ export const adminNav = [
     icon: { icon: 'tabler-building-store' },
   },
   {
-    title: 'Textzi Mailboxes',
-    to: { name: 'admin-mailboxes' },
-    icon: { icon: 'tabler-mailbox' },
-  },
-  {
-    title: 'Mail Log',
-    to: { name: 'admin-mail-log' },
-    icon: { icon: 'tabler-mail-opened' },
-  },
-  {
     title: 'Analytics',
     to: { name: 'admin-analytics' },
     icon: { icon: 'tabler-chart-line' },
@@ -459,11 +449,6 @@ export const adminNav = [
         title: 'WhatsApp Setting',
         to: { name: 'platform-waba-settings' },
         icon: { icon: 'tabler-brand-whatsapp' },
-      },
-      {
-        title: 'Stalwart Setting',
-        to: { name: 'platform-stalwart-settings' },
-        icon: { icon: 'tabler-server-cog' },
       },
       {
         title: 'Archive Status',

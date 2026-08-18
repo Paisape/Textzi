@@ -75,16 +75,6 @@ class Settings(BaseSettings):
     # (DB-backed, admin-editable), not here -- same convention as PlatformSmtpSettings.
     archive_local_after_days: int = 7
     archive_r2_after_days: int = 30
-    # Stalwart Mail Server (crm_mailserver.py) -- the admin API base URL and the single service
-    # account credential Textzi's backend uses to provision Textzi-hosted CRM mailboxes
-    # (username@<stalwart_mail_domain>). Deployment-wide and rarely-changing, same convention as
-    # provider_secret_key/admin_bootstrap_key above -- not a per-tenant DB-editable setting, since
-    # no tenant ever talks to Stalwart directly (see Chapter 13/14 of the plan doc: Community
-    # Edition has no tenant isolation, so Textzi's own backend is the only caller of this API).
-    stalwart_admin_url: str = "http://stalwart:8080"
-    stalwart_admin_user: str = "admin"
-    stalwart_admin_password: str = "development-stalwart-admin-change-me"
-    stalwart_mail_domain: str = "mail.textzi.local"
 
 
 settings = Settings()

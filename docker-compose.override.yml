@@ -6,38 +6,5 @@
 services:
   api:
     ports: ["8000:8000"]
-    depends_on:
-      stalwart: { condition: service_started }
   web:
     ports: ["5173:80"]
-  # Local dev only for now -- Textzi-hosted CRM mailboxes (plan doc Chapter 14). Production
-  # (mail.textzi.in) is its own separate Coolify resource (Chapter 15's one-click Stalwart
-  # service template), never this repo's docker-compose.yml -- when this file lived there, Coolify
-  # deployed it as part of the api/web resource and its 8080:8080 raw port collided with Coolify's
-  # own proxy, which already owns host port 8080. Keeping it override-only (like api/web's own
-  # ports: overrides above) means Coolify's repo-wide deploy never sees this service at all.
-  stalwart:
-    image: stalwartlabs/stalwart:v0.16
-    restart: unless-stopped
-    environment:
-      # Pins the bootstrap-mode admin credential so the api service can authenticate against
-      # Stalwart's admin API immediately on first boot, with no manual setup-wizard step -- see
-      # stalw.art/docs/configuration/bootstrap-mode/. Must match STALWART_ADMIN_PASSWORD in .env.
-      STALWART_RECOVERY_ADMIN: admin:${STALWART_ADMIN_PASSWORD:-change-me-local-dev-only}
-    # /etc/stalwart is a host bind mount (not a named volume) so ops/stalwart-config.json --
-    # pre-selecting RocksDB as the datastore, skipping that step of the setup wizard, see
-    # stalw.art/docs/configuration/overview/ -- seeds the directory on first boot. A named volume
-    # would shadow that seed file instead of starting from it. Stalwart writes back into this same
-    # directory as it runs (e.g. after completing the wizard), so it persists across restarts.
-    volumes:
-      - ./ops/stalwart-etc:/etc/stalwart
-      - stalwart_data:/var/lib/stalwart
-    ports:
-      - "8080:8080"
-      - "25:25"
-      - "587:587"
-      - "465:465"
-      - "143:143"
-      - "993:993"
-volumes:
-  stalwart_data:
