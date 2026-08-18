@@ -2,23 +2,50 @@
 definePage({
   meta: {
     layout: 'default',
+    channel: 'crm',
   },
 })
 
-type Company = { id: string, name: string, gstin: string | null, industry: string | null, website: string | null, notes: string | null, contact_count: number }
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
+type Company = {
+  id: string, name: string, gstin: string | null, industry: string | null, website: string | null, notes: string | null,
+  owner_user_id: string | null, account_type: string | null, parent_company_id: string | null, phone: string | null,
+  address: string | null, employee_count: number | null, annual_revenue: number | null,
+  contact_count: number, open_deal_value: number, won_deal_value: number, open_deal_count: number,
+}
+type AssignableUser = { id: string, full_name: string }
+
+const ACCOUNT_TYPES = ['customer', 'partner', 'prospect', 'vendor']
+const ACCOUNT_TYPE_COLORS: Record<string, string | undefined> = { customer: 'success', partner: 'info', prospect: 'warning', vendor: undefined }
 
 const companies = ref<Company[]>([])
+const assignableUsers = ref<AssignableUser[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+
+function inr(value: number) {
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
+}
+
+function initial(company: Company) {
+  return company.name.slice(0, 1).toUpperCase()
+}
+
+function ownerName(ownerUserId: string | null) {
+  return assignableUsers.value.find(u => u.id === ownerUserId)?.full_name || '—'
+}
 
 async function loadAll() {
   loading.value = true
   loadError.value = ''
   crmInactive.value = false
   try {
-    companies.value = await $api<Company[]>('/v1/crm/companies')
+    const [companyResult, userResult] = await Promise.all([
+      $api<Company[]>('/v1/crm/companies'),
+      $api<AssignableUser[]>('/v1/waba/assignable-users'),
+    ])
+    companies.value = companyResult
+    assignableUsers.value = userResult
   }
   catch (error: any) {
     if (error?.response?.status === 422)
@@ -35,7 +62,11 @@ async function loadAll() {
 
 const dialog = ref(false)
 const editingId = ref<string | null>(null)
-const form = reactive({ name: '', gstin: '', industry: '', website: '', notes: '' })
+const form = reactive({
+  name: '', gstin: '', industry: '', website: '', notes: '', owner_user_id: null as string | null,
+  account_type: null as string | null, parent_company_id: null as string | null, phone: '', address: '',
+  employee_count: null as number | null, annual_revenue: null as number | null,
+})
 const saving = ref(false)
 const saveError = ref('')
 
@@ -46,6 +77,13 @@ function openCreate() {
   form.industry = ''
   form.website = ''
   form.notes = ''
+  form.owner_user_id = null
+  form.account_type = null
+  form.parent_company_id = null
+  form.phone = ''
+  form.address = ''
+  form.employee_count = null
+  form.annual_revenue = null
   saveError.value = ''
   dialog.value = true
 }
@@ -57,6 +95,13 @@ function openEdit(company: Company) {
   form.industry = company.industry || ''
   form.website = company.website || ''
   form.notes = company.notes || ''
+  form.owner_user_id = company.owner_user_id
+  form.account_type = company.account_type
+  form.parent_company_id = company.parent_company_id
+  form.phone = company.phone || ''
+  form.address = company.address || ''
+  form.employee_count = company.employee_count
+  form.annual_revenue = company.annual_revenue
   saveError.value = ''
   dialog.value = true
 }
@@ -72,6 +117,13 @@ async function save() {
     industry: form.industry.trim() || null,
     website: form.website.trim() || null,
     notes: form.notes.trim() || null,
+    owner_user_id: form.owner_user_id,
+    account_type: form.account_type,
+    parent_company_id: form.parent_company_id,
+    phone: form.phone.trim() || null,
+    address: form.address.trim() || null,
+    employee_count: form.employee_count,
+    annual_revenue: form.annual_revenue,
   }
   try {
     if (editingId.value) {
@@ -100,28 +152,6 @@ async function remove(company: Company) {
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this company.')
-  }
-}
-
-// --- Contacts dialog -------------------------------------------------------------------------
-
-const contactsDialog = ref(false)
-const contactsCompany = ref<Company | null>(null)
-const contacts = ref<Contact[]>([])
-const contactsLoading = ref(false)
-
-async function openContacts(company: Company) {
-  contactsCompany.value = company
-  contactsDialog.value = true
-  contactsLoading.value = true
-  try {
-    contacts.value = await $api<Contact[]>(`/v1/crm/companies/${company.id}/contacts`)
-  }
-  catch (error: any) {
-    loadError.value = extractErrorMessage(error, 'Could not load this company\'s contacts.')
-  }
-  finally {
-    contactsLoading.value = false
   }
 }
 
@@ -155,22 +185,42 @@ onMounted(loadAll)
       <thead>
         <tr>
           <th>Name</th>
-          <th>GSTIN</th>
+          <th>Type</th>
           <th>Industry</th>
+          <th>Owner</th>
           <th>Contacts</th>
+          <th>Open deals</th>
+          <th>Won value</th>
           <th />
         </tr>
       </thead>
       <tbody>
         <tr v-for="company in companies" :key="company.id">
-          <td>{{ company.name }}</td>
-          <td>{{ company.gstin || '—' }}</td>
-          <td>{{ company.industry || '—' }}</td>
           <td>
-            <VBtn size="small" variant="text" @click="openContacts(company)">
-              {{ company.contact_count }} contact{{ company.contact_count === 1 ? '' : 's' }}
-            </VBtn>
+            <div class="d-flex align-center gap-3">
+              <VAvatar color="primary" variant="tonal" size="32">
+                <span class="text-caption">{{ initial(company) }}</span>
+              </VAvatar>
+              <RouterLink :to="`/crm-companies/${company.id}`" class="font-weight-medium">
+                {{ company.name }}
+              </RouterLink>
+            </div>
           </td>
+          <td>
+            <VChip v-if="company.account_type" size="small" :color="ACCOUNT_TYPE_COLORS[company.account_type]" class="text-capitalize">
+              {{ company.account_type }}
+            </VChip>
+            <span v-else class="text-medium-emphasis">—</span>
+          </td>
+          <td>{{ company.industry || '—' }}</td>
+          <td>{{ ownerName(company.owner_user_id) }}</td>
+          <td>
+            <RouterLink :to="`/crm-companies/${company.id}`" class="text-body-2">
+              {{ company.contact_count }} contact{{ company.contact_count === 1 ? '' : 's' }}
+            </RouterLink>
+          </td>
+          <td>{{ company.open_deal_count }} · {{ inr(company.open_deal_value) }}</td>
+          <td>{{ inr(company.won_deal_value) }}</td>
           <td class="text-end">
             <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEdit(company)" />
             <VBtn icon="tabler-trash" size="small" variant="text" @click="remove(company)" />
@@ -183,16 +233,32 @@ onMounted(loadAll)
     </p>
   </VCard>
 
-  <VDialog v-model="dialog" max-width="480">
+  <VDialog v-model="dialog" max-width="560" persistent>
     <VCard :title="editingId ? 'Edit company' : 'New company'">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="dialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact">
           {{ saveError }}
         </VAlert>
         <VTextField v-model="form.name" label="Company name" density="compact" />
+        <VSelect v-model="form.account_type" label="Account type" density="compact" clearable :items="ACCOUNT_TYPES" class="text-capitalize" />
+        <VSelect
+          v-model="form.owner_user_id" label="Owner" density="compact" clearable
+          :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
+        />
+        <VSelect
+          v-model="form.parent_company_id" label="Parent company" density="compact" clearable
+          :items="companies.filter(c => c.id !== editingId).map(c => ({ title: c.name, value: c.id }))"
+        />
         <VTextField v-model="form.gstin" label="GSTIN (optional)" density="compact" />
         <VTextField v-model="form.industry" label="Industry" density="compact" />
+        <VTextField v-model="form.phone" label="Phone" density="compact" />
         <VTextField v-model="form.website" label="Website" density="compact" />
+        <VTextField v-model.number="form.employee_count" label="Employees" type="number" min="0" density="compact" />
+        <VTextField v-model.number="form.annual_revenue" label="Annual revenue (INR)" type="number" min="0" density="compact" />
+        <VTextarea v-model="form.address" label="Address" rows="2" density="compact" />
         <VTextarea v-model="form.notes" label="Notes" rows="3" density="compact" />
       </VCardText>
       <VCardActions>
@@ -202,28 +268,6 @@ onMounted(loadAll)
         </VBtn>
         <VBtn color="primary" :loading="saving" :disabled="!form.name.trim()" @click="save">
           Save
-        </VBtn>
-      </VCardActions>
-    </VCard>
-  </VDialog>
-
-  <VDialog v-model="contactsDialog" max-width="420">
-    <VCard :title="`${contactsCompany?.name} — contacts`">
-      <VCardText>
-        <VProgressLinear v-if="contactsLoading" indeterminate class="mb-3" />
-        <VList v-if="contacts.length" density="compact">
-          <VListItem v-for="contact in contacts" :key="contact.id" :to="`/waba-customers/${contact.id}`">
-            <VListItemTitle>{{ contact.name || contact.wa_id || contact.email || 'Unknown' }}</VListItemTitle>
-          </VListItem>
-        </VList>
-        <p v-else-if="!contactsLoading" class="text-medium-emphasis mb-0">
-          No contacts linked to this company yet.
-        </p>
-      </VCardText>
-      <VCardActions>
-        <VSpacer />
-        <VBtn variant="text" @click="contactsDialog = false">
-          Close
         </VBtn>
       </VCardActions>
     </VCard>

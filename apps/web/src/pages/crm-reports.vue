@@ -1,11 +1,19 @@
 <script setup lang="ts">
+import { ArcElement, BarElement, CategoryScale, Chart as ChartJS, Legend, LinearScale, LineElement, PointElement, Tooltip } from 'chart.js'
+import { Bar, Doughnut, Line } from 'vue-chartjs'
+
+ChartJS.register(ArcElement, BarElement, CategoryScale, Legend, LinearScale, LineElement, PointElement, Tooltip)
+
 definePage({
   meta: {
     layout: 'default',
+    channel: 'crm',
   },
 })
 
 type FunnelStage = { stage: string, count: number, value: number }
+type LeadFunnelMonth = { month: string, count: number }
+type LeadFunnel = { created_count: number, converted_count: number, conversion_rate: number | null, monthly_created: LeadFunnelMonth[] }
 type Reports = {
   funnel: FunnelStage[]
   forecast: number
@@ -16,8 +24,9 @@ type Reports = {
   won_count: number
   lost_count: number
   win_rate: number | null
+  lead_funnel: LeadFunnel
 }
-type Pipeline = { id: string, name: string, stages: string[] }
+type Pipeline = { id: string, name: string, stages: { name: string, probability: number, forecast_category: string }[] }
 type EmployeeSalesRow = { user_id: string, full_name: string, won_count: number, won_value: number }
 type ProductSalesRow = { description: string, count: number, value: number }
 type ExtendedReports = {
@@ -65,11 +74,25 @@ async function load() {
   }
 }
 
-const maxFunnelValue = computed(() => {
-  if (!reports.value?.funnel.length)
-    return 1
-  return Math.max(1, ...reports.value.funnel.map(f => f.value))
-})
+const CHART_COLORS = ['#7367F0', '#28C76F', '#FF9F43', '#EA5455', '#00CFE8', '#82868B']
+
+const stageChartData = computed(() => ({
+  labels: (reports.value?.funnel || []).map(f => formatLabel(f.stage)),
+  datasets: [{ data: (reports.value?.funnel || []).map(f => f.value), backgroundColor: CHART_COLORS, borderWidth: 0 }],
+}))
+
+const employeeChartData = computed(() => ({
+  labels: (extended.value?.by_employee || []).map(r => r.full_name),
+  datasets: [{ label: 'Won value', data: (extended.value?.by_employee || []).map(r => r.won_value), backgroundColor: '#7367F0' }],
+}))
+
+const leadFunnelChartData = computed(() => ({
+  labels: (reports.value?.lead_funnel.monthly_created || []).map(m => m.month),
+  datasets: [{ label: 'Leads created', data: (reports.value?.lead_funnel.monthly_created || []).map(m => m.count), borderColor: '#7367F0', backgroundColor: '#7367F0', tension: 0.35 }],
+}))
+
+const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
+const doughnutOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const } } }
 
 watch(pipelineId, load)
 onMounted(load)
@@ -168,25 +191,62 @@ onMounted(load)
       </VCol>
     </VRow>
 
-    <VCard>
-      <VCardText>
-        <h2 class="text-h6 mb-4">
-          Pipeline by stage
-        </h2>
-        <div v-if="reports.funnel.length" class="d-flex flex-column gap-3">
-          <div v-for="stage in reports.funnel" :key="stage.stage">
-            <div class="d-flex align-center justify-space-between mb-1">
-              <span class="text-body-2 text-capitalize">{{ stage.stage }}</span>
-              <span class="text-caption text-medium-emphasis">{{ stage.count }} deals · {{ inr(stage.value) }}</span>
+    <VRow class="mb-4">
+      <VCol cols="12" md="6">
+        <VCard class="h-100">
+          <VCardText>
+            <h2 class="text-h6 mb-1">
+              Lead funnel
+            </h2>
+            <div class="d-flex gap-6 flex-wrap mb-4">
+              <div>
+                <p class="text-caption text-medium-emphasis mb-1">
+                  Leads created
+                </p>
+                <p class="text-h6 mb-0">
+                  {{ reports.lead_funnel.created_count }}
+                </p>
+              </div>
+              <div>
+                <p class="text-caption text-medium-emphasis mb-1">
+                  Converted to deal
+                </p>
+                <p class="text-h6 mb-0">
+                  {{ reports.lead_funnel.converted_count }}
+                </p>
+              </div>
+              <div>
+                <p class="text-caption text-medium-emphasis mb-1">
+                  Conversion rate
+                </p>
+                <p class="text-h6 mb-0">
+                  {{ reports.lead_funnel.conversion_rate !== null ? `${reports.lead_funnel.conversion_rate}%` : '—' }}
+                </p>
+              </div>
             </div>
-            <div class="bg-primary rounded" :style="{ width: `${(stage.value / maxFunnelValue) * 100}%`, height: '10px', minWidth: stage.value ? '4px' : '0' }" />
-          </div>
-        </div>
-        <p v-else class="text-medium-emphasis mb-0">
-          No open deals yet.
-        </p>
-      </VCardText>
-    </VCard>
+            <div style="height: 220px;">
+              <Line :data="leadFunnelChartData" :options="chartOptions" />
+            </div>
+          </VCardText>
+        </VCard>
+      </VCol>
+      <VCol cols="12" md="6">
+        <VCard class="h-100">
+          <VCardText>
+            <h2 class="text-h6 mb-4">
+              Pipeline by stage
+            </h2>
+            <div v-if="reports.funnel.length" style="height: 260px;">
+              <Doughnut :data="stageChartData" :options="doughnutOptions" />
+            </div>
+            <p v-else class="text-medium-emphasis mb-0">
+              No open deals yet.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+
   </template>
 
   <template v-if="extended">
@@ -230,6 +290,9 @@ onMounted(load)
             <h2 class="text-h6 mb-3">
               Sales by employee
             </h2>
+            <div v-if="extended.by_employee.length" style="height: 220px;" class="mb-4">
+              <Bar :data="employeeChartData" :options="chartOptions" />
+            </div>
             <VTable density="compact">
               <thead>
                 <tr>

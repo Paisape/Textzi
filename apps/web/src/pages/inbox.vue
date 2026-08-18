@@ -20,6 +20,7 @@ definePage({
     // (there's no separate "-fluid" CSS rule to begin with, boxed's absence IS fluid) -- see the
     // <style> block below for the targeted override that actually neutralizes it.
     layoutWrapperClasses: 'layout-content-width-fluid',
+    channel: 'waba',
   },
 })
 
@@ -103,15 +104,11 @@ type WabaTemplate = {
 
 const LIST_LIMIT = 30
 
-const props = defineProps<{ ticketsMode?: boolean }>()
 const route = useRoute()
-// "Tickets" is the same underlying page/component as "Inbox" -- just scoped to is_ticket=true,
-// with its own heading. Rendered through pages/tickets.vue (a thin wrapper passing
-// ticketsMode) so it gets a real, distinct route name -- the nav's active-link highlighting
-// only compares route names (see @layouts/utils.ts isNavLinkActive), so a shared route name via
-// a query param alone left both "Inbox" and "Tickets" highlighted at once. ?tickets=1 is still
-// read as a fallback so any pre-existing deep link keeps working.
-const ticketsView = computed(() => props.ticketsMode || route.query.tickets === '1')
+// This is WhatsApp's own live-chat inbox only -- Tickets (tickets.vue) and Email (crm-email.vue)
+// are both dedicated pages with their own list/detail UI, not this component wearing a prop flag.
+// Pinned to channel=whatsapp so a connected Email account's conversations never leak in here.
+const channelFilter = 'whatsapp' as const
 
 const statusFilter = ref<'' | 'open' | 'pending' | 'resolved'>('open')
 const assignmentFilter = ref<'' | 'unassigned' | 'mine'>('')
@@ -185,15 +182,13 @@ watch(searchQuery, () => {
 })
 
 function conversationParams(offset: number): Record<string, string | number | boolean> {
-  const params: Record<string, string | number | boolean> = { limit: LIST_LIMIT, offset }
+  const params: Record<string, string | number | boolean> = { limit: LIST_LIMIT, offset, channel: channelFilter }
   if (statusFilter.value)
     params.status = statusFilter.value
   if (assignmentFilter.value)
     params.assignment = assignmentFilter.value
   if (searchQuery.value.trim())
     params.search = searchQuery.value.trim()
-  if (ticketsView.value)
-    params.is_ticket = true
   return params
 }
 
@@ -235,8 +230,6 @@ async function loadCounts() {
     const params: Record<string, string | boolean> = {}
     if (statusFilter.value)
       params.status = statusFilter.value
-    if (ticketsView.value)
-      params.is_ticket = true
     counts.value = await $api<ConversationCounts>('/v1/waba/conversations/counts', { params })
   }
   catch {
@@ -439,19 +432,20 @@ async function convertToTicket() {
 // customer) worth filling in live while the agent is still talking to the customer, rather than
 // defaulting them blind the way a one-click ticket conversion can (ticket has no fields of its
 // own, so it stays a direct action). Only one of the two can be open at a time.
-const crmForm = ref<{ mode: 'lead' | 'customer', stage: string, owner_user_id: string | null, notes: string } | null>(null)
+type PipelineStage = { name: string, probability: number, forecast_category: string }
+type Pipeline = { id: string, name: string, stages: PipelineStage[] }
+const crmForm = ref<{ mode: 'lead' | 'deal' | 'customer', company_name: string, pipeline_id: string | null, stage: string, value: number | null, probability: number | null, owner_user_id: string | null, notes: string } | null>(null)
 const crmFormSubmitting = ref(false)
 const crmFormError = ref('')
-const LEAD_STAGES = ref<string[]>(['inquiry'])
+const pipelines = ref<Pipeline[]>([])
 
-async function loadCrmSettings() {
+async function loadCrmPipelines() {
   try {
-    const result = await $api<{ pipeline_stages: string[] }>('/v1/crm/settings')
-    LEAD_STAGES.value = result.pipeline_stages
+    pipelines.value = await $api<Pipeline[]>('/v1/crm/pipelines')
   }
   catch {
-    // Not CRM-relevant enough to surface an error banner for -- the lead form just falls back to
-    // its one default stage if this fails.
+    // Not CRM-relevant enough to surface an error banner for -- the deal form just falls back to
+    // an empty pipeline list if this fails.
   }
 }
 
@@ -486,12 +480,21 @@ async function runMacro(macroId: string) {
 }
 
 function openLeadForm() {
-  crmForm.value = { mode: 'lead', stage: LEAD_STAGES.value[0], owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'lead', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
+  crmFormError.value = ''
+}
+
+function openDealForm() {
+  const defaultPipeline = pipelines.value[0] || null
+  crmForm.value = {
+    mode: 'deal', company_name: '', pipeline_id: defaultPipeline?.id || null, stage: defaultPipeline?.stages[0]?.name || 'inquiry',
+    value: null, probability: defaultPipeline?.stages[0]?.probability ?? null, owner_user_id: null, notes: '',
+  }
   crmFormError.value = ''
 }
 
 function openCustomerForm() {
-  crmForm.value = { mode: 'customer', stage: '', owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'customer', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
   crmFormError.value = ''
 }
 
@@ -509,7 +512,16 @@ async function submitCrmForm() {
     if (crmForm.value.mode === 'lead') {
       await $api(`/v1/crm/conversations/${activeConversation.value.id}/convert-to-lead`, {
         method: 'POST',
-        body: { stage: crmForm.value.stage, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+        body: { company_name: crmForm.value.company_name || null, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+      })
+    }
+    else if (crmForm.value.mode === 'deal') {
+      await $api(`/v1/crm/conversations/${activeConversation.value.id}/convert-to-deal`, {
+        method: 'POST',
+        body: {
+          pipeline_id: crmForm.value.pipeline_id, stage: crmForm.value.stage, value: crmForm.value.value,
+          probability: crmForm.value.probability, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null,
+        },
       })
     }
     else {
@@ -1133,7 +1145,7 @@ onMounted(() => {
   loadLabels()
   loadCannedResponses()
   loadAssignableUsers()
-  loadCrmSettings()
+  loadCrmPipelines()
   loadMacros()
   connectSocket()
   updatePanelHeight()
@@ -1153,20 +1165,14 @@ onBeforeUnmount(() => {
 })
 
 watch(statusFilter, loadConversations)
-// Vue Router reuses this same page instance when only the query string changes (Inbox <-> Tickets
-// nav links), so onMounted alone wouldn't fire again -- this is what actually reloads the list.
-watch(ticketsView, () => {
-  activeConversation.value = null
-  loadConversations()
-})
 </script>
 
 <template>
   <div class="d-flex align-center justify-space-between mb-4">
     <h1 class="text-h4 mb-0">
-      {{ ticketsView ? 'Tickets' : 'Inbox' }}
+      Inbox
     </h1>
-    <VBtn v-if="!ticketsView" size="small" prepend-icon="tabler-plus" @click="openNewConversationDialog">
+    <VBtn size="small" prepend-icon="tabler-plus" @click="openNewConversationDialog">
       New Conversation
     </VBtn>
   </div>
@@ -1238,15 +1244,15 @@ watch(ticketsView, () => {
             >
               <template #prepend>
                 <VAvatar color="primary" variant="tonal" size="36">
-                  {{ (conversation.contact.name || conversation.contact.wa_id || '?').slice(0, 1).toUpperCase() }}
+                  {{ (conversation.contact.name || conversation.contact.wa_id || conversation.contact.email || '?').slice(0, 1).toUpperCase() }}
                 </VAvatar>
               </template>
               <VListItemTitle :class="conversation.unread ? 'font-weight-bold' : ''" class="d-flex align-center ga-1">
                 <VIcon v-if="conversation.is_ticket" icon="tabler-ticket" size="14" color="info" />
-                <span class="text-truncate">{{ conversation.contact.name || conversation.contact.wa_id || 'Unknown contact' }}</span>
+                <span class="text-truncate">{{ conversation.contact.name || conversation.contact.wa_id || conversation.contact.email || 'Unknown contact' }}</span>
               </VListItemTitle>
               <VListItemSubtitle :class="conversation.unread ? 'font-weight-medium text-high-emphasis' : ''">
-                {{ conversation.last_message_preview || conversation.contact.wa_id }}
+                {{ conversation.last_message_preview || conversation.contact.wa_id || conversation.contact.email }}
               </VListItemSubtitle>
               <template #append>
                 <div class="d-flex flex-column align-end ga-1" style="min-width: 46px;">
@@ -1284,7 +1290,7 @@ watch(ticketsView, () => {
 
       <VCard v-else class="flex-grow-1 d-flex flex-column overflow-hidden">
         <VCardText class="d-flex align-center flex-wrap ga-3 pb-3 flex-grow-0 flex-shrink-0">
-          <strong>{{ activeConversation.contact.name || activeConversation.contact.wa_id }}</strong>
+          <strong>{{ activeConversation.contact.name || activeConversation.contact.wa_id || activeConversation.contact.email }}</strong>
           <VChip v-if="activeConversation.is_ticket" size="small" color="info" prepend-icon="tabler-ticket">
             {{ activeConversation.ticket_number }}
           </VChip>
@@ -1328,6 +1334,7 @@ watch(ticketsView, () => {
             </template>
             <VList>
               <VListItem prepend-icon="tabler-target-arrow" title="Create lead" @click="openLeadForm" />
+              <VListItem prepend-icon="tabler-briefcase" title="Create deal" @click="openDealForm" />
               <VListItem prepend-icon="tabler-user-check" title="Create customer" @click="openCustomerForm" />
               <VListItem v-if="!activeConversation.is_ticket" prepend-icon="tabler-ticket" title="Create ticket" @click="convertToTicket" />
             </VList>
@@ -1600,32 +1607,49 @@ watch(ticketsView, () => {
       <VCard v-if="activeConversation" class="flex-grow-1 overflow-y-auto">
         <VCardText class="text-center pb-2">
           <VAvatar color="primary" variant="tonal" size="56" class="mb-2">
-            <span class="text-h6">{{ (activeConversation.contact.name || activeConversation.contact.wa_id || '?').slice(0, 1).toUpperCase() }}</span>
+            <span class="text-h6">{{ (activeConversation.contact.name || activeConversation.contact.wa_id || activeConversation.contact.email || '?').slice(0, 1).toUpperCase() }}</span>
           </VAvatar>
           <p class="text-h6 mb-0">
             {{ activeConversation.contact.name || '—' }}
           </p>
           <p class="text-body-2 text-medium-emphasis mb-0">
-            {{ activeConversation.contact.wa_id || '—' }}
+            {{ activeConversation.contact.wa_id || activeConversation.contact.email || '—' }}
           </p>
         </VCardText>
         <VDivider />
 
         <VCardText v-if="crmForm">
           <h3 class="text-subtitle-1 mb-3">
-            {{ crmForm.mode === 'lead' ? 'Create lead' : 'Create customer' }}
+            {{ crmForm.mode === 'lead' ? 'Create lead' : crmForm.mode === 'deal' ? 'Create deal' : 'Create customer' }}
           </h3>
           <VAlert v-if="crmFormError" type="error" variant="tonal" density="compact" class="mb-3">
             {{ crmFormError }}
           </VAlert>
-          <VSelect
+          <VTextField
             v-if="crmForm.mode === 'lead'"
-            v-model="crmForm.stage"
-            :items="LEAD_STAGES"
-            label="Stage"
+            v-model="crmForm.company_name"
+            label="Company (optional)"
             density="compact"
             class="mb-3"
           />
+          <template v-if="crmForm.mode === 'deal'">
+            <VSelect
+              v-model="crmForm.pipeline_id"
+              :items="pipelines.map(p => ({ title: p.name, value: p.id }))"
+              label="Pipeline"
+              density="compact"
+              class="mb-3"
+            />
+            <VSelect
+              v-model="crmForm.stage"
+              :items="(pipelines.find(p => p.id === crmForm!.pipeline_id)?.stages || []).map(s => ({ title: formatLabel(s.name), value: s.name }))"
+              label="Stage"
+              density="compact"
+              class="mb-3"
+            />
+            <VTextField v-model.number="crmForm.value" label="Deal value (INR)" type="number" min="0" density="compact" class="mb-3" />
+            <VTextField v-model.number="crmForm.probability" label="Probability (%)" type="number" min="0" max="100" density="compact" class="mb-3" />
+          </template>
           <VSelect
             v-model="crmForm.owner_user_id"
             :items="[{ title: 'Unassigned', value: null }, ...assignableUsers.map(u => ({ title: u.full_name, value: u.id }))]"

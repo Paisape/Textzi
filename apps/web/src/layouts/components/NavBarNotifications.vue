@@ -19,29 +19,52 @@ const SEVERITY_COLOR: Record<string, string> = {
   error: 'error',
 }
 
+type CrmNotification = { id: string, type: string, title: string, body: string, link: string | null, read: boolean, created_at: string }
+
 const notifications = ref<Notification[]>([])
 const linkById = new Map<number, string>()
+const crmIdById = new Map<number, string>()
 
 async function loadNotifications() {
   try {
     await authStore.load()
-    if (!authStore.isAdmin) {
+    if (authStore.isAdmin) {
+      const data = await $api<AdminNotification[]>('/v1/admin/notifications')
+      linkById.clear()
+      notifications.value = data.map((n, i) => {
+        if (n.link)
+          linkById.set(i, n.link)
+        return {
+          id: i,
+          icon: SEVERITY_ICON[n.severity] || 'tabler-bell',
+          color: SEVERITY_COLOR[n.severity] || 'primary',
+          title: n.title,
+          subtitle: n.description,
+          time: '',
+          isSeen: false,
+        }
+      })
+      return
+    }
+    if (!authStore.crmActive) {
       notifications.value = []
       return
     }
-    const data = await $api<AdminNotification[]>('/v1/admin/notifications')
+    const data = await $api<CrmNotification[]>('/v1/crm/notifications')
     linkById.clear()
+    crmIdById.clear()
     notifications.value = data.map((n, i) => {
       if (n.link)
         linkById.set(i, n.link)
+      crmIdById.set(i, n.id)
       return {
         id: i,
-        icon: SEVERITY_ICON[n.severity] || 'tabler-bell',
-        color: SEVERITY_COLOR[n.severity] || 'primary',
+        icon: 'tabler-bell',
+        color: 'primary',
         title: n.title,
-        subtitle: n.description,
+        subtitle: n.body,
         time: '',
-        isSeen: false,
+        isSeen: n.read,
       }
     })
   }
@@ -59,6 +82,17 @@ const removeNotification = (notificationId: number) => {
   })
 }
 
+async function persistRead(notificationId: number[]) {
+  if (authStore.isAdmin)
+    return
+  await Promise.all(
+    notificationId
+      .map(id => crmIdById.get(id))
+      .filter((id): id is string => !!id)
+      .map(id => $api(`/v1/crm/notifications/${id}/read`, { method: 'POST' }).catch(() => {})),
+  )
+}
+
 const markRead = (notificationId: number[]) => {
   notifications.value.forEach(item => {
     notificationId.forEach(id => {
@@ -66,6 +100,7 @@ const markRead = (notificationId: number[]) => {
         item.isSeen = true
     })
   })
+  persistRead(notificationId)
 }
 
 const markUnRead = (notificationId: number[]) => {

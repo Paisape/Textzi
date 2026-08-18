@@ -49,7 +49,8 @@ def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = D
     token = secrets.token_urlsafe(32)
     invitation = Invitation(
         organization_id=user.organization_id, email=payload.email, invited_by_user_id=user.id,
-        token_hash=hash_api_key(token), role=payload.role.value,
+        token_hash=hash_api_key(token), role=payload.role.value, channel_scope=payload.channel_scope,
+        page_scope=payload.page_scope if payload.channel_scope else None,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS),
     )
     db.add(invitation)
@@ -77,7 +78,10 @@ def list_team_members(user: User = Depends(require_capability("team:view")), db:
     if not user.organization_id:
         raise HTTPException(status_code=422, detail="Complete organisation onboarding first")
     members = db.scalars(select(User).where(User.organization_id == user.organization_id).order_by(User.created_at.asc())).all()
-    return [TeamMemberOut(id=m.id, email=m.email, full_name=m.full_name, role=m.role, status=m.status, manager_id=m.manager_id) for m in members]
+    return [
+        TeamMemberOut(id=m.id, email=m.email, full_name=m.full_name, role=m.role, status=m.status, manager_id=m.manager_id, channel_scope=m.channel_scope, page_scope=m.page_scope)
+        for m in members
+    ]
 
 
 @router.post("/accept-invite", response_model=TokenResponse)
@@ -93,7 +97,7 @@ def accept_invite(payload: AcceptInviteRequest, request: Request, db: Session = 
     user = User(
         email=invitation.email, password_hash=hash_password(payload.password), full_name=payload.full_name,
         mobile=payload.mobile, organization_id=invitation.organization_id, role=invitation.role, status=UserStatus.active,
-        email_verified=True,
+        email_verified=True, channel_scope=invitation.channel_scope, page_scope=invitation.page_scope,
     )
     db.add(user)
     invitation.status = "accepted"

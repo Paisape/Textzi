@@ -60,7 +60,7 @@ async function saveHours() {
   }
 }
 
-const slaForm = ref({ enabled: false, first_response_minutes: 60 })
+const slaForm = ref({ enabled: false, first_response_minutes: 60, resolution_minutes: 480 })
 const slaSaving = ref(false)
 const slaError = ref('')
 const slaSaved = ref(false)
@@ -148,7 +148,8 @@ onMounted(() => {
             SLA policy
           </h2>
           <p class="text-body-2 text-medium-emphasis mb-4">
-            How long a conversation can wait for its first reply before it's flagged as breached.
+            How long a conversation can wait for its first reply, and a ticket for full
+            resolution, before each is flagged as breached.
           </p>
           <VAlert v-if="slaError" type="error" variant="tonal" density="compact" class="mb-3">
             {{ slaError }}
@@ -157,7 +158,10 @@ onMounted(() => {
             Saved.
           </VAlert>
           <VSwitch v-model="slaForm.enabled" label="Enable SLA tracking" density="compact" class="mb-3" />
-          <VTextField v-if="slaForm.enabled" v-model.number="slaForm.first_response_minutes" type="number" label="First response due within (minutes)" class="mb-3" />
+          <template v-if="slaForm.enabled">
+            <VTextField v-model.number="slaForm.first_response_minutes" type="number" label="First response due within (minutes)" class="mb-3" />
+            <VTextField v-model.number="slaForm.resolution_minutes" type="number" label="Ticket resolution due within (minutes)" class="mb-3" />
+          </template>
           <VBtn :loading="slaSaving" @click="saveSla">
             Save
           </VBtn>

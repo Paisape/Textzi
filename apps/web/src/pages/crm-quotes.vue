@@ -1,16 +1,19 @@
 <script setup lang="ts">
+import { useAuthStore } from '@/stores/auth'
+
 definePage({
   meta: {
     layout: 'default',
+    channel: 'crm',
   },
 })
 
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
-type Lead = { id: string, contact: Contact, stage: string, status: string }
-type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number }
+type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null }
+type Deal = { id: string, contact: CrmContact, stage: string, status: string }
+type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number, product_id?: string | null }
 type Quote = {
   id: string
-  lead_id: string
+  deal_id: string
   quote_number: string | null
   line_items: LineItem[]
   status: 'draft' | 'sent' | 'accepted' | 'rejected'
@@ -21,22 +24,50 @@ type Quote = {
   total: number
   has_pdf: boolean
   approval_status: 'not_required' | 'pending' | 'approved' | 'rejected'
+  approvals: { user_id: string, approved_at: string }[]
+  approvers_required: string[]
   converted_invoice_id: string | null
   created_at: string
   sent_at: string | null
 }
 
+const route = useRoute()
+const authStore = useAuthStore()
+type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, active: boolean }
+
 const quotes = ref<Quote[]>([])
-const leads = ref<Lead[]>([])
+const deals = ref<Deal[]>([])
+const products = ref<Product[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
 const actionError = ref('')
 const busy = ref<string | null>(null)
+const pendingMyApprovalOnly = ref(false)
 
-function leadContactLabel(leadId: string) {
-  const lead = leads.value.find(l => l.id === leadId)
-  return lead ? (lead.contact.name || lead.contact.wa_id || lead.contact.email || 'Unknown') : '…'
+function approvalProgress(quote: Quote) {
+  if (!quote.approvers_required.length)
+    return null
+  return `${quote.approvals.length}/${quote.approvers_required.length} approved`
+}
+
+function iHaveApproved(quote: Quote) {
+  return quote.approvals.some(a => a.user_id === authStore.profile?.id)
+}
+
+function iCanApprove(quote: Quote) {
+  if (quote.approval_status !== 'pending')
+    return false
+  if (!quote.approvers_required.length)
+    return true
+  return quote.approvers_required.includes(authStore.profile?.id || '') && !iHaveApproved(quote)
+}
+
+const visibleQuotes = computed(() => pendingMyApprovalOnly.value ? quotes.value.filter(iCanApprove) : quotes.value)
+
+function dealContactLabel(dealId: string) {
+  const deal = deals.value.find(d => d.id === dealId)
+  return deal ? (deal.contact.name || deal.contact.phone || deal.contact.email || 'Unknown') : '…'
 }
 
 async function loadAll() {
@@ -44,12 +75,14 @@ async function loadAll() {
   loadError.value = ''
   crmInactive.value = false
   try {
-    const [quoteResult, leadResult] = await Promise.all([
+    const [quoteResult, dealResult, productResult] = await Promise.all([
       $api<Quote[]>('/v1/crm/quotes'),
-      $api<Lead[]>('/v1/crm/leads'),
+      $api<Deal[]>('/v1/crm/deals'),
+      $api<Product[]>('/v1/crm/quotes/products'),
     ])
     quotes.value = quoteResult
-    leads.value = leadResult
+    deals.value = dealResult
+    products.value = productResult.filter(p => p.active)
   }
   catch (error: any) {
     if (error?.response?.status === 422)
@@ -71,13 +104,23 @@ const statusColor: Record<string, string> = { draft: undefined as any, sent: 'in
 // --- Create dialog -------------------------------------------------------------------------
 
 const dialog = ref(false)
-const form = reactive({ lead_id: '', line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }] as LineItem[] })
+const form = reactive({ deal_id: '', line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }] as LineItem[] })
 const saving = ref(false)
 const saveError = ref('')
+const editingQuoteId = ref<string | null>(null)
 
 function openCreate() {
-  form.lead_id = ''
+  editingQuoteId.value = null
+  form.deal_id = typeof route.query.deal_id === 'string' ? route.query.deal_id : ''
   form.line_items = [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }]
+  saveError.value = ''
+  dialog.value = true
+}
+
+function openEdit(quote: Quote) {
+  editingQuoteId.value = quote.id
+  form.deal_id = quote.deal_id
+  form.line_items = quote.line_items.map(item => ({ ...item }))
   saveError.value = ''
   dialog.value = true
 }
@@ -91,20 +134,38 @@ function removeLine(index: number) {
     form.line_items.splice(index, 1)
 }
 
+function pickProduct(item: LineItem, productId: string | null) {
+  item.product_id = productId
+  const product = products.value.find(p => p.id === productId)
+  if (product) {
+    item.description = product.name
+    item.hsn_code = product.hsn_code
+    item.unit_price = product.unit_price
+  }
+}
+
 const draftTotal = computed(() => form.line_items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unit_price || 0), 0))
 
 async function save() {
-  if (!form.lead_id || !form.line_items.length)
+  if (!form.deal_id || !form.line_items.length)
     return
   saving.value = true
   saveError.value = ''
   try {
-    const created = await $api<Quote>('/v1/crm/quotes', { method: 'POST', body: { lead_id: form.lead_id, line_items: form.line_items } })
-    quotes.value.unshift(created)
+    if (editingQuoteId.value) {
+      const updated = await $api<Quote>(`/v1/crm/quotes/${editingQuoteId.value}`, { method: 'PATCH', body: { line_items: form.line_items } })
+      const index = quotes.value.findIndex(q => q.id === editingQuoteId.value)
+      if (index !== -1)
+        quotes.value[index] = updated
+    }
+    else {
+      const created = await $api<Quote>('/v1/crm/quotes', { method: 'POST', body: { deal_id: form.deal_id, line_items: form.line_items } })
+      quotes.value.unshift(created)
+    }
     dialog.value = false
   }
   catch (error: any) {
-    saveError.value = extractErrorMessage(error, 'Could not create this quote.')
+    saveError.value = extractErrorMessage(error, 'Could not save this quote.')
   }
   finally {
     saving.value = false
@@ -205,7 +266,11 @@ async function convertToInvoice(quote: Quote) {
   }
 }
 
-onMounted(loadAll)
+onMounted(async () => {
+  await loadAll()
+  if (typeof route.query.deal_id === 'string')
+    openCreate()
+})
 </script>
 
 <template>
@@ -215,12 +280,15 @@ onMounted(loadAll)
         Quotes
       </h1>
       <p class="text-medium-emphasis">
-        GST-compliant proforma quotes tied to a lead — send via WhatsApp, then convert to an invoice once accepted.
+        GST-compliant proforma quotes tied to a deal — send via WhatsApp, then convert to an invoice once accepted.
       </p>
     </div>
-    <VBtn color="primary" prepend-icon="tabler-plus" @click="openCreate">
-      New quote
-    </VBtn>
+    <div class="d-flex align-center gap-4">
+      <VCheckbox v-model="pendingMyApprovalOnly" label="Pending my approval" density="compact" hide-details />
+      <VBtn color="primary" prepend-icon="tabler-plus" @click="openCreate">
+        New quote
+      </VBtn>
+    </div>
   </div>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
@@ -238,7 +306,7 @@ onMounted(loadAll)
       <thead>
         <tr>
           <th>Quote #</th>
-          <th>Lead</th>
+          <th>Deal</th>
           <th>Total</th>
           <th>Status</th>
           <th>Approval</th>
@@ -246,9 +314,12 @@ onMounted(loadAll)
         </tr>
       </thead>
       <tbody>
-        <tr v-for="quote in quotes" :key="quote.id">
-          <td>{{ quote.quote_number || 'Draft' }}</td>
-          <td>{{ leadContactLabel(quote.lead_id) }}</td>
+        <tr v-for="quote in visibleQuotes" :key="quote.id">
+          <td>
+            <span v-if="quote.quote_number">{{ quote.quote_number }}</span>
+            <span v-else class="text-medium-emphasis font-italic">Not yet numbered</span>
+          </td>
+          <td>{{ dealContactLabel(quote.deal_id) }}</td>
           <td>{{ inr(quote.total) }}</td>
           <td>
             <VChip size="small" :color="statusColor[quote.status]">
@@ -256,58 +327,55 @@ onMounted(loadAll)
             </VChip>
           </td>
           <td>
-            <VChip v-if="quote.approval_status !== 'not_required'" size="small" :color="quote.approval_status === 'pending' ? 'warning' : quote.approval_status === 'approved' ? 'success' : 'error'" variant="tonal">
-              {{ quote.approval_status }}
-            </VChip>
+            <div v-if="quote.approval_status !== 'not_required'" class="d-flex align-center ga-1">
+              <VChip size="small" :color="quote.approval_status === 'pending' ? 'warning' : quote.approval_status === 'approved' ? 'success' : 'error'" variant="tonal">
+                {{ quote.approval_status }}
+              </VChip>
+              <span v-if="approvalProgress(quote)" class="text-caption text-medium-emphasis">{{ approvalProgress(quote) }}</span>
+            </div>
             <span v-else class="text-medium-emphasis">—</span>
           </td>
           <td>
-            <div class="d-flex ga-1 flex-wrap justify-end">
-              <VBtn size="small" variant="text" :loading="busy === quote.id" @click="downloadPdf(quote)">
-                PDF
-              </VBtn>
-              <VBtn v-if="quote.approval_status === 'pending'" size="small" variant="text" color="success" :loading="busy === quote.id" @click="approveQuote(quote)">
-                Approve
-              </VBtn>
+            <div class="d-flex ga-1 flex-wrap justify-end align-center">
+              <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === quote.id" title="Download PDF" @click="downloadPdf(quote)" />
+              <VBtn v-if="quote.status === 'draft'" icon="tabler-pencil" size="small" variant="text" title="Edit line items" @click="openEdit(quote)" />
+              <VBtn v-if="iCanApprove(quote)" icon="tabler-circle-check" size="small" variant="text" color="success" :loading="busy === quote.id" title="Approve" @click="approveQuote(quote)" />
               <VBtn
                 v-if="quote.status === 'draft' && quote.approval_status !== 'pending'"
-                size="small" variant="text" :loading="busy === quote.id" @click="sendWhatsapp(quote)"
-              >
-                Send WhatsApp
-              </VBtn>
-              <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" size="small" variant="text" color="success" :loading="busy === quote.id" @click="setStatus(quote, 'accepted')">
-                Accept
-              </VBtn>
-              <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" size="small" variant="text" color="error" :loading="busy === quote.id" @click="setStatus(quote, 'rejected')">
-                Reject
-              </VBtn>
+                icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === quote.id" title="Send via WhatsApp" @click="sendWhatsapp(quote)"
+              />
+              <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" icon="tabler-check" size="small" variant="text" color="success" :loading="busy === quote.id" title="Mark accepted" @click="setStatus(quote, 'accepted')" />
+              <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" icon="tabler-x" size="small" variant="text" color="error" :loading="busy === quote.id" title="Mark rejected" @click="setStatus(quote, 'rejected')" />
               <VBtn v-if="quote.status === 'accepted' && !quote.converted_invoice_id" size="small" variant="tonal" color="primary" :loading="busy === quote.id" @click="convertToInvoice(quote)">
                 Convert to invoice
               </VBtn>
               <VChip v-if="quote.converted_invoice_id" size="small" variant="tonal">
                 Invoiced
               </VChip>
-              <VBtn v-if="quote.status === 'draft'" icon="tabler-trash" size="small" variant="text" :loading="busy === quote.id" @click="removeQuote(quote)" />
+              <VBtn v-if="quote.status === 'draft'" icon="tabler-trash" size="small" variant="text" :loading="busy === quote.id" title="Delete" @click="removeQuote(quote)" />
             </div>
           </td>
         </tr>
       </tbody>
     </VTable>
-    <p v-if="!loading && !quotes.length" class="text-medium-emphasis text-center pa-6">
-      No quotes yet.
+    <p v-if="!loading && !visibleQuotes.length" class="text-medium-emphasis text-center pa-6">
+      {{ pendingMyApprovalOnly ? 'Nothing waiting on your approval.' : 'No quotes yet.' }}
     </p>
   </VCard>
 
-  <VDialog v-model="dialog" max-width="640">
-    <VCard title="New quote">
+  <VDialog v-model="dialog" max-width="640" persistent>
+    <VCard :title="editingQuoteId ? 'Edit quote' : 'New quote'">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="dialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact">
           {{ saveError }}
         </VAlert>
         <VSelect
-          v-model="form.lead_id"
-          :items="leads.filter(l => l.status === 'open').map(l => ({ title: l.contact.name || l.contact.wa_id || l.contact.email || 'Unknown', value: l.id }))"
-          label="Lead" density="compact"
+          v-model="form.deal_id" :disabled="!!editingQuoteId"
+          :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
+          label="Deal" density="compact"
         />
 
         <div>
@@ -318,6 +386,12 @@ onMounted(loadAll)
             </VBtn>
           </div>
           <div v-for="(item, index) in form.line_items" :key="index" class="d-flex ga-2 mb-2 align-center">
+            <VSelect
+              v-if="products.length"
+              :model-value="item.product_id" placeholder="Pick a product (optional)" density="compact" hide-details clearable
+              style="max-width: 160px;" :items="products.map(p => ({ title: p.name, value: p.id }))"
+              @update:model-value="(v: string | null) => pickProduct(item, v)"
+            />
             <VTextField v-model="item.description" placeholder="Description" density="compact" hide-details style="flex: 2;" />
             <VTextField v-model="item.hsn_code" placeholder="HSN" density="compact" hide-details style="max-width: 90px;" />
             <VTextField v-model.number="item.quantity" type="number" placeholder="Qty" density="compact" hide-details style="max-width: 80px;" />
@@ -334,8 +408,8 @@ onMounted(loadAll)
         <VBtn variant="text" @click="dialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :loading="saving" :disabled="!form.lead_id" @click="save">
-          Create
+        <VBtn color="primary" :loading="saving" :disabled="!form.deal_id" @click="save">
+          {{ editingQuoteId ? 'Save' : 'Create' }}
         </VBtn>
       </VCardActions>
     </VCard>

@@ -1,6 +1,14 @@
-// See navigation/vertical/index.ts for why WhatsApp/CRM are conditionally included and why the
-// group order is SMS -> WhatsApp -> CRM (kept identical between the two nav layouts).
-export function customerNav(status: { wabaActive: boolean, crmActive: boolean }) {
+// Nav items are shared verbatim with navigation/vertical/index.ts (same WABA_NAV_ITEMS/
+// CRM_NAV_ITEMS/SMS_NAV_ITEMS/channelFocusedNav) so the vertical and horizontal layouts never
+// drift apart -- re-exported here for callers that import from the horizontal module directly.
+import { CRM_NAV_ITEMS, SMS_NAV_ITEMS, WABA_NAV_ITEMS } from '@/navigation/vertical'
+
+export { CRM_NAV_ITEMS, SMS_NAV_ITEMS, WABA_NAV_ITEMS, channelFocusedNav } from '@/navigation/vertical'
+
+// See navigation/vertical/index.ts for why WhatsApp/CRM are conditionally included, why the group
+// order is SMS -> WhatsApp -> CRM, and why `minimal` (Dashboard page only) collapses them to a
+// single link instead of an expandable group (kept identical between the two nav layouts).
+export function customerNav(status: { wabaActive: boolean, crmActive: boolean }, opts: { minimal?: boolean } = {}) {
   return [
     {
       title: 'Home',
@@ -13,95 +21,30 @@ export function customerNav(status: { wabaActive: boolean, crmActive: boolean })
       icon: { icon: 'tabler-message-2' },
     },
     ...(status.wabaActive
-      ? [{
-          title: 'WhatsApp',
-          icon: { icon: 'tabler-brand-whatsapp' },
-          children: [
-            {
-              title: 'Inbox',
-              to: { name: 'inbox' },
-              icon: { icon: 'tabler-messages' },
-            },
-            {
-              title: 'Customers',
-              to: { name: 'waba-customers' },
-              icon: { icon: 'tabler-users' },
-            },
-            {
-              title: 'Campaigns',
-              to: { name: 'waba-campaigns' },
-              icon: { icon: 'tabler-speakerphone' },
-            },
-            {
-              title: 'Reports',
-              to: { name: 'waba-reports' },
-              icon: { icon: 'tabler-chart-bar' },
-            },
-            {
-              title: 'Manage',
-              to: { name: 'channels-whatsapp' },
-              icon: { icon: 'tabler-settings' },
-            },
-          ],
-        }]
+      ? [opts.minimal
+        ? {
+            title: 'WhatsApp',
+            to: { name: 'waba' },
+            icon: { icon: 'tabler-brand-whatsapp' },
+          }
+        : {
+            title: 'WhatsApp',
+            icon: { icon: 'tabler-brand-whatsapp' },
+            children: WABA_NAV_ITEMS,
+          }]
       : []),
     ...(status.crmActive
-      ? [{
-          title: 'CRM',
-          icon: { icon: 'tabler-address-book' },
-          children: [
-            {
-              title: 'Tickets',
-              to: { name: 'tickets' },
-              icon: { icon: 'tabler-ticket' },
-            },
-            {
-              title: 'Leads',
-              to: { name: 'crm-leads' },
-              icon: { icon: 'tabler-target-arrow' },
-            },
-            {
-              title: 'Customers',
-              to: { name: 'crm-customers' },
-              icon: { icon: 'tabler-user-check' },
-            },
-            {
-              title: 'Companies',
-              to: { name: 'crm-companies' },
-              icon: { icon: 'tabler-building' },
-            },
-            {
-              title: 'Tasks',
-              to: { name: 'crm-tasks' },
-              icon: { icon: 'tabler-checklist' },
-            },
-            {
-              title: 'Quotes',
-              to: { name: 'crm-quotes' },
-              icon: { icon: 'tabler-file-text' },
-            },
-            {
-              title: 'Automation',
-              to: { name: 'crm-automation' },
-              icon: { icon: 'tabler-route' },
-            },
-            {
-              title: 'Pipelines',
-              to: { name: 'crm-pipelines' },
-              icon: { icon: 'tabler-timeline' },
-            },
-            {
-              title: 'Reports',
-              to: { name: 'crm-reports' },
-              icon: { icon: 'tabler-chart-bar' },
-            },
-            {
-              title: 'Manage',
-              to: { name: 'channels-crm' },
-              icon: { icon: 'tabler-settings' },
-            },
-          ],
-        }]
+      ? [opts.minimal
+        ? {
+            title: 'CRM',
+            to: { name: 'crm' },
+            icon: { icon: 'tabler-address-book' },
+          }
+        : {
+            title: 'CRM',
+            icon: { icon: 'tabler-address-book' },
+            children: CRM_NAV_ITEMS,
+          }]
       : []),
     {
       title: 'Channels',

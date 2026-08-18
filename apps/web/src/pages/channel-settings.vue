@@ -12,7 +12,7 @@ const authStore = useAuthStore()
 const isAdmin = computed(() => authStore.loaded ? authStore.isAdmin : null)
 const stepUp = useStepUpAuth()
 
-type FeeConfig = { channel: string, subscription_price: number, dlt_platform_fee: number, dlt_service_fee: number }
+type FeeConfig = { channel: string, subscription_price: number, dlt_platform_fee: number, dlt_service_fee: number, enabled: boolean }
 
 const loadError = ref('')
 const fees = ref<FeeConfig | null>(null)
@@ -23,28 +23,77 @@ const saving = ref(false)
 const saveError = ref('')
 const saveSuccess = ref('')
 
+// --- Global per-channel kill switch -- independent of the SMS-specific fee form below. Off means
+// dead for every customer regardless of their own subscription/connection state. ------------------
+
+const CHANNELS = ['sms', 'waba', 'crm'] as const
+const channelConfigs = ref<Record<string, FeeConfig>>({})
+const channelToggleBusy = ref<string | null>(null)
+const channelToggleError = ref('')
+
+async function loadChannelConfig(channel: string): Promise<FeeConfig> {
+  try {
+    return await stepUp.withStepUp(() => $api<FeeConfig>(`/v1/admin/channel-fees/${channel}`))
+  }
+  catch (error: any) {
+    if (error?.statusCode === 404 || error?.response?.status === 404)
+      return { channel, subscription_price: 0, dlt_platform_fee: 0, dlt_service_fee: 0, enabled: true }
+    throw error
+  }
+}
+
+async function loadChannelToggles() {
+  channelToggleError.value = ''
+  try {
+    const results = await Promise.all(CHANNELS.map(loadChannelConfig))
+    for (const result of results)
+      channelConfigs.value[result.channel] = result
+  }
+  catch (error: any) {
+    channelToggleError.value = extractErrorMessage(error, 'Could not load channel status.')
+  }
+}
+
+async function toggleChannel(channel: string, enabled: boolean) {
+  const current = channelConfigs.value[channel]
+  if (!current)
+    return
+  channelToggleBusy.value = channel
+  channelToggleError.value = ''
+  try {
+    channelConfigs.value[channel] = await stepUp.withStepUp(() => $api<FeeConfig>(`/v1/admin/channel-fees/${channel}`, {
+      method: 'PUT',
+      body: {
+        subscription_price: current.subscription_price, dlt_platform_fee: current.dlt_platform_fee,
+        dlt_service_fee: current.dlt_service_fee, enabled,
+      },
+    }))
+    if (channel === 'sms')
+      fees.value = channelConfigs.value.sms
+  }
+  catch (error: any) {
+    channelToggleError.value = extractErrorMessage(error, `Could not update ${channel.toUpperCase()}.`)
+  }
+  finally {
+    channelToggleBusy.value = null
+  }
+}
+
 async function load() {
   loadError.value = ''
   try {
     await authStore.load()
     if (!authStore.isAdmin)
       return
-    const result = await stepUp.withStepUp(() => $api<FeeConfig>('/v1/admin/channel-fees/sms'))
+    const result = await loadChannelConfig('sms')
     fees.value = result
+    channelConfigs.value.sms = result
     subscriptionPrice.value = result.subscription_price
     dltPlatformFee.value = result.dlt_platform_fee
     dltServiceFee.value = result.dlt_service_fee
+    await loadChannelToggles()
   }
   catch (error: any) {
-    // No row yet is a legitimate first-time-setup state (the PUT below creates it), not an error
-    // to block on -- show the form pre-filled with zeros so the admin can actually save one.
-    if (error?.statusCode === 404 || error?.response?.status === 404) {
-      fees.value = { channel: 'sms', subscription_price: 0, dlt_platform_fee: 0, dlt_service_fee: 0 }
-      subscriptionPrice.value = 0
-      dltPlatformFee.value = 0
-      dltServiceFee.value = 0
-      return
-    }
     loadError.value = extractErrorMessage(error, 'Could not load channel fee configuration.')
   }
 }
@@ -60,8 +109,10 @@ async function onSave() {
         subscription_price: subscriptionPrice.value,
         dlt_platform_fee: dltPlatformFee.value,
         dlt_service_fee: dltServiceFee.value,
+        enabled: fees.value?.enabled ?? true,
       },
     }))
+    channelConfigs.value.sms = fees.value
     saveSuccess.value = 'Saved.'
   }
   catch (error: any) {
@@ -99,8 +150,31 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
+  <VCard v-if="isAdmin && fees" max-width="520" class="mb-6">
+    <VCardText>
+      <h6 class="text-h6 mb-1">
+        Channels
+      </h6>
+      <p class="text-body-2 text-medium-emphasis mb-4">
+        Global on/off per channel — independent of any customer's own subscription or connection
+        state. Off means dead for every customer immediately, no matter what.
+      </p>
+      <VAlert v-if="channelToggleError" type="error" variant="tonal" density="compact" class="mb-4">
+        {{ channelToggleError }}
+      </VAlert>
+      <div v-for="channel in CHANNELS" :key="channel" class="d-flex align-center justify-space-between py-1">
+        <span class="text-body-2 text-uppercase">{{ channel }}</span>
+        <VSwitch
+          :model-value="channelConfigs[channel]?.enabled ?? true" :loading="channelToggleBusy === channel"
+          density="compact" hide-details color="success"
+          @update:model-value="(v: boolean | null) => toggleChannel(channel, !!v)"
+        />
+      </div>
+    </VCardText>
+  </VCard>
+
   <VCard
-    v-else-if="isAdmin && fees"
+    v-if="isAdmin && fees"
     max-width="520"
   >
     <VCardText>

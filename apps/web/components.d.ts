@@ -33,6 +33,7 @@ declare module 'vue' {
     CardStatisticsHorizontal: typeof import('./src/@core/components/cards/CardStatisticsHorizontal.vue')['default']
     CardStatisticsVertical: typeof import('./src/@core/components/cards/CardStatisticsVertical.vue')['default']
     CardStatisticsVerticalSimple: typeof import('./src/@core/components/CardStatisticsVerticalSimple.vue')['default']
+    ChannelBillingPanel: typeof import('./src/components/ChannelBillingPanel.vue')['default']
     ConfirmDialog: typeof import('./src/components/dialogs/ConfirmDialog.vue')['default']
     CreateAppDialog: typeof import('./src/components/dialogs/CreateAppDialog.vue')['default']
     CustomCheckboxes: typeof import('./src/@core/components/app-form-elements/CustomCheckboxes.vue')['default']
@@ -66,9 +67,15 @@ declare module 'vue' {
     TheCustomizer: typeof import('./src/@core/components/TheCustomizer.vue')['default']
     ThemeSwitcher: typeof import('./src/@core/components/ThemeSwitcher.vue')['default']
     TiptapEditor: typeof import('./src/@core/components/TiptapEditor.vue')['default']
+    TurnstileWidget: typeof import('./src/components/TurnstileWidget.vue')['default']
     TwoFactorAuthDialog: typeof import('./src/components/dialogs/TwoFactorAuthDialog.vue')['default']
     UserInfoEditDialog: typeof import('./src/components/dialogs/UserInfoEditDialog.vue')['default']
     UserUpgradePlanDialog: typeof import('./src/components/dialogs/UserUpgradePlanDialog.vue')['default']
+    WabaCsatPanel: typeof import('./src/components/WabaCsatPanel.vue')['default']
+    WabaHoursSlaPanel: typeof import('./src/components/WabaHoursSlaPanel.vue')['default']
+    WabaMacrosPanel: typeof import('./src/components/WabaMacrosPanel.vue')['default']
+    WabaTeamCapacityPanel: typeof import('./src/components/WabaTeamCapacityPanel.vue')['default']
+    WabaWebhookPanel: typeof import('./src/components/WabaWebhookPanel.vue')['default']
     WalletPanel: typeof import('./src/components/WalletPanel.vue')['default']
   }
 }

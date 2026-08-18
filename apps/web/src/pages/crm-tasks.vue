@@ -1,37 +1,82 @@
 <script setup lang="ts">
+import dayGridPlugin from '@fullcalendar/daygrid'
+import interactionPlugin from '@fullcalendar/interaction'
+import FullCalendar from '@fullcalendar/vue3'
+
 definePage({
   meta: {
     layout: 'default',
+    channel: 'crm',
   },
 })
 
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
+type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null }
 type Task = {
   id: string
   contact_id: string
+  deal_id: string | null
   title: string
   type: 'call' | 'meeting' | 'follow_up' | 'other'
   due_at: string | null
+  duration_minutes: number | null
   done: boolean
   assigned_user_id: string | null
   recurrence: 'none' | 'daily' | 'weekly' | 'monthly'
+  priority: 'low' | 'normal' | 'high'
+  outcome: string | null
   created_at: string
 }
 type AssignableUser = { id: string, full_name: string, email: string }
+type Deal = { id: string, contact: CrmContact, status: string }
 
 const tasks = ref<Task[]>([])
 const users = ref<AssignableUser[]>([])
-const contactCache = ref<Record<string, Contact>>({})
+const deals = ref<Deal[]>([])
+const contactCache = ref<Record<string, CrmContact>>({})
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
 const showDone = ref(false)
+const view = ref<'list' | 'calendar'>('list')
+
+const TYPE_COLORS: Record<string, string> = { call: '#7367F0', meeting: '#28C76F', follow_up: '#FF9F43', other: '#82868B' }
+
+const calendarEvents = computed(() => tasks.value.filter(t => t.due_at).map((t) => {
+  const start = new Date(t.due_at as string)
+  const end = t.duration_minutes ? new Date(start.getTime() + t.duration_minutes * 60_000) : undefined
+  return {
+    id: t.id,
+    title: t.title,
+    start,
+    end,
+    color: t.done ? '#82868B' : TYPE_COLORS[t.type],
+    extendedProps: { task: t },
+  }
+}))
+
+const calendarOptions = computed(() => ({
+  plugins: [dayGridPlugin, interactionPlugin],
+  initialView: 'dayGridMonth',
+  headerToolbar: { left: 'prev,next today', center: 'title', right: '' },
+  height: 'auto',
+  events: calendarEvents.value,
+  dateClick: (info: { dateStr: string }) => openCreate(info.dateStr),
+  eventClick: (info: { event: { id: string } }) => openTaskDetail(info.event.id),
+}))
+
+const detailDialog = ref(false)
+const detailTask = ref<Task | null>(null)
+
+function openTaskDetail(taskId: string) {
+  detailTask.value = tasks.value.find(t => t.id === taskId) || null
+  detailDialog.value = true
+}
 
 async function loadContacts(ids: string[]) {
   const missing = [...new Set(ids)].filter(id => !contactCache.value[id])
   if (!missing.length)
     return
-  const results = await Promise.allSettled(missing.map(id => $api<Contact>(`/v1/waba/contacts/${id}`)))
+  const results = await Promise.allSettled(missing.map(id => $api<CrmContact>(`/v1/crm/contacts/${id}`)))
   results.forEach((r, i) => {
     if (r.status === 'fulfilled')
       contactCache.value[missing[i]] = r.value
@@ -43,12 +88,14 @@ async function loadAll() {
   loadError.value = ''
   crmInactive.value = false
   try {
-    const [taskResult, userResult] = await Promise.all([
+    const [taskResult, userResult, dealResult] = await Promise.all([
       $api<Task[]>('/v1/crm/tasks', { params: showDone.value ? {} : { done: false } }),
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
+      $api<Deal[]>('/v1/crm/deals'),
     ])
     tasks.value = taskResult
     users.value = userResult
+    deals.value = dealResult
     await loadContacts(taskResult.map(t => t.contact_id))
   }
   catch (error: any) {
@@ -64,7 +111,7 @@ async function loadAll() {
 
 function contactLabel(contactId: string) {
   const c = contactCache.value[contactId]
-  return c ? (c.name || c.wa_id || c.email || 'Unknown') : '…'
+  return c ? (c.name || c.phone || c.email || 'Unknown') : '…'
 }
 
 function assigneeName(task: Task) {
@@ -110,19 +157,19 @@ async function removeTask(task: Task) {
 // --- Create dialog -------------------------------------------------------------------------
 
 const dialog = ref(false)
-const form = reactive({ contact_id: '', title: '', type: 'follow_up' as Task['type'], due_at: '', assigned_user_id: null as string | null, recurrence: 'none' as Task['recurrence'] })
+const form = reactive({ contact_id: '', deal_id: null as string | null, title: '', type: 'follow_up' as Task['type'], due_at: '', duration_minutes: null as number | null, assigned_user_id: null as string | null, recurrence: 'none' as Task['recurrence'], priority: 'normal' as Task['priority'] })
 const saving = ref(false)
 const saveError = ref('')
 
 const contactSearch = ref('')
-const contactOptions = ref<Contact[]>([])
+const contactOptions = ref<CrmContact[]>([])
 const contactSearchLoading = ref(false)
 let contactSearchTimer: ReturnType<typeof setTimeout> | undefined
 
 async function searchContacts(query: string) {
   contactSearchLoading.value = true
   try {
-    contactOptions.value = await $api<Contact[]>('/v1/waba/contacts', { params: { search: query, limit: 20 } })
+    contactOptions.value = await $api<CrmContact[]>('/v1/crm/contacts', { params: { search: query } })
   }
   catch {
     // best-effort search -- an empty result list is an acceptable failure mode here
@@ -137,13 +184,16 @@ watch(contactSearch, (query) => {
   contactSearchTimer = setTimeout(() => searchContacts(query || ''), 300)
 })
 
-function openCreate() {
+function openCreate(prefillDate?: string) {
   form.contact_id = ''
+  form.deal_id = null
   form.title = ''
   form.type = 'follow_up'
-  form.due_at = ''
+  form.due_at = prefillDate ? `${prefillDate}T09:00` : ''
+  form.duration_minutes = null
   form.assigned_user_id = null
   form.recurrence = 'none'
+  form.priority = 'normal'
   contactSearch.value = ''
   contactOptions.value = []
   saveError.value = ''
@@ -160,11 +210,14 @@ async function save() {
       method: 'POST',
       body: {
         contact_id: form.contact_id,
+        deal_id: form.deal_id,
         title: form.title.trim(),
         type: form.type,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
+        duration_minutes: form.type === 'meeting' ? form.duration_minutes : null,
         assigned_user_id: form.assigned_user_id,
         recurrence: form.recurrence,
+        priority: form.priority,
       },
     })
     tasks.value.unshift(created)
@@ -193,9 +246,19 @@ onMounted(loadAll)
         Calls, meetings, and follow-ups. Overdue and today's items surface first.
       </p>
     </div>
-    <VBtn color="primary" prepend-icon="tabler-plus" @click="openCreate">
-      New task
-    </VBtn>
+    <div class="d-flex align-center gap-3">
+      <VBtnToggle v-model="view" density="compact" mandatory color="primary" variant="outlined">
+        <VBtn value="list">
+          List
+        </VBtn>
+        <VBtn value="calendar">
+          Calendar
+        </VBtn>
+      </VBtnToggle>
+      <VBtn color="primary" prepend-icon="tabler-plus" @click="openCreate()">
+        New task
+      </VBtn>
+    </div>
   </div>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
@@ -205,7 +268,13 @@ onMounted(loadAll)
     {{ loadError }}
   </VAlert>
 
-  <template v-if="!crmInactive">
+  <VCard v-if="!crmInactive && view === 'calendar'" class="mb-4">
+    <VCardText>
+      <FullCalendar :options="calendarOptions" />
+    </VCardText>
+  </VCard>
+
+  <template v-if="!crmInactive && view === 'list'">
     <VCard class="mb-6">
       <VCardItem>
         <VCardTitle>Today &amp; overdue</VCardTitle>
@@ -222,6 +291,9 @@ onMounted(loadAll)
           <VListItemSubtitle>
             {{ contactLabel(task.contact_id) }} · {{ assigneeName(task) }}
             <span v-if="task.due_at"> · due {{ new Date(task.due_at).toLocaleString('en-IN') }}</span>
+            <VChip v-if="task.priority === 'high'" size="x-small" class="ml-2" color="error" variant="tonal">
+              high priority
+            </VChip>
             <VChip v-if="task.recurrence !== 'none'" size="x-small" class="ml-2" variant="tonal">
               {{ task.recurrence }}
             </VChip>
@@ -252,6 +324,9 @@ onMounted(loadAll)
           <VListItemSubtitle>
             {{ contactLabel(task.contact_id) }} · {{ assigneeName(task) }}
             <span v-if="task.due_at"> · due {{ new Date(task.due_at).toLocaleString('en-IN') }}</span>
+            <VChip v-if="task.priority === 'high'" size="x-small" class="ml-2" color="error" variant="tonal">
+              high priority
+            </VChip>
             <VChip v-if="task.recurrence !== 'none'" size="x-small" class="ml-2" variant="tonal">
               {{ task.recurrence }}
             </VChip>
@@ -292,8 +367,11 @@ onMounted(loadAll)
     </VCard>
   </template>
 
-  <VDialog v-model="dialog" max-width="480">
+  <VDialog v-model="dialog" max-width="480" persistent>
     <VCard title="New task">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="dialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact">
           {{ saveError }}
@@ -302,7 +380,7 @@ onMounted(loadAll)
           v-model="form.contact_id"
           v-model:search="contactSearch"
           :items="contactOptions"
-          :item-title="(c: Contact) => c.name || c.wa_id || c.email || 'Unknown'"
+          :item-title="(c: CrmContact) => c.name || c.phone || c.email || 'Unknown'"
           item-value="id"
           label="Contact"
           placeholder="Search by name, phone, or email"
@@ -311,10 +389,18 @@ onMounted(loadAll)
         />
         <VTextField v-model="form.title" label="Title" density="compact" />
         <VSelect
+          v-model="form.deal_id" label="Deal (optional)" density="compact" clearable
+          :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
+        />
+        <VSelect
           v-model="form.type" label="Type" density="compact"
           :items="[{ title: 'Call', value: 'call' }, { title: 'Meeting', value: 'meeting' }, { title: 'Follow-up', value: 'follow_up' }, { title: 'Other', value: 'other' }]"
         />
         <VTextField v-model="form.due_at" label="Due" type="datetime-local" density="compact" />
+        <VTextField
+          v-if="form.type === 'meeting'" v-model.number="form.duration_minutes" label="Duration (minutes)"
+          type="number" min="5" max="1440" density="compact"
+        />
         <VSelect
           v-model="form.assigned_user_id" label="Assign to" density="compact" clearable
           :items="users.map(u => ({ title: u.full_name, value: u.id }))"
@@ -322,6 +408,10 @@ onMounted(loadAll)
         <VSelect
           v-model="form.recurrence" label="Recurrence" density="compact"
           :items="[{ title: 'None', value: 'none' }, { title: 'Daily', value: 'daily' }, { title: 'Weekly', value: 'weekly' }, { title: 'Monthly', value: 'monthly' }]"
+        />
+        <VSelect
+          v-model="form.priority" label="Priority" density="compact"
+          :items="[{ title: 'Low', value: 'low' }, { title: 'Normal', value: 'normal' }, { title: 'High', value: 'high' }]"
         />
       </VCardText>
       <VCardActions>
@@ -331,6 +421,31 @@ onMounted(loadAll)
         </VBtn>
         <VBtn color="primary" :loading="saving" :disabled="!form.contact_id || !form.title.trim()" @click="save">
           Create
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="detailDialog" max-width="360">
+    <VCard v-if="detailTask" :title="detailTask.title">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="detailDialog = false" />
+      </template>
+      <VCardText>
+        <p class="text-body-2 mb-1">
+          {{ contactLabel(detailTask.contact_id) }} · {{ assigneeName(detailTask) }}
+        </p>
+        <p v-if="detailTask.due_at" class="text-body-2 text-medium-emphasis mb-0">
+          {{ new Date(detailTask.due_at).toLocaleString('en-IN') }}
+        </p>
+      </VCardText>
+      <VCardActions>
+        <VBtn size="small" variant="text" @click="toggleDone(detailTask); detailDialog = false">
+          {{ detailTask.done ? 'Mark not done' : 'Mark done' }}
+        </VBtn>
+        <VSpacer />
+        <VBtn size="small" variant="text" color="error" @click="removeTask(detailTask); detailDialog = false">
+          Delete
         </VBtn>
       </VCardActions>
     </VCard>

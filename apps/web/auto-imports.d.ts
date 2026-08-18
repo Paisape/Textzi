@@ -12,6 +12,7 @@ declare global {
   const EffectScope: typeof import('vue')['EffectScope']
   const GST_STATES: typeof import('./src/utils/constants')['GST_STATES']
   const acceptHMRUpdate: typeof import('pinia')['acceptHMRUpdate']
+  const addRecentlyViewed: typeof import('./src/composables/useRecentlyViewed')['addRecentlyViewed']
   const alphaDashValidator: typeof import('./src/@core/utils/validators')['alphaDashValidator']
   const alphaValidator: typeof import('./src/@core/utils/validators')['alphaValidator']
   const asyncComputed: typeof import('@vueuse/core')['asyncComputed']
@@ -55,9 +56,11 @@ declare global {
   const extractErrorMessage: typeof import('./src/utils/errors')['extractErrorMessage']
   const formatDate: typeof import('./src/@core/utils/formatters')['formatDate']
   const formatDateToMonthShort: typeof import('./src/@core/utils/formatters')['formatDateToMonthShort']
+  const formatLabel: typeof import('./src/utils/labels')['formatLabel']
   const getActivePinia: typeof import('pinia')['getActivePinia']
   const getCurrentInstance: typeof import('vue')['getCurrentInstance']
   const getCurrentScope: typeof import('vue')['getCurrentScope']
+  const getRecentlyViewed: typeof import('./src/composables/useRecentlyViewed')['getRecentlyViewed']
   const h: typeof import('vue')['h']
   const hexToRgb: typeof import('./src/@core/utils/colorConverter')['hexToRgb']
   const ignorableWatch: typeof import('@vueuse/core')['ignorableWatch']
@@ -121,6 +124,8 @@ declare global {
   const reactiveOmit: typeof import('@vueuse/core')['reactiveOmit']
   const reactivePick: typeof import('@vueuse/core')['reactivePick']
   const readonly: typeof import('vue')['readonly']
+  const recentlyViewedIcon: typeof import('./src/composables/useRecentlyViewed')['recentlyViewedIcon']
+  const recentlyViewedPath: typeof import('./src/composables/useRecentlyViewed')['recentlyViewedPath']
   const ref: typeof import('vue')['ref']
   const refAutoReset: typeof import('@vueuse/core')['refAutoReset']
   const refDebounced: typeof import('@vueuse/core')['refDebounced']
@@ -384,6 +389,7 @@ declare module 'vue' {
     readonly EffectScope: UnwrapRef<typeof import('vue')['EffectScope']>
     readonly GST_STATES: UnwrapRef<typeof import('./src/utils/constants')['GST_STATES']>
     readonly acceptHMRUpdate: UnwrapRef<typeof import('pinia')['acceptHMRUpdate']>
+    readonly addRecentlyViewed: UnwrapRef<typeof import('./src/composables/useRecentlyViewed')['addRecentlyViewed']>
     readonly alphaDashValidator: UnwrapRef<typeof import('./src/@core/utils/validators')['alphaDashValidator']>
     readonly alphaValidator: UnwrapRef<typeof import('./src/@core/utils/validators')['alphaValidator']>
     readonly asyncComputed: UnwrapRef<typeof import('@vueuse/core')['asyncComputed']>
@@ -426,9 +432,11 @@ declare module 'vue' {
     readonly extractErrorMessage: UnwrapRef<typeof import('./src/utils/errors')['extractErrorMessage']>
     readonly formatDate: UnwrapRef<typeof import('./src/@core/utils/formatters')['formatDate']>
     readonly formatDateToMonthShort: UnwrapRef<typeof import('./src/@core/utils/formatters')['formatDateToMonthShort']>
+    readonly formatLabel: UnwrapRef<typeof import('./src/utils/labels')['formatLabel']>
     readonly getActivePinia: UnwrapRef<typeof import('pinia')['getActivePinia']>
     readonly getCurrentInstance: UnwrapRef<typeof import('vue')['getCurrentInstance']>
     readonly getCurrentScope: UnwrapRef<typeof import('vue')['getCurrentScope']>
+    readonly getRecentlyViewed: UnwrapRef<typeof import('./src/composables/useRecentlyViewed')['getRecentlyViewed']>
     readonly h: UnwrapRef<typeof import('vue')['h']>
     readonly hexToRgb: UnwrapRef<typeof import('./src/@core/utils/colorConverter')['hexToRgb']>
     readonly ignorableWatch: UnwrapRef<typeof import('@vueuse/core')['ignorableWatch']>
@@ -491,6 +499,8 @@ declare module 'vue' {
     readonly reactiveOmit: UnwrapRef<typeof import('@vueuse/core')['reactiveOmit']>
     readonly reactivePick: UnwrapRef<typeof import('@vueuse/core')['reactivePick']>
     readonly readonly: UnwrapRef<typeof import('vue')['readonly']>
+    readonly recentlyViewedIcon: UnwrapRef<typeof import('./src/composables/useRecentlyViewed')['recentlyViewedIcon']>
+    readonly recentlyViewedPath: UnwrapRef<typeof import('./src/composables/useRecentlyViewed')['recentlyViewedPath']>
     readonly ref: UnwrapRef<typeof import('vue')['ref']>
     readonly refAutoReset: UnwrapRef<typeof import('@vueuse/core')['refAutoReset']>
     readonly refDebounced: UnwrapRef<typeof import('@vueuse/core')['refDebounced']>

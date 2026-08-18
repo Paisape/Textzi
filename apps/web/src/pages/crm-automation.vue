@@ -2,6 +2,7 @@
 definePage({
   meta: {
     layout: 'default',
+    channel: 'crm',
   },
 })
 
@@ -16,38 +17,51 @@ type RoutingRule = {
   active: boolean
   priority: number
 }
-type SequenceStep = { id?: string, day_offset: number, channel: 'whatsapp_template' | 'sms' | 'task', content: Record<string, any> }
-type Sequence = { id: string, name: string, active: boolean, steps: SequenceStep[], enrolled_count: number, created_at: string }
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
-type Lead = { id: string, contact: Contact, status: string }
+type SequenceStep = { id?: string, day_offset: number, channel: 'whatsapp_template' | 'task', content: Record<string, any>, only_if_stage: string | null }
+type Sequence = { id: string, name: string, active: boolean, exit_stage: string | null, steps: SequenceStep[], enrolled_count: number, created_at: string }
+type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null }
+type Deal = { id: string, contact: CrmContact, status: string }
+type Pipeline = { id: string, name: string, stages: { name: string }[] }
 
 const tab = ref<'routing' | 'sequences'>('routing')
 const users = ref<AssignableUser[]>([])
 const territories = ref<Territory[]>([])
 const routingRules = ref<RoutingRule[]>([])
 const sequences = ref<Sequence[]>([])
-const leads = ref<Lead[]>([])
+const deals = ref<Deal[]>([])
+const pipelines = ref<Pipeline[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+
+const stageOptions = computed(() => {
+  const names = new Set<string>()
+  for (const pipeline of pipelines.value) {
+    for (const stage of pipeline.stages)
+      names.add(stage.name)
+  }
+  return [...names]
+})
 
 async function loadAll() {
   loading.value = true
   loadError.value = ''
   crmInactive.value = false
   try {
-    const [userResult, territoryResult, ruleResult, sequenceResult, leadResult] = await Promise.all([
+    const [userResult, territoryResult, ruleResult, sequenceResult, dealResult, pipelineResult] = await Promise.all([
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
       $api<Territory[]>('/v1/crm/territories'),
       $api<RoutingRule[]>('/v1/crm/routing-rules'),
       $api<Sequence[]>('/v1/crm/sequences'),
-      $api<Lead[]>('/v1/crm/leads'),
+      $api<Deal[]>('/v1/crm/deals'),
+      $api<Pipeline[]>('/v1/crm/pipelines'),
     ])
     users.value = userResult
     territories.value = territoryResult
     routingRules.value = ruleResult
     sequences.value = sequenceResult
-    leads.value = leadResult
+    deals.value = dealResult
+    pipelines.value = pipelineResult
   }
   catch (error: any) {
     if (error?.response?.status === 422)
@@ -115,23 +129,34 @@ async function deleteRule(rule: RoutingRule) {
   }
 }
 
+async function toggleRuleActive(rule: RoutingRule) {
+  try {
+    const updated = await $api<RoutingRule>(`/v1/crm/routing-rules/${rule.id}`, { method: 'PATCH', body: { active: !rule.active } })
+    rule.active = updated.active
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not update this rule.')
+  }
+}
+
 // --- Sequences dialog ------------------------------------------------------------------------
 
 const seqDialog = ref(false)
-const seqForm = reactive({ name: '', steps: [{ day_offset: 0, channel: 'task' as SequenceStep['channel'], content: {} as Record<string, any> }] as SequenceStep[] })
+const seqForm = reactive({ name: '', exit_stage: null as string | null, steps: [{ day_offset: 0, channel: 'task' as SequenceStep['channel'], content: {} as Record<string, any>, only_if_stage: null }] as SequenceStep[] })
 const seqSaving = ref(false)
 const seqError = ref('')
 
 function openSeqDialog() {
   seqForm.name = ''
-  seqForm.steps = [{ day_offset: 0, channel: 'task', content: {} }]
+  seqForm.exit_stage = null
+  seqForm.steps = [{ day_offset: 0, channel: 'task', content: {}, only_if_stage: null }]
   seqError.value = ''
   seqDialog.value = true
 }
 
 function addStep() {
   const last = seqForm.steps[seqForm.steps.length - 1]
-  seqForm.steps.push({ day_offset: (last?.day_offset ?? 0) + 1, channel: 'task', content: {} })
+  seqForm.steps.push({ day_offset: (last?.day_offset ?? 0) + 1, channel: 'task', content: {}, only_if_stage: null })
 }
 
 function removeStep(index: number) {
@@ -155,7 +180,10 @@ async function saveSequence() {
   try {
     const created = await $api<Sequence>('/v1/crm/sequences', {
       method: 'POST',
-      body: { name: seqForm.name.trim(), steps: seqForm.steps.map(s => ({ day_offset: s.day_offset, channel: s.channel, content: s.content })) },
+      body: {
+        name: seqForm.name.trim(), exit_stage: seqForm.exit_stage,
+        steps: seqForm.steps.map(s => ({ day_offset: s.day_offset, channel: s.channel, content: s.content, only_if_stage: s.only_if_stage })),
+      },
     })
     sequences.value.push(created)
     seqDialog.value = false
@@ -178,33 +206,43 @@ async function deleteSequence(sequence: Sequence) {
   }
 }
 
+async function toggleSequenceActive(sequence: Sequence) {
+  try {
+    const updated = await $api<Sequence>(`/v1/crm/sequences/${sequence.id}`, { method: 'PATCH', body: { active: !sequence.active } })
+    sequence.active = updated.active
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not update this sequence.')
+  }
+}
+
 // --- Enrollment --------------------------------------------------------------------------
 
 const enrollDialog = ref(false)
 const enrollSequence = ref<Sequence | null>(null)
-const enrollLeadId = ref('')
+const enrollDealId = ref('')
 const enrolling = ref(false)
 const enrollError = ref('')
 
 function openEnroll(sequence: Sequence) {
   enrollSequence.value = sequence
-  enrollLeadId.value = ''
+  enrollDealId.value = ''
   enrollError.value = ''
   enrollDialog.value = true
 }
 
 async function submitEnroll() {
-  if (!enrollSequence.value || !enrollLeadId.value)
+  if (!enrollSequence.value || !enrollDealId.value)
     return
   enrolling.value = true
   enrollError.value = ''
   try {
-    await $api(`/v1/crm/sequences/${enrollSequence.value.id}/enroll`, { method: 'POST', body: { lead_id: enrollLeadId.value } })
+    await $api(`/v1/crm/sequences/${enrollSequence.value.id}/enroll`, { method: 'POST', body: { deal_id: enrollDealId.value } })
     enrollSequence.value.enrolled_count += 1
     enrollDialog.value = false
   }
   catch (error: any) {
-    enrollError.value = extractErrorMessage(error, 'Could not enroll this lead.')
+    enrollError.value = extractErrorMessage(error, 'Could not enroll this deal.')
   }
   finally {
     enrolling.value = false
@@ -253,6 +291,7 @@ onMounted(loadAll)
               <th>Name</th>
               <th>Trigger</th>
               <th>Assign to</th>
+              <th>Active</th>
               <th />
             </tr>
           </thead>
@@ -262,6 +301,9 @@ onMounted(loadAll)
               <td>{{ rule.name }}</td>
               <td>{{ rule.trigger_type }} = {{ triggerValueLabel(rule) }}</td>
               <td>{{ userName(rule.assign_to_user_id) }}</td>
+              <td>
+                <VSwitch :model-value="rule.active" density="compact" hide-details @update:model-value="toggleRuleActive(rule)" />
+              </td>
               <td class="text-end">
                 <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteRule(rule)" />
               </td>
@@ -287,6 +329,10 @@ onMounted(loadAll)
               <VCardTitle>{{ sequence.name }}</VCardTitle>
               <VCardSubtitle>{{ sequence.enrolled_count }} active enrollment{{ sequence.enrolled_count === 1 ? '' : 's' }}</VCardSubtitle>
               <template #append>
+                <VSwitch
+                  :model-value="sequence.active" label="Active" density="compact" hide-details class="me-2"
+                  @update:model-value="toggleSequenceActive(sequence)"
+                />
                 <VBtn size="small" variant="tonal" class="me-2" @click="openEnroll(sequence)">
                   Enroll lead
                 </VBtn>
@@ -299,9 +345,15 @@ onMounted(loadAll)
                   Day {{ step.day_offset }}
                 </VChip>
                 <span class="text-body-2">
-                  {{ step.channel === 'whatsapp_template' ? `WhatsApp: ${step.content.template_name || '(template)'}` : step.channel === 'sms' ? 'SMS' : `Task: ${step.content.title || 'Follow up'}` }}
+                  {{ step.channel === 'whatsapp_template' ? `WhatsApp: ${step.content.template_name || '(template)'}` : `Task: ${step.content.title || 'Follow up'}` }}
                 </span>
               </div>
+              <p v-if="sequence.exit_stage" class="text-caption text-medium-emphasis mb-0 mt-2">
+                Stops once the deal reaches "{{ sequence.exit_stage }}" (or is won/lost)
+              </p>
+              <p v-else class="text-caption text-medium-emphasis mb-0 mt-2">
+                Stops once the deal is won/lost
+              </p>
             </VCardText>
           </VCard>
         </VCol>
@@ -314,8 +366,11 @@ onMounted(loadAll)
     </div>
   </template>
 
-  <VDialog v-model="ruleDialog" max-width="480">
+  <VDialog v-model="ruleDialog" max-width="480" persistent>
     <VCard title="New routing rule">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="ruleDialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="ruleError" type="error" variant="tonal" density="compact">
           {{ ruleError }}
@@ -353,13 +408,20 @@ onMounted(loadAll)
     </VCard>
   </VDialog>
 
-  <VDialog v-model="seqDialog" max-width="600">
+  <VDialog v-model="seqDialog" max-width="600" persistent>
     <VCard title="New sequence">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="seqDialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="seqError" type="error" variant="tonal" density="compact">
           {{ seqError }}
         </VAlert>
         <VTextField v-model="seqForm.name" label="Sequence name" density="compact" />
+        <VSelect
+          v-model="seqForm.exit_stage" :items="stageOptions" label="Stop once the deal reaches this stage (optional)"
+          density="compact" hide-details clearable
+        />
         <div>
           <div class="d-flex align-center justify-space-between mb-2">
             <span class="text-subtitle-2">Steps</span>
@@ -367,25 +429,27 @@ onMounted(loadAll)
               Add step
             </VBtn>
           </div>
-          <div v-for="(step, index) in seqForm.steps" :key="index" class="d-flex ga-2 mb-2 align-center">
-            <VTextField v-model.number="step.day_offset" type="number" label="Day" density="compact" hide-details style="max-width: 80px;" />
+          <div v-for="(step, index) in seqForm.steps" :key="index" class="border rounded pa-2 mb-2">
+            <div class="d-flex ga-2 align-center">
+              <VTextField v-model.number="step.day_offset" type="number" label="Day" density="compact" hide-details style="max-width: 80px;" />
+              <VSelect
+                v-model="step.channel" label="Channel" density="compact" hide-details style="max-width: 160px;"
+                :items="[{ title: 'Task', value: 'task' }, { title: 'WhatsApp template', value: 'whatsapp_template' }]"
+              />
+              <VTextField
+                v-if="step.channel === 'task'" :model-value="stepContentField(step, 'title')" placeholder="Task title"
+                density="compact" hide-details @update:model-value="(v: string) => setStepContentField(step, 'title', v)"
+              />
+              <VTextField
+                v-else :model-value="stepContentField(step, 'template_name')" placeholder="Template name"
+                density="compact" hide-details @update:model-value="(v: string) => setStepContentField(step, 'template_name', v)"
+              />
+              <VBtn icon="tabler-x" size="small" variant="text" :disabled="seqForm.steps.length === 1" @click="removeStep(index)" />
+            </div>
             <VSelect
-              v-model="step.channel" label="Channel" density="compact" hide-details style="max-width: 160px;"
-              :items="[{ title: 'Task', value: 'task' }, { title: 'WhatsApp template', value: 'whatsapp_template' }, { title: 'SMS', value: 'sms' }]"
+              v-model="step.only_if_stage" :items="stageOptions" label="Only send if deal is still in this stage (optional)"
+              density="compact" hide-details clearable class="mt-2"
             />
-            <VTextField
-              v-if="step.channel === 'task'" :model-value="stepContentField(step, 'title')" placeholder="Task title"
-              density="compact" hide-details @update:model-value="(v: string) => setStepContentField(step, 'title', v)"
-            />
-            <VTextField
-              v-else-if="step.channel === 'whatsapp_template'" :model-value="stepContentField(step, 'template_name')" placeholder="Template name"
-              density="compact" hide-details @update:model-value="(v: string) => setStepContentField(step, 'template_name', v)"
-            />
-            <VTextField
-              v-else :model-value="stepContentField(step, 'body')" placeholder="SMS body"
-              density="compact" hide-details @update:model-value="(v: string) => setStepContentField(step, 'body', v)"
-            />
-            <VBtn icon="tabler-x" size="small" variant="text" :disabled="seqForm.steps.length === 1" @click="removeStep(index)" />
           </div>
         </div>
       </VCardText>
@@ -401,15 +465,18 @@ onMounted(loadAll)
     </VCard>
   </VDialog>
 
-  <VDialog v-model="enrollDialog" max-width="420">
-    <VCard title="Enroll a lead">
+  <VDialog v-model="enrollDialog" max-width="420" persistent>
+    <VCard title="Enroll a deal">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="enrollDialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="enrollError" type="error" variant="tonal" density="compact">
           {{ enrollError }}
         </VAlert>
         <VSelect
-          v-model="enrollLeadId" label="Lead" density="compact"
-          :items="leads.filter(l => l.status === 'open').map(l => ({ title: l.contact.name || l.contact.wa_id || l.contact.email || 'Unknown', value: l.id }))"
+          v-model="enrollDealId" label="Deal" density="compact"
+          :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
         />
       </VCardText>
       <VCardActions>
@@ -417,7 +484,7 @@ onMounted(loadAll)
         <VBtn variant="text" @click="enrollDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :loading="enrolling" :disabled="!enrollLeadId" @click="submitEnroll">
+        <VBtn color="primary" :loading="enrolling" :disabled="!enrollDealId" @click="submitEnroll">
           Enroll
         </VBtn>
       </VCardActions>

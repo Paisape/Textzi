@@ -3,7 +3,7 @@ the tables added for the native WhatsApp inbox (models.py's "Native shared inbox
 deliberately its own module, never importing from or importing into dispatch.py/providers.py/
 webhooks.py (the SMS-specific pipeline), same isolation principle as every other WABA module."""
 import mimetypes
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from sqlalchemy import func, or_, select, text
@@ -18,18 +18,23 @@ import secrets
 
 from .models import (
     AutomationRule, BusinessHours, CannedResponse, Contact, ContactLabel, Conversation, ConversationLabel, ConversationMessage,
-    CsatResponse, CsatSettings, Customer, Label, Lead, Macro, Segment, SlaPolicy, User, WabaConnection, WabaWebhookSubscription,
+    CrmContact, CsatResponse, CsatSettings, Customer, Deal, Label, Lead, Macro, Segment, SlaPolicy, TicketGroup, User,
+    WabaConnection, WabaWebhookSubscription,
 )
 from .schemas import (
     AgentCapacityUpdateRequest, AssignableUserOut, AutomationRuleCreateRequest, AutomationRuleOut, BusinessHoursOut, BusinessHoursUpdateRequest,
     CannedResponseCreateRequest, CannedResponseOut, ContactDirectoryEntryOut, ContactMessageRequest, ContactOut, ContactTimelineOut, ContactUpdateRequest,
-    ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut, ConversationOut, ConversationUpdateRequest,
-    CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, InteractiveButtonRequest, InteractiveListRequest, LabelCreateRequest, LabelOut, LeadOut,
-    LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest, SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest,
-    StartConversationRequest, TemplateButtonOut, TemplateCreateRequest, TemplateMessageRequest, TicketSummary, WabaTemplateOut, WabaWebhookSubscriptionOut,
+    ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
+    ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest,
+    CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest,
+    LabelCreateRequest, LabelOut, LeadOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
+    SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest, StartConversationRequest, TemplateButtonOut, TemplateCreateRequest,
+    TemplateMessageRequest, TicketCategoryUpdateRequest, TicketCountsOut, TicketCustomFieldsUpdateRequest, TicketGroupAssignRequest,
+    TicketGroupCreateRequest, TicketGroupOut, TicketPriorityUpdateRequest, TicketSummary, WabaTemplateOut, WabaWebhookSubscriptionOut,
     WabaWebhookSubscriptionUpdateRequest,
 )
 from . import waba_media
+from .permissions import require_channel_scope_any
 from .security import decrypt_secret
 from .services import DomainError, channel_active, resolve_user_entity
 from .waba_dispatch import (
@@ -39,7 +44,11 @@ from .waba_dispatch import (
 from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates
 from .waba_realtime import authenticate_query_token, message_payload, publish_event
 
-router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"])
+# Shared inbox module -- owns the Conversation/Task/ticket tables both the plain WhatsApp inbox
+# AND CRM's Tickets/Email/Helpdesk pages call directly, so this is gated to either channel
+# scope, not "waba" alone (unlike waba.py/waba_campaigns.py/waba_reports.py, which really are
+# WhatsApp-only and stay single-channel gated).
+router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"], dependencies=[Depends(require_channel_scope_any(["waba", "crm"]))])
 
 
 def _labels_for(db: Session, assoc_model, key_column, key_value: str) -> list[LabelOut]:
@@ -53,6 +62,15 @@ def _contact_out(db: Session, contact: Contact) -> ContactOut:
         custom_attributes=contact.custom_attributes or {}, opted_out=contact.opted_out,
         labels=_labels_for(db, ContactLabel, ContactLabel.contact_id, contact.id),
         company_id=contact.company_id,
+        consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
+        consent_source=contact.consent_source, crm_contact_id=contact.crm_contact_id, created_at=contact.created_at.isoformat(),
+    )
+
+
+def _crm_contact_out(contact: CrmContact) -> CrmContactOut:
+    return CrmContactOut(
+        id=contact.id, name=contact.name, phone=contact.phone, email=contact.email, title=contact.title,
+        company_id=contact.company_id, source=contact.source, custom_fields=contact.custom_fields or {},
         consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
         consent_source=contact.consent_source, created_at=contact.created_at.isoformat(),
     )
@@ -71,6 +89,9 @@ def _conversation_out(db: Session, conversation: Conversation, contact: Contact,
     is_breached = bool(conversation.first_response_due_at and conversation.first_response_due_at < datetime.now(timezone.utc))
     if is_breached and not conversation.sla_breached:
         conversation.sla_breached = True
+    is_resolution_breached = bool(conversation.resolution_due_at and conversation.resolution_due_at < datetime.now(timezone.utc) and conversation.status != "resolved")
+    if is_resolution_breached and not conversation.resolution_breached:
+        conversation.resolution_breached = True
     return ConversationOut(
         id=conversation.id, contact=_contact_out(db, contact), channel=conversation.channel, status=conversation.status,
         assigned_user_id=conversation.assigned_user_id,
@@ -84,6 +105,14 @@ def _conversation_out(db: Session, conversation: Conversation, contact: Contact,
         labels=_labels_for(db, ConversationLabel, ConversationLabel.conversation_id, conversation.id),
         first_response_due_at=conversation.first_response_due_at.isoformat() if conversation.first_response_due_at else None,
         sla_breached=conversation.sla_breached,
+        resolution_due_at=conversation.resolution_due_at.isoformat() if conversation.resolution_due_at else None,
+        resolution_breached=conversation.resolution_breached,
+        priority=conversation.priority,
+        category=conversation.category,
+        group_id=conversation.group_id,
+        ticket_custom_fields=conversation.ticket_custom_fields or {},
+        subject=conversation.subject,
+        cc_emails=conversation.cc_emails or [],
     )
 
 
@@ -130,7 +159,7 @@ def _get_owned_label(db: Session, entity_id: str, label_id: str) -> Label:
 @router.get("/conversations", response_model=list[ConversationOut])
 def list_conversations(
     status: str | None = None, assigned_user_id: str | None = None, assignment: str | None = None, label_id: str | None = None, search: str | None = None,
-    is_ticket: bool | None = None,
+    is_ticket: bool | None = None, channel: str | None = None,
     limit: int = 50, offset: int = 0, user: User = Depends(require_user), db: Session = Depends(get_db),
 ):
     try:
@@ -139,6 +168,8 @@ def list_conversations(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     limit = max(1, min(limit, 200))
     query = select(Conversation).where(Conversation.entity_id == entity.id)
+    if channel:
+        query = query.where(Conversation.channel == channel)
     if status:
         query = query.where(Conversation.status == status)
     if is_ticket is not None:
@@ -183,6 +214,31 @@ def get_conversation_counts(status: str | None = None, is_ticket: bool | None = 
     assigned_to_me = db.scalar(base.where(Conversation.assigned_user_id == user.id)) or 0
     all_count = db.scalar(base) or 0
     return ConversationCountsOut(unassigned=unassigned, assigned_to_me=assigned_to_me, all=all_count)
+
+
+@router.get("/conversations/ticket-counts", response_model=TicketCountsOut)
+def get_ticket_counts(channel: str | None = None, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Backs the Tickets list's status rail -- every status's count at once (see TicketCountsOut's
+    own docstring for why this is a separate endpoint from /conversations/counts rather than that
+    one's status filter just being made optional: the plain WhatsApp inbox's own counts widget
+    deliberately still mirrors its active status filter, unrelated behavior this must not change)."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    base = select(func.count()).select_from(Conversation).where(Conversation.entity_id == entity.id, Conversation.is_ticket.is_(True))
+    if channel:
+        base = base.where(Conversation.channel == channel)
+    unassigned = db.scalar(base.where(Conversation.assigned_user_id.is_(None))) or 0
+    assigned_to_me = db.scalar(base.where(Conversation.assigned_user_id == user.id)) or 0
+    all_count = db.scalar(base) or 0
+    open_count = db.scalar(base.where(Conversation.status == "open")) or 0
+    pending_count = db.scalar(base.where(Conversation.status == "pending")) or 0
+    resolved_count = db.scalar(base.where(Conversation.status == "resolved")) or 0
+    return TicketCountsOut(
+        unassigned=unassigned, assigned_to_me=assigned_to_me, all=all_count,
+        open=open_count, pending=pending_count, resolved=resolved_count,
+    )
 
 
 @router.get("/conversations/{conversation_id}", response_model=ConversationDetailOut)
@@ -266,9 +322,138 @@ def convert_conversation_to_ticket(conversation_id: str, user: User = Depends(re
     conversation.is_ticket = True
     conversation.ticket_number = f"TKT-{datetime.now(timezone.utc).year}-{seq_val:06d}"
     conversation.ticket_created_at = datetime.now(timezone.utc)
+    sla = db.get(SlaPolicy, entity.id)
+    if sla and sla.enabled:
+        conversation.resolution_due_at = datetime.now(timezone.utc) + timedelta(minutes=sla.resolution_minutes)
     db.commit()
     db.refresh(conversation)
     return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/priority", response_model=ConversationOut)
+def update_ticket_priority(conversation_id: str, payload: TicketPriorityUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    conversation.priority = payload.priority
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/category", response_model=ConversationOut)
+def update_ticket_category(conversation_id: str, payload: TicketCategoryUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    conversation.category = payload.category
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/group", response_model=ConversationOut)
+def update_ticket_group(conversation_id: str, payload: TicketGroupAssignRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    if payload.group_id:
+        group = db.get(TicketGroup, payload.group_id)
+        if not group or group.entity_id != entity.id:
+            raise HTTPException(status_code=422, detail="group_id must belong to your organization")
+    conversation.group_id = payload.group_id
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/custom-fields", response_model=ConversationOut)
+def update_ticket_custom_fields(conversation_id: str, payload: TicketCustomFieldsUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    conversation.ticket_custom_fields = payload.ticket_custom_fields
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/subject", response_model=ConversationOut)
+def update_conversation_subject(conversation_id: str, payload: ConversationSubjectUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    conversation.subject = payload.subject
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+@router.patch("/conversations/{conversation_id}/cc", response_model=ConversationOut)
+def update_conversation_cc(conversation_id: str, payload: ConversationCcUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    conversation.cc_emails = payload.cc_emails
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
+# --- Ticket groups (Freshdesk-style team routing) ---------------------------------------------
+
+def _ticket_group_out(group: TicketGroup) -> TicketGroupOut:
+    return TicketGroupOut(id=group.id, name=group.name, member_user_ids=group.member_user_ids or [])
+
+
+@router.get("/ticket-groups", response_model=list[TicketGroupOut])
+def list_ticket_groups(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    groups = db.scalars(select(TicketGroup).where(TicketGroup.entity_id == entity.id)).all()
+    return [_ticket_group_out(g) for g in groups]
+
+
+@router.post("/ticket-groups", response_model=TicketGroupOut)
+def create_ticket_group(payload: TicketGroupCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    group = TicketGroup(entity_id=entity.id, name=payload.name.strip(), member_user_ids=payload.member_user_ids)
+    db.add(group)
+    db.commit()
+    db.refresh(group)
+    return _ticket_group_out(group)
+
+
+@router.delete("/ticket-groups/{group_id}")
+def delete_ticket_group(group_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    group = db.get(TicketGroup, group_id)
+    if not group or group.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Ticket group not found")
+    db.execute(text("UPDATE conversations SET group_id = NULL WHERE group_id = :gid"), {"gid": group_id})
+    db.delete(group)
+    db.commit()
+    return {"deleted": True}
 
 
 @router.post("/conversations/{conversation_id}/read", response_model=ConversationOut)
@@ -758,11 +943,17 @@ def list_contacts_directory(user: User = Depends(require_user), db: Session = De
             .group_by(ConversationMessage.conversation_id),
         ).all()
         last_replies = dict(rows)
-    leads = {lead.contact_id: lead for lead in db.scalars(select(Lead).where(Lead.contact_id.in_(contact_ids))).all()}
+    # Lead.contact_id points at a CrmContact now, not this WABA Contact directly -- resolve
+    # through each contact's own crm_contact_id link (set at conversion time) to find its lead.
+    crm_contact_ids = [c.crm_contact_id for c in contacts if c.crm_contact_id]
+    leads_by_crm_contact_id = {
+        lead.contact_id: lead for lead in db.scalars(select(Lead).where(Lead.contact_id.in_(crm_contact_ids))).all()
+    } if crm_contact_ids else {}
 
     out = []
     for contact in contacts:
         conversation = conversations.get(contact.id)
+        lead = leads_by_crm_contact_id.get(contact.crm_contact_id) if contact.crm_contact_id else None
         out.append(ContactDirectoryEntryOut(
             contact=_contact_out(db, contact),
             conversation_id=conversation.id if conversation else None,
@@ -771,7 +962,7 @@ def list_contacts_directory(user: User = Depends(require_user), db: Session = De
             is_ticket=bool(conversation and conversation.is_ticket),
             ticket_number=conversation.ticket_number if conversation else None,
             ticket_status=conversation.status if conversation and conversation.is_ticket else None,
-            lead_id=leads[contact.id].id if contact.id in leads else None,
+            lead_id=lead.id if lead else None,
             customer_id=contact.customer_id,
         ))
     return out
@@ -793,28 +984,49 @@ def get_contact_timeline(contact_id: str, user: User = Depends(require_user), db
     if conversation:
         messages = db.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation.id).order_by(ConversationMessage.created_at.asc())).all()
 
-    lead = db.scalar(select(Lead).where(Lead.contact_id == contact_id, Lead.entity_id == entity.id))
-    customer = db.get(Customer, contact.customer_id) if contact.customer_id else None
-    lead_out = LeadOut(
-        id=lead.id, contact=_contact_out(db, contact), pipeline_id=lead.pipeline_id, stage=lead.stage, source=lead.source,
-        converted_from_conversation_id=lead.converted_from_conversation_id, owner_user_id=lead.owner_user_id,
-        notes=lead.notes, value=float(lead.value) if lead.value is not None else None, probability=lead.probability,
-        expected_close_date=lead.expected_close_date.isoformat() if lead.expected_close_date else None,
-        status=lead.status, lost_reason=lead.lost_reason, custom_fields=lead.custom_fields or {}, score=lead.score,
-        created_at=lead.created_at.isoformat(),
-    ) if lead else None
-    customer_out = CustomerOut(
-        id=customer.id, contact=_contact_out(db, contact), lead_id=customer.lead_id,
-        converted_from_conversation_id=customer.converted_from_conversation_id, owner_user_id=customer.owner_user_id,
-        notes=customer.notes, created_at=customer.created_at.isoformat(),
-    ) if customer else None
+    # CRM data now lives on a separate CrmContact (see Contact.crm_contact_id) -- a WABA contact
+    # that's never been converted has no linked CrmContact at all, so lead/deals/customer all
+    # stay empty until an agent explicitly converts it.
+    crm_contact = db.get(CrmContact, contact.crm_contact_id) if contact.crm_contact_id else None
+    lead_out = None
+    deals_out: list[DealOut] = []
+    customer_out = None
+    if crm_contact:
+        crm_contact_out = _crm_contact_out(crm_contact)
+        # Most recent open (or, absent that, most recent overall) thin Lead -- a contact can have
+        # at most one useful "current" Lead at a time even though the row isn't unique-constrained.
+        lead = db.scalar(select(Lead).where(Lead.contact_id == crm_contact.id, Lead.entity_id == entity.id).order_by(Lead.created_at.desc()))
+        deals = db.scalars(select(Deal).where(Deal.contact_id == crm_contact.id, Deal.entity_id == entity.id).order_by(Deal.created_at.desc())).all()
+        customer = db.get(Customer, contact.customer_id) if contact.customer_id else None
+        lead_out = LeadOut(
+            id=lead.id, contact=crm_contact_out, company_name=lead.company_name, source=lead.source, status=lead.status,
+            owner_user_id=lead.owner_user_id, notes=lead.notes, custom_fields=lead.custom_fields or {}, score=lead.score,
+            converted_at=lead.converted_at.isoformat() if lead.converted_at else None, converted_deal_id=lead.converted_deal_id,
+            created_at=lead.created_at.isoformat(),
+        ) if lead else None
+        deals_out = [
+            DealOut(
+                id=deal.id, contact=crm_contact_out, pipeline_id=deal.pipeline_id, stage=deal.stage, source=deal.source,
+                converted_from_conversation_id=deal.converted_from_conversation_id, converted_from_lead_id=deal.converted_from_lead_id,
+                owner_user_id=deal.owner_user_id, notes=deal.notes, value=float(deal.value) if deal.value is not None else None,
+                probability=deal.probability, expected_close_date=deal.expected_close_date.isoformat() if deal.expected_close_date else None,
+                status=deal.status, lost_reason=deal.lost_reason, custom_fields=deal.custom_fields or {},
+                created_at=deal.created_at.isoformat(),
+            ) for deal in deals
+        ]
+        customer_out = CustomerOut(
+            id=customer.id, contact=crm_contact_out, deal_id=customer.deal_id,
+            converted_from_conversation_id=customer.converted_from_conversation_id, owner_user_id=customer.owner_user_id,
+            notes=customer.notes, custom_fields=customer.custom_fields or {}, created_at=customer.created_at.isoformat(),
+        ) if customer else None
 
     open_tickets = 1 if conversation and conversation.is_ticket and conversation.status != "resolved" else 0
     resolved_tickets = 1 if conversation and conversation.is_ticket and conversation.status == "resolved" else 0
 
     return ContactTimelineOut(
         contact=_contact_out(db, contact), conversation_id=conversation.id if conversation else None,
-        lead=lead_out, customer=customer_out, tickets=TicketSummary(open=open_tickets, resolved=resolved_tickets),
+        crm_contact_id=contact.crm_contact_id,
+        lead=lead_out, deals=deals_out, customer=customer_out, tickets=TicketSummary(open=open_tickets, resolved=resolved_tickets),
         messages=[_message_out(m) for m in messages],
     )
 
@@ -1257,8 +1469,8 @@ def update_business_hours(payload: BusinessHoursUpdateRequest, user: User = Depe
 
 def _sla_policy_out(row: SlaPolicy | None) -> SlaPolicyOut:
     if not row:
-        return SlaPolicyOut(enabled=False, first_response_minutes=60)
-    return SlaPolicyOut(enabled=row.enabled, first_response_minutes=row.first_response_minutes)
+        return SlaPolicyOut(enabled=False, first_response_minutes=60, resolution_minutes=480)
+    return SlaPolicyOut(enabled=row.enabled, first_response_minutes=row.first_response_minutes, resolution_minutes=row.resolution_minutes)
 
 
 @router.get("/sla-policy", response_model=SlaPolicyOut)
@@ -1282,6 +1494,7 @@ def update_sla_policy(payload: SlaPolicyUpdateRequest, user: User = Depends(requ
         db.add(row)
     row.enabled = payload.enabled
     row.first_response_minutes = payload.first_response_minutes
+    row.resolution_minutes = payload.resolution_minutes
     db.commit()
     db.refresh(row)
     return _sla_policy_out(row)

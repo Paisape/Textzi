@@ -12,10 +12,11 @@ from sqlalchemy.orm import Session
 from .auth import require_user
 from .database import get_db
 from .models import ConversationLabel, ConversationMessage, CsatResponse, Conversation, Label, User
+from .permissions import require_channel_scope
 from .schemas import ReportAgentRow, ReportLabelRow, ReportVolumePoint, WabaReportsOut
 from .services import DomainError, resolve_user_entity
 
-router = APIRouter(prefix="/v1/waba/reports", tags=["waba-reports"])
+router = APIRouter(prefix="/v1/waba/reports", tags=["waba-reports"], dependencies=[Depends(require_channel_scope("waba"))])
 
 
 @router.get("", response_model=WabaReportsOut)

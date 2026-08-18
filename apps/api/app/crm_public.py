@@ -6,10 +6,10 @@ from html import escape
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
-from .crm import _get_or_create_default_pipeline, rescore_lead
+from .crm import rescore_lead
 from .crm_sequences import apply_lead_routing
 from .database import get_db
-from .models import Contact, Entity, Lead, Pipeline, WebForm
+from .models import CrmContact, Entity, Lead, WebForm
 from .schemas import PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse
 from .services import channel_active, log_activity
 from .turnstile import require_turnstile
@@ -45,31 +45,24 @@ def submit_public_lead_form(entity_id: str, payload: WebFormSubmitRequest, reque
     phone = values.get("phone") or None
     contact = None
     if email:
-        contact = db.query(Contact).filter(Contact.entity_id == entity_id, Contact.email == email).first()
+        contact = db.query(CrmContact).filter(CrmContact.entity_id == entity_id, CrmContact.email == email).first()
     if not contact and phone:
-        # No JSON-path query here (custom_attributes is a JSON blob, not indexed) -- contact
-        # volume per entity is small enough that filtering in Python after email misses is fine,
-        # matching how the rest of this codebase reads custom_attributes (load then inspect).
-        for candidate in db.query(Contact).filter(Contact.entity_id == entity_id, Contact.email.is_(None)).all():
-            if (candidate.custom_attributes or {}).get("phone") == phone:
-                contact = candidate
-                break
+        contact = db.query(CrmContact).filter(CrmContact.entity_id == entity_id, CrmContact.phone == phone).first()
 
-    extra_fields = {k: v for k, v in values.items() if k not in ("name", "email", "phone", "message")}
+    extra_fields = {k: v for k, v in values.items() if k not in ("name", "email", "phone", "message", "company")}
     if not contact:
-        contact = Contact(
-            entity_id=entity_id, name=values.get("name"), email=email,
-            custom_attributes={"phone": phone, **extra_fields} if phone or extra_fields else {},
+        # A web-form submission was never a WhatsApp conversation -- this creates a CrmContact
+        # directly, no WABA Contact involved at all (matches "whatsapp have own and crm have
+        # own" -- a web-form lead is CRM-native from the start).
+        contact = CrmContact(
+            entity_id=entity_id, name=values.get("name"), email=email, phone=phone, source="web_form",
+            custom_fields=extra_fields,
         )
         db.add(contact)
         db.flush()
 
-    pipeline = db.get(Pipeline, form.target_pipeline_id) if form.target_pipeline_id else None
-    if not pipeline:
-        pipeline = _get_or_create_default_pipeline(db, entity_id)
-
     lead = Lead(
-        entity_id=entity_id, contact_id=contact.id, pipeline_id=pipeline.id, stage=pipeline.stages[0],
+        entity_id=entity_id, contact_id=contact.id, company_name=values.get("company"),
         source="web_form", notes=values.get("message"), custom_fields=extra_fields,
     )
     db.add(lead)

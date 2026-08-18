@@ -12,11 +12,12 @@ from .config import settings
 from .database import get_db
 from .dispatch import dispatch_message
 from .models import Message, OptOutEntry, Status, Template, User
+from .permissions import require_channel_scope
 from .schemas import ApiSmsSendResponse, MessageOut, OptOutEntryCreate, OptOutEntryOut, SmsSendRequest, SmsSendResponse, TemplateSummary
 from .security import decrypt_recipient_lenient, encrypt_secret
 from .services import DomainError, RateLimitError, assert_not_opted_out, available_balance, debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, render_template, require_channel_active, resolve_routes, resolve_template, resolve_user_entity, sms_segment_credits
 
-router = APIRouter(prefix="/v1/sms", tags=["sms"])
+router = APIRouter(prefix="/v1/sms", tags=["sms"], dependencies=[Depends(require_channel_scope("sms"))])
 
 
 @router.get("/templates", response_model=list[TemplateSummary])

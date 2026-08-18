@@ -15,15 +15,16 @@ from .schemas import (
     BusinessProfileOut, BusinessProfileUpdateRequest, RegisterPhoneRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest,
     WabaStatusOut, WabaStatusRefreshOut,
 )
+from .permissions import require_channel_scope
 from .security import decrypt_secret, encrypt_secret, generate_otp
-from .services import DomainError, get_platform_waba_settings, log_activity, resolve_user_entity
+from .services import DomainError, channel_active, channel_enabled, get_platform_waba_settings, log_activity, resolve_user_entity
 from .waba_dispatch import _log_api_call
 from .waba_meta import (
     MetaApiError, exchange_code_for_token, fetch_business_profile, fetch_phone_number_details, fetch_phone_number_status,
     register_phone_number, subscribe_app_to_waba, update_business_profile,
 )
 
-router = APIRouter(prefix="/v1/waba", tags=["waba"])
+router = APIRouter(prefix="/v1/waba", tags=["waba"], dependencies=[Depends(require_channel_scope("waba"))])
 
 
 @router.get("/config", response_model=WabaConfigOut)
@@ -45,6 +46,8 @@ def get_waba_status(user: User = Depends(require_user), db: Session = Depends(ge
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not channel_active(db, entity.id, "waba"):
+        return WabaStatusOut(connected=False)
     connection = db.get(WabaConnection, entity.id)
     if not connection or connection.status != "connected":
         return WabaStatusOut(connected=False)
@@ -67,6 +70,8 @@ def connect_waba(payload: WabaConnectRequest, request: Request, user: User = Dep
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not channel_enabled(db, "waba"):
+        raise HTTPException(status_code=422, detail="WhatsApp isn't available on this platform right now.")
     app_id, _, app_secret = get_platform_waba_settings(db)
     if not app_id or not app_secret:
         raise HTTPException(status_code=422, detail="WhatsApp is not configured on this platform yet -- contact support.")
@@ -141,6 +146,8 @@ def connect_waba_direct(payload: WabaDirectConnectRequest, request: Request, use
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not channel_enabled(db, "waba"):
+        raise HTTPException(status_code=422, detail="WhatsApp isn't available on this platform right now.")
 
     try:
         subscribe_app_to_waba(payload.waba_id, payload.access_token)

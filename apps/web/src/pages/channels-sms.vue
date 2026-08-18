@@ -2,6 +2,7 @@
 definePage({
   meta: {
     layout: 'default',
+    channel: 'sms',
   },
 })
 

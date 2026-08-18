@@ -9,6 +9,14 @@ import { $api } from '@/utils/api'
 
 const VISITOR_SESSION_STORAGE_KEY = 'textzi_visitor_session_id'
 
+// Where a channel_scope-restricted teammate lands -- sms has no separate workspace shell (it's
+// already a single page) so its own path is its home; waba/crm redirect through the thin landing
+// pages at src/pages/waba.vue and src/pages/crm.vue. Plain paths (not { name: ... } objects),
+// matching every other redirect in this guard -- the generated typed-router guard signature
+// only accepts route names it can resolve to one exact params/query shape, which a bare
+// `{ name }` object without a matching `params` structurally fails to satisfy.
+const CHANNEL_HOME_PATH = { sms: '/sms', waba: '/waba', crm: '/crm' } as const
+
 // Passive visitor analytics only -- path, referrer, viewport, coarse device/location (see
 // Privacy Policy Section 1/7). session_id lives in localStorage (first-party to this frontend's
 // own origin), not a cookie, since the API sits on a different subdomain (api.textzi.in) and
@@ -105,6 +113,29 @@ router.beforeEach(async to => {
     // matches, and by nobody else. Same backstop role as requiresAdmin above, just narrower.
     if (to.meta.staffArea && !authStore.isAdmin && authStore.staffArea !== to.meta.staffArea)
       return '/dashboard'
+
+    // A page-scoped teammate's "home" is the first page they're actually allowed into, not the
+    // channel's generic landing route (/crm, /waba) -- that landing page itself immediately
+    // redirects to a fixed page (crm-leads, inbox) which may not be in their allowed list, so
+    // sending them there first would just bounce straight back here again (an infinite loop,
+    // caught live while testing this). router.resolve(...).path rather than a bare { name }
+    // object -- see CHANNEL_HOME_PATH's own comment on why the typed guard signature rejects that.
+    const channelHome = () => (authStore.pageScope?.length ? router.resolve({ name: authStore.pageScope[0] as any }).path : CHANNEL_HOME_PATH[authStore.channelScope!])
+
+    // A tenant teammate whose channel_scope locks them to one channel (set at invite time --
+    // see team.py) never reaches the general dashboard, another channel's workspace, or any
+    // channel-less page (wallet, team, invoices, ...) -- every navigation outside their one
+    // channel bounces straight back into it, including a direct URL hit on /dashboard itself.
+    if (authStore.channelScope && to.meta.channel !== authStore.channelScope)
+      return channelHome()
+
+    // Finer than channel_scope -- an owner can narrow a teammate to just a few pages within
+    // their one channel (team.vue, set at invite time). Enforced here as a UX/nav boundary; the
+    // real security boundary is channel_scope itself, hard-enforced backend-side
+    // (permissions.require_channel_scope) since a restricted teammate could otherwise still hit
+    // an out-of-scope endpoint directly.
+    if (authStore.channelScope && authStore.pageScope && to.name && !authStore.pageScope.includes(to.name as string))
+      return channelHome()
   }
 })
 

@@ -1,10 +1,12 @@
 <script lang="ts" setup>
-import { adminNav, customerNav, financeNav, salesNav, supportNav } from '@/navigation/vertical'
+import { adminNav, channelFocusedNav, customerNav, financeNav, salesNav, supportNav } from '@/navigation/vertical'
 import { useAuthStore } from '@/stores/auth'
 import { themeConfig } from '@themeConfig'
 
 // Components
 import Footer from '@/layouts/components/Footer.vue'
+import GlobalSearch from '@/layouts/components/GlobalSearch.vue'
+import NavBarNotifications from '@/layouts/components/NavBarNotifications.vue'
 import NavbarThemeSwitcher from '@/layouts/components/NavbarThemeSwitcher.vue'
 import UserProfile from '@/layouts/components/UserProfile.vue'
 import NavBarI18n from '@core/components/I18n.vue'
@@ -13,6 +15,7 @@ import NavBarI18n from '@core/components/I18n.vue'
 import { VerticalNavLayout } from '@layouts'
 
 const authStore = useAuthStore()
+const route = useRoute()
 
 onMounted(() => authStore.load())
 
@@ -20,13 +23,18 @@ onMounted(() => authStore.load())
 // see zero tenant-facing items, tenants see zero platform-facing items, and a scoped staff role
 // (finance_team/sales_team/support_team) sees only its own slice of the admin panel. Defaults to
 // customerNav until the profile is confirmed loaded, so nobody sees a flash of the wrong menu.
+// A page tagged meta.channel (the /waba and /crm focused workspaces) swaps in that channel's own
+// flattened nav instead -- "Dashboard" is hidden from it entirely for a channel_scope-restricted
+// teammate, since they have nowhere else to go.
 const STAFF_AREA_NAV = { finance: financeNav, sales: salesNav, support: supportNav } as const
 const navItems = computed(() => {
   if (authStore.isAdmin)
     return adminNav
   if (authStore.staffArea)
     return STAFF_AREA_NAV[authStore.staffArea]
-  return customerNav({ wabaActive: authStore.wabaActive, crmActive: authStore.crmActive })
+  if (route.meta.channel)
+    return channelFocusedNav(route.meta.channel, !authStore.channelScope, authStore.pageScope)
+  return customerNav({ wabaActive: authStore.wabaActive, crmActive: authStore.crmActive }, { minimal: route.name === 'dashboard' })
 })
 </script>
 
@@ -48,6 +56,8 @@ const navItems = computed(() => {
 
         <NavbarThemeSwitcher />
 
+        <GlobalSearch v-if="route.meta.channel === 'crm' || route.name === 'dashboard'" class="ms-4" />
+
         <VSpacer />
 
         <NavBarI18n
@@ -55,6 +65,7 @@ const navItems = computed(() => {
           :languages="themeConfig.app.i18n.langConfig"
         />
         <NavbarWalletBalance class="me-4" />
+        <NavBarNotifications class="me-2" />
         <UserProfile />
       </div>
     </template>

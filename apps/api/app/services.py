@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformSmsSettings, PlatformStalwartSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -160,6 +160,31 @@ def get_platform_waba_settings(db: Session) -> tuple[str | None, str | None, str
         return None, None, None
     secret = decrypt_secret(row.app_secret_encrypted) if row.app_secret_encrypted else None
     return row.app_id, row.config_id, secret
+
+
+def get_platform_stalwart_settings(db: Session) -> tuple[str, str, str, str]:
+    """Resolves the DB-backed, admin-UI-editable PlatformStalwartSettings row, falling back
+    field-by-field to the .env defaults in config.py wherever the admin hasn't set one -- same
+    convention as get_platform_company_info/get_platform_turnstile_settings above. Returns
+    (admin_url, admin_user, admin_password, mail_domain); cloudflare_api_token isn't included
+    here since only crm_mailserver.py's DNS-automation path (not the ordinary provisioning path)
+    needs it -- see get_platform_cloudflare_token below."""
+    row = db.get(PlatformStalwartSettings, "platform")
+    admin_url = row.admin_url if row and row.admin_url else settings.stalwart_admin_url
+    admin_user = row.admin_user if row and row.admin_user else settings.stalwart_admin_user
+    admin_password = decrypt_secret(row.admin_password_encrypted) if row and row.admin_password_encrypted else settings.stalwart_admin_password
+    mail_domain = row.mail_domain if row and row.mail_domain else settings.stalwart_mail_domain
+    return admin_url, admin_user, admin_password, mail_domain
+
+
+def get_platform_cloudflare_token(db: Session) -> str | None:
+    """The Cloudflare API token used for Stalwart's own automatic MX/SPF/DKIM/DMARC DNS record
+    management -- purely DB-configured, no .env fallback (no sensible placeholder exists), None
+    until an admin sets it on Platform Settings > Stalwart Setting."""
+    row = db.get(PlatformStalwartSettings, "platform")
+    if not row or not row.cloudflare_api_token_encrypted:
+        return None
+    return decrypt_secret(row.cloudflare_api_token_encrypted)
 
 
 def get_platform_waba_webhook_verify_token(db: Session) -> str | None:
@@ -793,6 +818,15 @@ def _has_active_plan_subscription(db: Session, entity_id: str, channel: str) -> 
     return bool(subscription and subscription.plan_id and subscription.period_end and subscription.period_end > datetime.now(timezone.utc))
 
 
+def channel_enabled(db: Session, channel: str) -> bool:
+    """The global kill switch alone (ChannelFeeConfig.enabled), independent of any per-entity
+    subscription/connection state -- usable standalone at points like "start connecting WABA"
+    where the full channel_active() below can't apply yet (it wouldn't be connected until this
+    very call succeeds, so channel_active("waba") would always read false beforehand)."""
+    fees = db.get(ChannelFeeConfig, channel)
+    return not (fees and not fees.enabled)
+
+
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
     """A channel is active once its (possibly-zero) subscription price is paid and the entity
     has completed that channel's own activation requirement. For SMS/DLT-based channels, DLT
@@ -806,7 +840,13 @@ def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
     ChannelSubscription.plan_id/period_end and channel_billing.py) -- but only once that channel
     actually has at least one published plan. Before any plan exists for a channel, it stays on
     the older free/connection-only gate below, so introducing a plan catalog doesn't retroactively
-    lock out every entity that was already using the channel for free."""
+    lock out every entity that was already using the channel for free.
+
+    channel_enabled() (the global kill switch) is checked first, unconditionally -- overriding
+    every per-entity subscription/connection check below. See its own docstring and
+    ChannelFeeConfig's model docstring."""
+    if not channel_enabled(db, channel):
+        return False
     fees = db.get(ChannelFeeConfig, channel)
     subscription_price = float(fees.subscription_price) if fees else 0
     if subscription_price > 0:
@@ -833,6 +873,18 @@ def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
 def require_channel_active(db: Session, entity_id: str, channel: str = "sms") -> None:
     if not channel_active(db, entity_id, channel):
         raise DomainError(f"Activate the {channel.upper()} channel (complete DLT registration) before using this feature")
+
+
+def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None) -> None:
+    """Creates the in-app Notification row (always), and additionally emails the user if this
+    entity's CrmSettings.notify_email is on. SMS/WhatsApp aren't sent here -- see Notification's
+    own docstring for why (no DLT/template registration to send arbitrary text through yet)."""
+    db.add(Notification(entity_id=entity_id, user_id=user_id, type=notif_type, title=title, body=body, link=link))
+    settings_row = db.get(CrmSettings, entity_id)
+    if settings_row and settings_row.notify_email:
+        user = db.get(User, user_id)
+        if user and user.email:
+            send_email(db, user.email, title, render_email(title, f"<p>{body}</p>"))
 
 
 def check_message_quota(db: Session, entity_id: str, channel: str) -> None:

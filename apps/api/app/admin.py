@@ -29,7 +29,7 @@ from .schemas import (
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
-    MessageTelemetryOut, NotificationOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
+    MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
     PlatformMessageTelemetryOut, ProfileChangeRequestAdminOut, ProfileChangeRequestStatusUpdate, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
@@ -481,7 +481,7 @@ def get_channel_fees(channel: str, db: Session = Depends(get_db)):
     fees = db.get(ChannelFeeConfig, channel)
     if not fees:
         raise HTTPException(status_code=404, detail=f"No fee configuration exists for channel '{channel}'")
-    return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee))
+    return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee), enabled=fees.enabled)
 
 
 @router.put("/channel-fees/{channel}", response_model=ChannelFeeConfigOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -493,8 +493,9 @@ def update_channel_fees(channel: str, payload: ChannelFeeConfigUpdate, db: Sessi
     fees.subscription_price = payload.subscription_price
     fees.dlt_platform_fee = payload.dlt_platform_fee
     fees.dlt_service_fee = payload.dlt_service_fee
+    fees.enabled = payload.enabled
     db.commit(); db.refresh(fees)
-    return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee))
+    return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee), enabled=fees.enabled)
 
 
 def _billing_plan_out(plan: BillingPlan) -> BillingPlanOut:
@@ -2310,38 +2311,38 @@ def get_platform_message_telemetry(message_id: str, db: Session = Depends(get_db
     )
 
 
-@router.get("/notifications", response_model=list[NotificationOut], dependencies=[Depends(require_admin)])
+@router.get("/notifications", response_model=list[AdminAlertOut], dependencies=[Depends(require_admin)])
 def get_admin_notifications(db: Session = Depends(get_db)):
     """Real signals instead of the nav bar's previously-hardcoded demo data: pending DLT requests
     needing review, a low platform wallet balance (which silently degrades login-OTP sending --
     see auth.py's _send_platform_otp_sms, which fails open with no other visibility into this),
     and payment orders stuck in 'created' (never completed, never explicitly failed)."""
-    notifications: list[NotificationOut] = []
+    notifications: list[AdminAlertOut] = []
 
     pending_dlt = db.scalar(select(func.count()).select_from(DltOnboardingRequest).where(DltOnboardingRequest.status == "pending_payment")) or 0
     if pending_dlt:
-        notifications.append(NotificationOut(
+        notifications.append(AdminAlertOut(
             id="dlt-pending", severity="info", title=f"{pending_dlt} DLT request{'s' if pending_dlt != 1 else ''} awaiting review",
             description="Pending DLT onboarding requests need a status update.", link="/dlt-requests",
         ))
 
     pending_profile_changes = db.scalar(select(func.count()).select_from(ProfileChangeRequest).where(ProfileChangeRequest.status == "pending")) or 0
     if pending_profile_changes:
-        notifications.append(NotificationOut(
+        notifications.append(AdminAlertOut(
             id="profile-change-pending", severity="info", title=f"{pending_profile_changes} profile change request{'s' if pending_profile_changes != 1 else ''} awaiting review",
             description="Customers are waiting on a profile/company detail change to be approved.", link="/profile-change-requests",
         ))
 
     platform_wallet = db.get(PlatformWallet, "platform")
     if platform_wallet and float(platform_wallet.balance) < LOW_PLATFORM_WALLET_THRESHOLD:
-        notifications.append(NotificationOut(
+        notifications.append(AdminAlertOut(
             id="platform-wallet-low", severity="warning", title="Platform wallet balance is low",
             description=f"Only {float(platform_wallet.balance):.0f} credits left -- login OTP SMS will silently stop sending once this hits zero.", link="/platform-sms-settings",
         ))
 
     stuck_payments = db.scalar(select(func.count()).select_from(PaymentOrder).where(PaymentOrder.status == "created")) or 0
     if stuck_payments:
-        notifications.append(NotificationOut(
+        notifications.append(AdminAlertOut(
             id="payments-stuck", severity="warning", title=f"{stuck_payments} payment order{'s' if stuck_payments != 1 else ''} never completed",
             description="These Razorpay orders were created but never verified as paid or failed -- check Payment Reconciliation.", link="/payment-reconciliation",
         ))

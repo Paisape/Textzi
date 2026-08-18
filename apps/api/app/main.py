@@ -14,11 +14,14 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .admin import router as admin_router, require_admin
+from .admin_stalwart import router as admin_stalwart_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
 from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
-from .crm import router as crm_router
+from .crm import router as crm_router, send_due_scheduled_reports
+from .crm_documents import router as crm_documents_router
+from .crm_email import poll_all_email_inboxes, router as crm_email_router
 from .crm_quotes import router as crm_quotes_router
 from .crm_public import router as crm_public_router
 from .crm_sequences import router as crm_sequences_router, run_due_steps as run_due_sequence_steps
@@ -82,8 +85,16 @@ async def lifespan(_: FastAPI):
     # CRM sales-sequence steps (Addendum 4 Phase 4) -- same in-process scheduler, no separate
     # infra. Hourly is granular enough for day-offset-based steps and cheap enough to just poll.
     scheduler.add_job(run_due_sequence_steps, IntervalTrigger(hours=1), id="crm_sequence_runner", misfire_grace_time=3600)
+    # Email channel (Addendum 9) -- polls every connected EmailAccount's IMAP inbox for unseen
+    # messages. 10 minutes is granular enough for a support inbox and cheap enough to just poll,
+    # same reasoning as the hourly CRM sequence runner above.
+    scheduler.add_job(poll_all_email_inboxes, IntervalTrigger(minutes=10), id="email_poll_job", misfire_grace_time=600)
+    # Custom Report Builder's "email me this weekly/monthly" schedules -- one daily check (same
+    # shape as the archive job above), not a per-report cron; the function itself decides what's
+    # actually due today.
+    scheduler.add_job(send_due_scheduled_reports, CronTrigger(hour=6, minute=0), id="scheduled_report_runner", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC) and hourly CRM sequence runner")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, and daily report-schedule check")
 
     yield
 
@@ -93,10 +104,13 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 app.include_router(admin_router)
+app.include_router(admin_stalwart_router)
 app.include_router(auth_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
 app.include_router(crm_router)
+app.include_router(crm_documents_router)
+app.include_router(crm_email_router)
 app.include_router(crm_public_router)
 app.include_router(crm_quotes_router)
 app.include_router(crm_sequences_router)

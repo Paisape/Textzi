@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { Image } from '@tiptap/extension-image'
 import { Placeholder } from '@tiptap/extension-placeholder'
 import { TextAlign } from '@tiptap/extension-text-align'
 import { Underline } from '@tiptap/extension-underline'
@@ -8,6 +9,7 @@ import { EditorContent, useEditor } from '@tiptap/vue-3'
 const props = defineProps<{
   modelValue: string
   placeholder?: string
+  allowImage?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -15,6 +17,7 @@ const emit = defineEmits<{
 }>()
 
 const editorRef = ref()
+const imageInput = ref<HTMLInputElement>()
 
 const editor = useEditor({
   content: props.modelValue,
@@ -27,6 +30,7 @@ const editor = useEditor({
       placeholder: props.placeholder ?? 'Write something here...',
     }),
     Underline,
+    ...(props.allowImage ? [Image] : []),
   ],
   onUpdate() {
     if (!editor.value)
@@ -35,6 +39,22 @@ const editor = useEditor({
     emit('update:modelValue', editor.value.getHTML())
   },
 })
+
+function pickImage() {
+  imageInput.value?.click()
+}
+
+function onImageSelected(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file || !editor.value)
+    return
+  const reader = new FileReader()
+  reader.onload = () => {
+    editor.value?.chain().focus().setImage({ src: reader.result as string }).run()
+  }
+  reader.readAsDataURL(file)
+  ;(event.target as HTMLInputElement).value = ''
+}
 
 watch(() => props.modelValue, () => {
   const isSame = editor.value?.getHTML() === props.modelValue
@@ -134,6 +154,13 @@ watch(() => props.modelValue, () => {
       >
         <VIcon icon="tabler-align-justified" />
       </IconBtn>
+
+      <template v-if="allowImage">
+        <IconBtn size="small" rounded @click="pickImage">
+          <VIcon icon="tabler-photo" />
+        </IconBtn>
+        <input ref="imageInput" type="file" accept="image/*" class="d-none" @change="onImageSelected">
+      </template>
     </div>
 
     <VDivider />
@@ -150,6 +177,11 @@ watch(() => props.modelValue, () => {
   padding: 0.5rem;
   min-block-size: 15vh;
   outline: none;
+
+  img {
+    max-inline-size: 100%;
+    block-size: auto;
+  }
 
   p {
     margin-block-end: 0;

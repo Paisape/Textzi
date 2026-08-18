@@ -18,6 +18,8 @@ export type AuthProfile = {
   role: string
   organization_id: string | null
   profile_completed: boolean | null
+  channel_scope: 'sms' | 'waba' | 'crm' | null
+  page_scope: string[] | null
 }
 
 export const useAuthStore = defineStore('auth', () => {
@@ -32,6 +34,12 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isAdmin = computed(() => !!profile.value && ADMIN_ROLES.has(profile.value.role))
   const staffArea = computed(() => profile.value ? STAFF_AREA_BY_ROLE[profile.value.role] ?? null : null)
+  // A tenant teammate locked to one channel's focused workspace (see navigation/vertical's
+  // channelFocusedNav and the router guard) -- null for every account created before this field
+  // existed, and for admin/staff accounts (channel_scope is a tenant-only concept).
+  const channelScope = computed(() => !isAdmin.value && !staffArea.value ? profile.value?.channel_scope ?? null : null)
+  // Only meaningful alongside channelScope -- null means every page in that channel.
+  const pageScope = computed(() => channelScope.value ? profile.value?.page_scope ?? null : null)
 
   function can(capability: string): boolean {
     return capabilities.value.has('*') || capabilities.value.has(capability)
@@ -70,5 +78,5 @@ export const useAuthStore = defineStore('auth', () => {
     loaded.value = false
   }
 
-  return { profile, loaded, isAdmin, staffArea, capabilities, wabaActive, crmActive, can, load, clear }
+  return { profile, loaded, isAdmin, staffArea, channelScope, pageScope, capabilities, wabaActive, crmActive, can, load, clear }
 })

@@ -5,6 +5,7 @@ import WabaTemplatesPage from './waba-templates.vue'
 definePage({
   meta: {
     layout: 'default',
+    channel: 'waba',
   },
 })
 
@@ -39,7 +40,7 @@ type BusinessProfile = {
   vertical: string | null
 }
 
-const activeTab = ref<'connect' | 'templates' | 'automation' | 'canned' | 'labels' | 'billing' | 'hours-sla' | 'macros' | 'csat' | 'webhooks' | 'team'>('connect')
+const activeTab = ref<'connect' | 'templates' | 'automation' | 'labels' | 'billing' | 'webhooks' | 'team'>('connect')
 
 const status = ref<WabaStatus | null>(null)
 const loadError = ref('')
@@ -350,75 +351,6 @@ async function onDisconnect() {
 
 // --- Canned responses -----------------------------------------------------------------------
 
-type CannedResponse = { id: string, shortcut: string, body: string }
-
-const cannedResponses = ref<CannedResponse[]>([])
-const cannedLoading = ref(false)
-const cannedError = ref('')
-const cannedLoaded = ref(false)
-
-async function loadCannedResponses() {
-  cannedLoading.value = true
-  cannedError.value = ''
-  try {
-    cannedResponses.value = await $api<CannedResponse[]>('/v1/waba/canned-responses')
-    cannedLoaded.value = true
-  }
-  catch (error: any) {
-    cannedError.value = extractErrorMessage(error, 'Could not load canned responses.')
-  }
-  finally {
-    cannedLoading.value = false
-  }
-}
-
-const cannedDialog = ref(false)
-const cannedForm = ref({ id: '', shortcut: '', body: '' })
-const cannedSaving = ref(false)
-const cannedFormError = ref('')
-
-function openCannedDialog(item?: CannedResponse) {
-  cannedForm.value = item ? { id: item.id, shortcut: item.shortcut, body: item.body } : { id: '', shortcut: '', body: '' }
-  cannedFormError.value = ''
-  cannedDialog.value = true
-}
-
-async function saveCanned() {
-  if (!cannedForm.value.shortcut.trim() || !cannedForm.value.body.trim())
-    return
-  cannedSaving.value = true
-  cannedFormError.value = ''
-  try {
-    const body = { shortcut: cannedForm.value.shortcut.trim(), body: cannedForm.value.body.trim() }
-    if (cannedForm.value.id) {
-      const updated = await $api<CannedResponse>(`/v1/waba/canned-responses/${cannedForm.value.id}`, { method: 'PUT', body })
-      const i = cannedResponses.value.findIndex(c => c.id === updated.id)
-      if (i !== -1)
-        cannedResponses.value[i] = updated
-    }
-    else {
-      cannedResponses.value.push(await $api<CannedResponse>('/v1/waba/canned-responses', { method: 'POST', body }))
-    }
-    cannedDialog.value = false
-  }
-  catch (error: any) {
-    cannedFormError.value = extractErrorMessage(error, 'Could not save this canned response.')
-  }
-  finally {
-    cannedSaving.value = false
-  }
-}
-
-async function deleteCanned(item: CannedResponse) {
-  try {
-    await $api(`/v1/waba/canned-responses/${item.id}`, { method: 'DELETE' })
-    cannedResponses.value = cannedResponses.value.filter(c => c.id !== item.id)
-  }
-  catch (error: any) {
-    cannedError.value = extractErrorMessage(error, 'Could not delete this canned response.')
-  }
-}
-
 // --- Labels -----------------------------------------------------------------------------------
 
 type LabelItem = { id: string, scope: string, name: string, color: string }
@@ -498,8 +430,6 @@ async function deleteLabel(item: LabelItem) {
 }
 
 watch(activeTab, tab => {
-  if (tab === 'canned' && !cannedLoaded.value)
-    loadCannedResponses()
   if (tab === 'labels' && !labelsLoaded.value)
     loadLabels()
 })
@@ -510,7 +440,8 @@ watch(activeTab, tab => {
     WhatsApp
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Connection, templates, automation, canned responses, and labels for your WhatsApp channel.
+    Connection, templates, automation, and labels for your WhatsApp channel. Ticket settings
+    (SLA, CSAT, macros, canned responses) live under Manage CRM's Helpdesk tab.
   </p>
 
   <VTabs v-model="activeTab" class="mb-6">
@@ -523,23 +454,11 @@ watch(activeTab, tab => {
     <VTab value="automation">
       Automation Rules
     </VTab>
-    <VTab value="canned">
-      Canned Responses
-    </VTab>
     <VTab value="labels">
       Labels
     </VTab>
     <VTab value="billing">
       Billing
-    </VTab>
-    <VTab value="hours-sla">
-      Hours & SLA
-    </VTab>
-    <VTab value="macros">
-      Macros
-    </VTab>
-    <VTab value="csat">
-      CSAT
     </VTab>
     <VTab value="webhooks">
       Webhooks
@@ -737,46 +656,6 @@ watch(activeTab, tab => {
       <WabaAutomationRulesPage />
     </VWindowItem>
 
-    <VWindowItem value="canned">
-      <div class="d-flex align-center justify-space-between mb-4">
-        <p class="text-body-2 text-medium-emphasis mb-0">
-          Saved `/shortcut` replies agents can pull into the composer while chatting.
-        </p>
-        <VBtn prepend-icon="tabler-plus" @click="openCannedDialog()">
-          New canned response
-        </VBtn>
-      </div>
-      <VAlert v-if="cannedError" type="error" variant="tonal" class="mb-4">
-        {{ cannedError }}
-      </VAlert>
-      <VCard>
-        <VTable>
-          <thead>
-            <tr>
-              <th>Shortcut</th>
-              <th>Body</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="item in cannedResponses" :key="item.id">
-              <td>/{{ item.shortcut }}</td>
-              <td class="text-truncate" style="max-width: 400px;">
-                {{ item.body }}
-              </td>
-              <td class="text-right">
-                <VBtn size="small" variant="text" icon="tabler-pencil" @click="openCannedDialog(item)" />
-                <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteCanned(item)" />
-              </td>
-            </tr>
-          </tbody>
-        </VTable>
-        <p v-if="!cannedLoading && !cannedResponses.length" class="text-medium-emphasis text-center pa-6">
-          No canned responses yet.
-        </p>
-      </VCard>
-    </VWindowItem>
-
     <VWindowItem value="labels">
       <VAlert v-if="labelsError" type="error" variant="tonal" class="mb-4">
         {{ labelsError }}
@@ -833,18 +712,6 @@ watch(activeTab, tab => {
       <ChannelBillingPanel channel="waba" />
     </VWindowItem>
 
-    <VWindowItem value="hours-sla">
-      <WabaHoursSlaPanel />
-    </VWindowItem>
-
-    <VWindowItem value="macros">
-      <WabaMacrosPanel />
-    </VWindowItem>
-
-    <VWindowItem value="csat">
-      <WabaCsatPanel />
-    </VWindowItem>
-
     <VWindowItem value="webhooks">
       <WabaWebhookPanel />
     </VWindowItem>
@@ -853,27 +720,6 @@ watch(activeTab, tab => {
       <WabaTeamCapacityPanel />
     </VWindowItem>
   </VWindow>
-
-  <VDialog v-model="cannedDialog" max-width="480">
-    <VCard>
-      <VCardTitle>{{ cannedForm.id ? 'Edit canned response' : 'New canned response' }}</VCardTitle>
-      <VCardText>
-        <VAlert v-if="cannedFormError" type="error" variant="tonal" density="compact" class="mb-3">
-          {{ cannedFormError }}
-        </VAlert>
-        <AppTextField v-model="cannedForm.shortcut" label="Shortcut" placeholder="hours" :maxlength="25" class="mb-3" />
-        <VTextarea v-model="cannedForm.body" label="Body" placeholder="We're open Mon-Sat, 10am-7pm." rows="3" :maxlength="500" />
-      </VCardText>
-      <VCardText class="d-flex justify-end ga-3 pt-0">
-        <VBtn variant="text" @click="cannedDialog = false">
-          Cancel
-        </VBtn>
-        <VBtn :loading="cannedSaving" @click="saveCanned">
-          Save
-        </VBtn>
-      </VCardText>
-    </VCard>
-  </VDialog>
 
   <VDialog v-model="labelDialog" max-width="420">
     <VCard>

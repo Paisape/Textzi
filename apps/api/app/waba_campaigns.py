@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from .auth import require_user
 from .database import get_db
 from .models import Campaign, CampaignRecipient, Contact, Segment, User, WabaConnection
+from .permissions import require_channel_scope
 from .schemas import CampaignCreateRequest, CampaignOut
 from .security import decrypt_secret
 from .services import DomainError, resolve_user_entity
@@ -19,7 +20,7 @@ from .waba_dispatch import send_whatsapp_template
 from .waba_inbox import segment_matching_contacts
 from .waba_meta import MetaApiError, list_message_templates
 
-router = APIRouter(prefix="/v1/waba/campaigns", tags=["waba-campaigns"])
+router = APIRouter(prefix="/v1/waba/campaigns", tags=["waba-campaigns"], dependencies=[Depends(require_channel_scope("waba"))])
 
 
 def _campaign_out(campaign: Campaign) -> CampaignOut:

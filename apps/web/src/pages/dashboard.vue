@@ -107,6 +107,18 @@ async function load() {
 }
 
 onMounted(load)
+
+// One tile per channel -- "Open" enters that channel's own focused workspace (/waba, /crm), or
+// its single page directly for SMS which doesn't have a multi-page workspace; "Manage" goes
+// straight to that channel's settings page, skipping the workspace entirely. An inactive
+// WhatsApp/CRM tile points both actions at Manage (there's no workspace to open until it's
+// activated there).
+type ChannelTile = { key: string, title: string, icon: string, active: boolean, openTo: string, manageTo: string }
+const channelTiles = computed<ChannelTile[]>(() => [
+  { key: 'sms', title: 'SMS', icon: 'tabler-message-2', active: true, openTo: '/sms', manageTo: '/channels-sms' },
+  { key: 'waba', title: 'WhatsApp', icon: 'tabler-brand-whatsapp', active: authStore.wabaActive, openTo: '/waba', manageTo: '/channels-whatsapp' },
+  { key: 'crm', title: 'CRM', icon: 'tabler-address-book', active: authStore.crmActive, openTo: '/crm', manageTo: '/channels-crm' },
+])
 </script>
 
 <template>
@@ -275,6 +287,40 @@ onMounted(load)
       </RouterLink>
       to start sending.
     </VAlert>
+
+    <h2 class="text-h6 mb-3">
+      Channels
+    </h2>
+    <VRow class="mb-6">
+      <VCol v-for="tile in channelTiles" :key="tile.key" cols="12" sm="6" md="4">
+        <VCard>
+          <VCardText>
+            <div class="d-flex align-center gap-3 mb-3">
+              <VIcon :icon="tile.icon" size="28" />
+              <div>
+                <p class="text-subtitle-1 font-weight-medium mb-0">
+                  {{ tile.title }}
+                </p>
+                <p class="text-caption mb-0" :class="tile.active ? 'text-success' : 'text-medium-emphasis'">
+                  {{ tile.active ? 'Active' : 'Not activated' }}
+                </p>
+              </div>
+            </div>
+            <div class="d-flex gap-2">
+              <VBtn v-if="tile.active" size="small" :to="tile.openTo">
+                Open
+              </VBtn>
+              <VBtn v-else size="small" :to="tile.manageTo">
+                Activate
+              </VBtn>
+              <VBtn v-if="tile.active" size="small" variant="tonal" prepend-icon="tabler-settings" :to="tile.manageTo">
+                Manage
+              </VBtn>
+            </div>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
 
     <VRow class="mb-6">
       <VCol cols="12" sm="6" md="3">

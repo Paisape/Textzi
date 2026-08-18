@@ -80,6 +80,12 @@ async def waba_websocket(websocket: WebSocket, token: str = ""):
         if not user:
             await websocket.close(code=4401)
             return
+        # Same shared-inbox reasoning as waba_inbox.py's own router gate: this feeds live updates
+        # for both the plain WhatsApp inbox and CRM's Tickets/Email pages, so either channel scope
+        # is allowed through; only a teammate scoped to a third, unrelated channel is rejected.
+        if user.channel_scope and user.channel_scope not in ("waba", "crm"):
+            await websocket.close(code=4403)
+            return
         try:
             entity = resolve_user_entity(db, user)
         except DomainError:

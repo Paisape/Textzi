@@ -272,6 +272,12 @@ class UserProfile(BaseModel):
     # gate handles that case first). True/False only once an organization exists -- the router
     # guard (apps/web) redirects to /complete-profile while this is False.
     profile_completed: bool | None = None
+    # null = full access to whatever channels the org has active; "sms"|"waba"|"crm" locks this
+    # teammate to that one channel's focused workspace (see the router guard in apps/web).
+    channel_scope: str | None = None
+    # Only meaningful alongside channel_scope -- null means every page in that channel, a list
+    # narrows to just those route names (see the router guard in apps/web).
+    page_scope: list[str] | None = None
 
 
 class OrganizationOnboardRequest(BaseModel):
@@ -748,6 +754,7 @@ class ChannelFeeConfigOut(BaseModel):
     subscription_price: float
     dlt_platform_fee: float
     dlt_service_fee: float
+    enabled: bool
 
 
 class ApiKeyOut(BaseModel):
@@ -796,6 +803,7 @@ class ChannelFeeConfigUpdate(BaseModel):
     subscription_price: float = Field(ge=0, le=1_000_000)
     dlt_platform_fee: float = Field(ge=0, le=1_000_000)
     dlt_service_fee: float = Field(ge=0, le=1_000_000)
+    enabled: bool = True
 
 
 class DltRequestQuoteResponse(BaseModel):
@@ -1052,7 +1060,7 @@ class PlatformMessageTelemetryOut(BaseModel):
     created_at: str
 
 
-class NotificationOut(BaseModel):
+class AdminAlertOut(BaseModel):
     id: str
     severity: str
     title: str
@@ -1266,6 +1274,60 @@ class PublicTurnstileConfigOut(BaseModel):
     site_key: str
 
 
+class PlatformStalwartSettingsOut(BaseModel):
+    admin_url: str | None
+    admin_user: str | None
+    mail_domain: str | None
+    admin_password_configured: bool
+    cloudflare_configured: bool
+
+
+class PlatformStalwartSettingsUpdate(BaseModel):
+    admin_url: str | None = None
+    admin_user: str | None = None
+    admin_password: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
+    mail_domain: str | None = None
+    cloudflare_api_token: str | None = None  # blank = keep the existing one
+
+
+class StalwartTestConnectionResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
+class AdminMailboxOut(BaseModel):
+    """A Textzi-hosted CRM mailbox (EmailAccount with provider="stalwart"), viewed cross-org by an
+    admin -- distinct from AdminMessageOut/SMS's masked view: Textzi genuinely operates this mail
+    server (unlike the SMS carrier it merely routes through), so there's no third party's data
+    being exposed by showing it in full."""
+    id: str
+    organization_name: str | None
+    entity_name: str
+    address: str
+    status: str
+    last_synced_at: str | None
+    created_at: str
+
+
+class AdminMailboxStatusUpdateRequest(BaseModel):
+    status: str = Field(pattern="^(connected|suspended)$")
+
+
+class AdminMailboxMessageOut(BaseModel):
+    """One email (real message, not a private note) sent or received through any Textzi-hosted
+    mailbox, viewed cross-org by an admin -- full content, no masking (see AdminMailboxOut's own
+    docstring for why that's the deliberate difference from the SMS log)."""
+    id: str
+    organization_name: str | None
+    entity_name: str
+    mailbox_address: str
+    direction: str
+    contact_address: str | None
+    subject: str | None
+    body: str | None
+    created_at: str
+
+
 class PlatformWabaSettingsOut(BaseModel):
     app_id: str | None
     config_id: str | None
@@ -1357,6 +1419,7 @@ class ContactOut(BaseModel):
     company_id: str | None = None
     consent_given_at: str | None = None
     consent_source: str | None = None
+    crm_contact_id: str | None = None
     created_at: str
 
 
@@ -1364,6 +1427,66 @@ class ContactUpdateRequest(BaseModel):
     name: str | None = None
     custom_attributes: dict | None = None
     opted_out: bool | None = None
+
+
+class CrmContactOut(BaseModel):
+    id: str
+    name: str | None
+    phone: str | None
+    email: str | None
+    title: str | None
+    company_id: str | None
+    owner_user_id: str | None
+    address: str | None
+    reports_to_id: str | None
+    source: str
+    custom_fields: dict
+    consent_given_at: str | None
+    consent_source: str | None
+    created_at: str
+
+
+class CrmContactCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    phone: str | None = Field(default=None, max_length=30)
+    email: EmailStr | None = None
+    title: str | None = Field(default=None, max_length=120)
+    company_id: str | None = None
+    owner_user_id: str | None = None
+    address: str | None = None
+    reports_to_id: str | None = None
+    source: str = Field(default="manual", pattern="^(whatsapp_conversation|manual|web_form|csv_import)$")
+    custom_fields: dict | None = None
+
+
+class CrmContactUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    phone: str | None = None
+    email: EmailStr | None = None
+    title: str | None = None
+    company_id: str | None = None
+    owner_user_id: str | None = None
+    address: str | None = None
+    reports_to_id: str | None = None
+    custom_fields: dict | None = None
+
+
+class CustomFieldDefinitionOut(BaseModel):
+    id: str
+    applies_to: str
+    name: str
+    field_type: str
+    options: list[str]
+    required: bool
+    position: int
+
+
+class CustomFieldDefinitionCreateRequest(BaseModel):
+    applies_to: str = Field(pattern="^(lead|deal|crm_contact|customer|ticket)$")
+    name: str = Field(min_length=1, max_length=60)
+    field_type: str = Field(default="text", pattern="^(text|number|date|dropdown)$")
+    options: list[str] = Field(default_factory=list)
+    required: bool = False
 
 
 class ConversationMessageOut(BaseModel):
@@ -1396,12 +1519,68 @@ class ConversationOut(BaseModel):
     labels: list[LabelOut] = []
     first_response_due_at: str | None = None
     sla_breached: bool = False
+    resolution_due_at: str | None = None
+    resolution_breached: bool = False
+    priority: str = "medium"
+    category: str = "question"
+    group_id: str | None = None
+    ticket_custom_fields: dict = {}
+    subject: str | None = None
+    cc_emails: list[str] = []
+
+
+class ConversationSubjectUpdateRequest(BaseModel):
+    subject: str | None = Field(default=None, max_length=300)
+
+
+class ConversationCcUpdateRequest(BaseModel):
+    cc_emails: list[EmailStr] = Field(default_factory=list, max_length=10)
+
+
+class TicketGroupOut(BaseModel):
+    id: str
+    name: str
+    member_user_ids: list[str]
+
+
+class TicketGroupCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    member_user_ids: list[str] = Field(default_factory=list)
+
+
+class TicketPriorityUpdateRequest(BaseModel):
+    priority: str = Field(pattern="^(low|medium|high|urgent)$")
+
+
+class TicketCategoryUpdateRequest(BaseModel):
+    category: str = Field(pattern="^(question|incident|problem|task)$")
+
+
+class TicketGroupAssignRequest(BaseModel):
+    group_id: str | None = None
+
+
+class TicketCustomFieldsUpdateRequest(BaseModel):
+    ticket_custom_fields: dict
 
 
 class ConversationCountsOut(BaseModel):
     unassigned: int
     assigned_to_me: int
     all: int
+
+
+class TicketCountsOut(BaseModel):
+    """Every status's count at once, regardless of which one the ticket list currently has
+    selected -- unlike ConversationCountsOut (which deliberately mirrors whatever status filter
+    is active, for the plain WhatsApp inbox), a ticket list needs every count visible up front so
+    a status with zero tickets in view never reads as "nothing exists at all"."""
+    unassigned: int
+    assigned_to_me: int
+    all: int
+    open: int
+    pending: int
+    resolved: int
 
 
 class ConversationDetailOut(ConversationOut):
@@ -1736,6 +1915,11 @@ class PlatformTestSmsResponse(BaseModel):
 class TeamInviteRequest(BaseModel):
     email: EmailStr
     role: UserRole = UserRole.sub_user
+    channel_scope: str | None = Field(default=None, pattern="^(sms|waba|crm)$")
+    # Only meaningful alongside a single channel_scope -- null means every page in that channel
+    # (today's behavior). Frontend-enforced only; see permissions.require_channel_scope for the
+    # actual security boundary.
+    page_scope: list[str] | None = None
 
 
 class TeamInviteResponse(BaseModel):
@@ -1751,6 +1935,8 @@ class TeamMemberOut(BaseModel):
     role: str
     status: str
     manager_id: str | None = None
+    channel_scope: str | None = None
+    page_scope: list[str] | None = None
 
 
 class AcceptInviteRequest(BaseModel):
@@ -1875,11 +2061,61 @@ class OrganizationOverviewResponse(BaseModel):
 
 class LeadOut(BaseModel):
     id: str
-    contact: ContactOut
+    contact: CrmContactOut
+    company_name: str | None
+    source: str
+    status: str
+    owner_user_id: str | None
+    notes: str | None
+    custom_fields: dict
+    score: int
+    converted_at: str | None
+    converted_deal_id: str | None
+    created_at: str
+
+
+class LeadCreateRequest(BaseModel):
+    # Either contact_id (attach to an existing CrmContact) or name (find-or-create a new one by
+    # phone/email) must be given -- enforced in the endpoint itself since Pydantic can't easily
+    # express "one of these two" as a field default.
+    contact_id: str | None = None
+    name: str | None = Field(default=None, max_length=160)
+    phone: str | None = Field(default=None, max_length=30)
+    email: EmailStr | None = None
+    title: str | None = Field(default=None, max_length=120)
+    company_name: str | None = Field(default=None, max_length=160)
+    source: str = Field(default="manual", pattern="^(whatsapp_conversation|manual|web_form|csv_import)$")
+    owner_user_id: str | None = None
+    notes: str | None = None
+    custom_fields: dict | None = None
+
+
+class LeadUpdateRequest(BaseModel):
+    company_name: str | None = None
+    status: str | None = Field(default=None, pattern="^(new|contacted|qualified|unqualified)$")
+    owner_user_id: str | None = None
+    notes: str | None = None
+    custom_fields: dict | None = None
+
+
+class LeadConvertRequest(BaseModel):
+    deal_name: str | None = Field(default=None, max_length=160)
+    pipeline_id: str | None = None
+    stage: str = Field(default="inquiry", min_length=1, max_length=40)
+    value: float | None = Field(default=None, ge=0)
+    probability: int | None = Field(default=None, ge=0, le=100)
+    expected_close_date: str | None = None
+
+
+class DealOut(BaseModel):
+    id: str
+    name: str | None
+    contact: CrmContactOut
     pipeline_id: str | None
     stage: str
     source: str
     converted_from_conversation_id: str | None
+    converted_from_lead_id: str | None
     owner_user_id: str | None
     notes: str | None
     value: float | None
@@ -1887,38 +2123,86 @@ class LeadOut(BaseModel):
     expected_close_date: str | None
     status: str
     lost_reason: str | None
+    next_step: str | None
+    next_step_due_at: str | None
     custom_fields: dict
-    score: int
+    stage_approvals: dict
     created_at: str
 
 
-class LeadDealUpdateRequest(BaseModel):
+class DealUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=160)
     value: float | None = Field(default=None, ge=0)
     probability: int | None = Field(default=None, ge=0, le=100)
     expected_close_date: str | None = None
+    next_step: str | None = Field(default=None, max_length=300)
+    next_step_due_at: str | None = None
     custom_fields: dict | None = None
 
 
-class LeadStatusUpdateRequest(BaseModel):
+class DealStageEventOut(BaseModel):
+    stage: str
+    entered_at: str
+    exited_at: str | None
+    minutes: int | None
+    changed_by_user_id: str | None
+    changed_by_name: str | None
+
+
+class DealStageHistoryOut(BaseModel):
+    events: list[DealStageEventOut]
+
+
+class DealStatusUpdateRequest(BaseModel):
     status: str = Field(pattern="^(open|won|lost)$")
     lost_reason: str | None = Field(default=None, max_length=200)
+
+
+class PipelineStageIn(BaseModel):
+    name: str = Field(min_length=1, max_length=40)
+    probability: int = Field(ge=0, le=100)
+    forecast_category: str = Field(default="pipeline", pattern="^(pipeline|commit|omitted)$")
+    # Field names (built-in: value/probability/expected_close_date/owner_user_id, or a custom
+    # field name) that must be filled on the deal before it can move OUT of this stage. Empty
+    # list -- the default -- means no requirement, matching every pipeline that predates this.
+    required_fields: list[str] = Field(default_factory=list)
+    # User.id list -- every one of them must have approved (Deal.stage_approvals[this stage]) via
+    # POST /deals/{id}/stage-approvals/{stage}/approve before the deal can leave this stage. Empty
+    # list -- the default -- means no approval requirement.
+    required_approval_user_ids: list[str] = Field(default_factory=list)
+
+
+class PipelineStageOut(PipelineStageIn):
+    pass
 
 
 class PipelineOut(BaseModel):
     id: str
     name: str
-    stages: list[str]
+    stages: list[PipelineStageOut]
 
 
 class PipelineCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
-    stages: list[str] = Field(min_length=1, max_length=15)
+    stages: list[PipelineStageIn] = Field(min_length=1, max_length=15)
 
 
 class CrmFunnelStage(BaseModel):
     stage: str
     count: int
     value: float
+
+
+class LeadFunnelMonth(BaseModel):
+    month: str
+    count: int
+
+
+class LeadFunnelOut(BaseModel):
+    created_count: int
+    converted_count: int
+    conversion_rate: float | None
+    monthly_created: list[LeadFunnelMonth]
 
 
 class CrmReportsOut(BaseModel):
@@ -1931,6 +2215,7 @@ class CrmReportsOut(BaseModel):
     won_count: int
     lost_count: int
     win_rate: float | None
+    lead_funnel: LeadFunnelOut
 
 
 class EmployeeSalesRow(BaseModel):
@@ -1961,34 +2246,104 @@ class CrmExtendedReportsOut(BaseModel):
     follow_up: FollowUpPerformanceOut
 
 
+class ReportRunRequest(BaseModel):
+    object_type: str = Field(pattern="^(deal|lead|task)$")
+    group_by: str = Field(min_length=1, max_length=40)
+    measure: str = Field(min_length=1, max_length=40)
+    filters: dict[str, str] = Field(default_factory=dict)
+
+
+class ReportRow(BaseModel):
+    label: str
+    value: float
+
+
+class ReportRunResult(BaseModel):
+    rows: list[ReportRow]
+
+
+class ReportDrillDownRequest(BaseModel):
+    object_type: str = Field(pattern="^(deal|lead|task)$")
+    group_by: str = Field(min_length=1, max_length=40)
+    group_value: str = Field(min_length=1, max_length=200)
+    filters: dict[str, str] = Field(default_factory=dict)
+
+
+class ReportDrillDownRow(BaseModel):
+    id: str
+    label: str
+    sublabel: str | None
+
+
+class ReportDrillDownResult(BaseModel):
+    rows: list[ReportDrillDownRow]
+
+
+class SavedReportOut(BaseModel):
+    id: str
+    name: str
+    object_type: str
+    group_by: str
+    measure: str
+    chart_type: str
+    filters: dict[str, str]
+    schedule: str | None
+    created_at: str
+
+
+class SavedReportCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    object_type: str = Field(pattern="^(deal|lead|task)$")
+    group_by: str = Field(min_length=1, max_length=40)
+    measure: str = Field(min_length=1, max_length=40)
+    chart_type: str = Field(default="bar", pattern="^(bar|donut|table)$")
+    filters: dict[str, str] = Field(default_factory=dict)
+    schedule: str | None = Field(default=None, pattern="^(weekly|monthly)$")
+
+
+class SavedReportUpdateRequest(BaseModel):
+    schedule: str | None = Field(default=None, pattern="^(weekly|monthly)$")
+
+
 class TaskOut(BaseModel):
     id: str
     contact_id: str
+    deal_id: str | None
     title: str
     type: str
     due_at: str | None
+    duration_minutes: int | None
     done: bool
     assigned_user_id: str | None
     recurrence: str
+    priority: str
+    outcome: str | None
     created_at: str
 
 
 class TaskCreateRequest(BaseModel):
     contact_id: str
+    deal_id: str | None = None
     title: str = Field(min_length=1, max_length=200)
     type: str = Field(default="follow_up", pattern="^(call|meeting|follow_up|other)$")
     due_at: str | None = None
+    duration_minutes: int | None = Field(default=None, ge=5, le=1440)
     assigned_user_id: str | None = None
     recurrence: str = Field(default="none", pattern="^(none|daily|weekly|monthly)$")
+    priority: str = Field(default="normal", pattern="^(low|normal|high)$")
 
 
 class TaskUpdateRequest(BaseModel):
+    deal_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     type: str | None = Field(default=None, pattern="^(call|meeting|follow_up|other)$")
     due_at: str | None = None
+    duration_minutes: int | None = Field(default=None, ge=5, le=1440)
     done: bool | None = None
     assigned_user_id: str | None = None
     recurrence: str | None = Field(default=None, pattern="^(none|daily|weekly|monthly)$")
+    priority: str | None = Field(default=None, pattern="^(low|normal|high)$")
+    outcome: str | None = None
 
 
 class QuoteLineItem(BaseModel):
@@ -1996,11 +2351,63 @@ class QuoteLineItem(BaseModel):
     hsn_code: str = Field(default="", max_length=20)
     quantity: float = Field(gt=0)
     unit_price: float = Field(ge=0)
+    # Optional -- which Product this line was populated from, if any (kept for reference only;
+    # description/hsn_code/unit_price above are this line's own snapshot and never re-read from
+    # the product later, same reasoning as Product's own model docstring).
+    product_id: str | None = None
+
+
+class ProductOut(BaseModel):
+    id: str
+    name: str
+    sku: str | None
+    hsn_code: str
+    unit_price: float
+    description: str | None
+    active: bool
+
+
+class ProductCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    sku: str | None = Field(default=None, max_length=60)
+    hsn_code: str = Field(default="", max_length=20)
+    unit_price: float = Field(ge=0)
+    description: str | None = None
+    active: bool = True
+
+
+class ProductUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    sku: str | None = Field(default=None, max_length=60)
+    hsn_code: str | None = Field(default=None, max_length=20)
+    unit_price: float | None = Field(default=None, ge=0)
+    description: str | None = None
+    active: bool | None = None
+
+
+class DocumentTemplateOut(BaseModel):
+    id: str
+    name: str
+    applies_to: str
+    body: str
+    created_at: str
+
+
+class DocumentTemplateCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    applies_to: str = Field(default="proposal", pattern="^(proposal|contract|other)$")
+    body: str = Field(min_length=1)
+
+
+class DocumentTemplateUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    applies_to: str | None = Field(default=None, pattern="^(proposal|contract|other)$")
+    body: str | None = Field(default=None, min_length=1)
 
 
 class QuoteOut(BaseModel):
     id: str
-    lead_id: str
+    deal_id: str
     quote_number: str | None
     line_items: list[QuoteLineItem]
     status: str
@@ -2011,13 +2418,19 @@ class QuoteOut(BaseModel):
     total: float
     has_pdf: bool
     approval_status: str
+    approvals: list[dict]
+    approvers_required: list[str]
     converted_invoice_id: str | None
     created_at: str
     sent_at: str | None
 
 
 class QuoteCreateRequest(BaseModel):
-    lead_id: str
+    deal_id: str
+    line_items: list[QuoteLineItem] = Field(min_length=1)
+
+
+class QuoteLineItemsUpdateRequest(BaseModel):
     line_items: list[QuoteLineItem] = Field(min_length=1)
 
 
@@ -2028,7 +2441,17 @@ class CompanyOut(BaseModel):
     industry: str | None
     website: str | None
     notes: str | None
+    owner_user_id: str | None
+    account_type: str | None
+    parent_company_id: str | None
+    phone: str | None
+    address: str | None
+    employee_count: int | None
+    annual_revenue: float | None
     contact_count: int
+    open_deal_value: float
+    won_deal_value: float
+    open_deal_count: int
     created_at: str
 
 
@@ -2038,6 +2461,13 @@ class CompanyCreateRequest(BaseModel):
     industry: str | None = Field(default=None, max_length=80)
     website: str | None = Field(default=None, max_length=255)
     notes: str | None = None
+    owner_user_id: str | None = None
+    account_type: str | None = Field(default=None, pattern="^(customer|partner|prospect|vendor)$")
+    parent_company_id: str | None = None
+    phone: str | None = Field(default=None, max_length=30)
+    address: str | None = None
+    employee_count: int | None = Field(default=None, ge=0)
+    annual_revenue: float | None = Field(default=None, ge=0)
 
 
 class ScoringRuleOut(BaseModel):
@@ -2057,17 +2487,34 @@ class ScoringRuleCreateRequest(BaseModel):
     active: bool = True
 
 
+class ScoringRuleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    condition_type: str | None = Field(default=None, pattern="^(has_label|custom_field_set|source)$")
+    condition_value: str | None = Field(default=None, min_length=1, max_length=200)
+    points: int | None = Field(default=None, ge=-100, le=100)
+    active: bool | None = None
+
+
 class TerritoryOut(BaseModel):
     id: str
     name: str
     pincodes: list[str]
     owner_user_id: str | None
+    parent_territory_id: str | None
 
 
 class TerritoryCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     pincodes: list[str] = Field(min_length=1)
     owner_user_id: str | None = None
+    parent_territory_id: str | None = None
+
+
+class TerritoryUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    pincodes: list[str] | None = Field(default=None, min_length=1)
+    owner_user_id: str | None = None
+    parent_territory_id: str | None = None
 
 
 class SalesTargetOut(BaseModel):
@@ -2084,6 +2531,12 @@ class SalesTargetCreateRequest(BaseModel):
     period_start: str
     period_end: str
     target_value: float = Field(gt=0)
+
+
+class SalesTargetUpdateRequest(BaseModel):
+    period_start: str | None = None
+    period_end: str | None = None
+    target_value: float | None = Field(default=None, gt=0)
 
 
 class AttachmentOut(BaseModel):
@@ -2112,6 +2565,61 @@ class WebFormUpdateRequest(BaseModel):
 class WebFormSubmitRequest(BaseModel):
     values: dict[str, str]
     turnstile_token: str | None = None
+
+
+class EmailAccountOut(BaseModel):
+    connected: bool
+    provider: str = "byo"  # "byo"|"stalwart"
+    stalwart_username: str | None = None
+    from_name: str | None = None
+    from_email: str | None = None
+    smtp_host: str | None = None
+    smtp_port: int | None = None
+    smtp_username: str | None = None
+    smtp_use_tls: bool = True
+    imap_host: str | None = None
+    imap_port: int | None = None
+    imap_username: str | None = None
+    imap_use_ssl: bool = True
+    status: str | None = None
+    last_error: str | None = None
+    last_synced_at: str | None = None
+
+
+class EmailAccountUpdateRequest(BaseModel):
+    from_name: str | None = Field(default=None, max_length=160)
+    from_email: EmailStr
+    smtp_host: str = Field(min_length=1, max_length=255)
+    smtp_port: int = Field(default=587, ge=1, le=65535)
+    smtp_username: str = Field(min_length=1, max_length=255)
+    smtp_password: str = Field(min_length=1)
+    smtp_use_tls: bool = True
+    imap_host: str = Field(min_length=1, max_length=255)
+    imap_port: int = Field(default=993, ge=1, le=65535)
+    imap_username: str = Field(min_length=1, max_length=255)
+    imap_password: str = Field(min_length=1)
+    imap_use_ssl: bool = True
+
+
+class EmailAccountTestResult(BaseModel):
+    ok: bool
+    error: str | None = None
+
+
+class MailboxProvisionRequest(BaseModel):
+    username: str = Field(min_length=2, max_length=64, pattern=r"^[a-z0-9.]+$")
+
+
+class EmailSendRequest(BaseModel):
+    # Either contact_id (reply within an existing thread) or to_email (compose to a new/known
+    # address, found-or-created on the spot) must be given.
+    contact_id: str | None = None
+    to_email: EmailStr | None = None
+    to_name: str | None = Field(default=None, max_length=160)
+    subject: str = Field(min_length=1, max_length=500)
+    body: str = Field(min_length=1)
+    cc: list[EmailStr] = Field(default_factory=list, max_length=10)
+    quote_id: str | None = None
 
 
 class WebFormSubmitResponse(BaseModel):
@@ -2146,10 +2654,24 @@ class LeadRoutingRuleCreateRequest(BaseModel):
     priority: int = 0
 
 
+class LeadRoutingRuleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    trigger_type: str | None = Field(default=None, pattern="^(pincode|source|product|territory)$")
+    trigger_value: str | None = Field(default=None, min_length=1, max_length=200)
+    assign_to_user_id: str | None = None
+    active: bool | None = None
+    priority: int | None = None
+
+
 class SequenceStepIn(BaseModel):
     day_offset: int = Field(ge=0, le=365)
-    channel: str = Field(pattern="^(whatsapp_template|sms|task)$")
+    # "sms" deliberately excluded -- Indian SMS legally requires a pre-registered DLT template,
+    # so a free-text sequence step could never actually send; better to reject it here than accept
+    # it and silently no-op at send time.
+    channel: str = Field(pattern="^(whatsapp_template|task)$")
     content: dict
+    # The one per-step branching primitive -- see SequenceStep's own model docstring.
+    only_if_stage: str | None = None
 
 
 class SequenceStepOut(SequenceStepIn):
@@ -2160,6 +2682,7 @@ class SequenceOut(BaseModel):
     id: str
     name: str
     active: bool
+    exit_stage: str | None
     steps: list[SequenceStepOut]
     enrolled_count: int
     created_at: str
@@ -2167,11 +2690,19 @@ class SequenceOut(BaseModel):
 
 class SequenceCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    exit_stage: str | None = None
     steps: list[SequenceStepIn] = Field(min_length=1)
 
 
+class SequenceUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    exit_stage: str | None = Field(default=None)
+    active: bool | None = None
+    steps: list[SequenceStepIn] | None = Field(default=None, min_length=1)
+
+
 class SequenceEnrollRequest(BaseModel):
-    lead_id: str
+    deal_id: str
 
 
 class ConsentUpdateRequest(BaseModel):
@@ -2179,9 +2710,41 @@ class ConsentUpdateRequest(BaseModel):
 
 
 class LeadCreateFromConversationRequest(BaseModel):
-    stage: str = Field(default="inquiry", min_length=1, max_length=40)
+    company_name: str | None = Field(default=None, max_length=160)
+    title: str | None = Field(default=None, max_length=120)
     owner_user_id: str | None = None
     notes: str | None = None
+
+
+class DealCreateFromConversationRequest(BaseModel):
+    deal_name: str | None = Field(default=None, max_length=160)
+    pipeline_id: str | None = None
+    stage: str = Field(default="inquiry", min_length=1, max_length=40)
+    value: float | None = Field(default=None, ge=0)
+    probability: int | None = Field(default=None, ge=0, le=100)
+    owner_user_id: str | None = None
+    notes: str | None = None
+
+
+class DealCreateRequest(BaseModel):
+    # Same "contact_id or name" contract as LeadCreateRequest -- lets an agent open the Deals
+    # page and add a brand-new deal without first having to find or create a contact elsewhere.
+    # name is the CONTACT's name (find-or-create); deal_name is the deal's own, distinct name
+    # (Zoho/SF's Opportunity Name) -- kept as two fields since a deal can be named differently
+    # from its contact (e.g. "Acme Corp -- Annual Renewal").
+    contact_id: str | None = None
+    name: str | None = Field(default=None, max_length=160)
+    deal_name: str | None = Field(default=None, max_length=160)
+    phone: str | None = Field(default=None, max_length=30)
+    email: EmailStr | None = None
+    title: str | None = Field(default=None, max_length=120)
+    pipeline_id: str | None = None
+    stage: str = Field(default="inquiry", min_length=1, max_length=40)
+    value: float | None = Field(default=None, ge=0)
+    probability: int | None = Field(default=None, ge=0, le=100)
+    owner_user_id: str | None = None
+    notes: str | None = None
+    custom_fields: dict | None = None
 
 
 class CustomerCreateFromConversationRequest(BaseModel):
@@ -2189,25 +2752,57 @@ class CustomerCreateFromConversationRequest(BaseModel):
     notes: str | None = None
 
 
-class LeadStageUpdateRequest(BaseModel):
+class CustomerCreateRequest(BaseModel):
+    contact_id: str | None = None
+    name: str | None = Field(default=None, max_length=160)
+    phone: str | None = Field(default=None, max_length=30)
+    email: EmailStr | None = None
+    title: str | None = Field(default=None, max_length=120)
+    owner_user_id: str | None = None
+    notes: str | None = None
+    custom_fields: dict | None = None
+
+
+class DealStageUpdateRequest(BaseModel):
     stage: str = Field(min_length=1, max_length=40)
 
 
-class LeadOwnerUpdateRequest(BaseModel):
+class DealOwnerUpdateRequest(BaseModel):
     owner_user_id: str | None = None
 
 
-class LeadNotesUpdateRequest(BaseModel):
+class DealNotesUpdateRequest(BaseModel):
     notes: str | None = None
 
 
 class CustomerOut(BaseModel):
     id: str
-    contact: ContactOut
-    lead_id: str | None
+    contact: CrmContactOut
+    deal_id: str | None
     converted_from_conversation_id: str | None
     owner_user_id: str | None
     notes: str | None
+    custom_fields: dict
+    created_at: str
+
+
+class CustomerUpdateRequest(BaseModel):
+    owner_user_id: str | None = None
+    notes: str | None = None
+    custom_fields: dict | None = None
+
+
+class CustomerDetailOut(CustomerOut):
+    tasks: list[TaskOut]
+
+
+class NotificationOut(BaseModel):
+    id: str
+    type: str
+    title: str
+    body: str
+    link: str | None
+    read: bool
     created_at: str
 
 
@@ -2239,6 +2834,8 @@ class CrmSettingsOut(BaseModel):
     notify_whatsapp: bool
     logo_url: str | None
     brand_color: str | None
+    quote_approval_threshold: float | None
+    quote_approver_user_ids: list[str]
 
 
 class CrmSettingsUpdateRequest(BaseModel):
@@ -2246,6 +2843,8 @@ class CrmSettingsUpdateRequest(BaseModel):
     notify_sms: bool
     notify_whatsapp: bool
     brand_color: str | None = Field(default=None, max_length=20)
+    quote_approval_threshold: float | None = Field(default=None, ge=0)
+    quote_approver_user_ids: list[str] | None = None
 
 
 class PipelineStagesUpdateRequest(BaseModel):
@@ -2255,10 +2854,137 @@ class PipelineStagesUpdateRequest(BaseModel):
 class ContactTimelineOut(BaseModel):
     contact: ContactOut
     conversation_id: str | None
+    # Set once this WhatsApp contact has been converted into CRM (Contact.crm_contact_id) --
+    # null if it never has been. Attachments and other CRM-contact-scoped actions need this,
+    # since they're addressed by CrmContact id, not this WhatsApp contact's own id.
+    crm_contact_id: str | None
     lead: LeadOut | None
+    deals: list[DealOut]
     customer: CustomerOut | None
     tickets: TicketSummary
     messages: list[ConversationMessageOut]
+
+
+# --- Record detail pages (Addendum 12, Phase 1) -------------------------------------------------
+
+class ActivityMessageOut(BaseModel):
+    id: str
+    channel: str
+    direction: str
+    message_type: str
+    body: str | None
+    created_at: str
+
+
+class LeadDetailOut(BaseModel):
+    lead: LeadOut
+    company: CompanyOut | None
+    tasks: list[TaskOut]
+    waba_contact_id: str | None
+    recent_messages: list[ActivityMessageOut]
+
+
+class DealDetailOut(BaseModel):
+    deal: DealOut
+    company: CompanyOut | None
+    tasks: list[TaskOut]
+    quotes: list[QuoteOut]
+    waba_contact_id: str | None
+    recent_messages: list[ActivityMessageOut]
+
+
+class CrmContactDetailOut(BaseModel):
+    contact: CrmContactOut
+    company: CompanyOut | None
+    leads: list[LeadOut]
+    deals: list[DealOut]
+    customers: list[CustomerOut]
+    tasks: list[TaskOut]
+    attachments: list[AttachmentOut]
+    waba_contact_id: str | None
+    reports_to: CrmContactOut | None = None
+    direct_reports: list[CrmContactOut] = []
+
+
+class CompanySummary(BaseModel):
+    id: str
+    name: str
+
+
+class CompanyDetailOut(BaseModel):
+    company: CompanyOut
+    contacts: list[CrmContactOut]
+    parent_company: CompanySummary | None = None
+    child_companies: list[CompanySummary] = []
+
+
+# --- Global search (Addendum 12, Phase 2) ---------------------------------------------------
+
+class SearchResultRow(BaseModel):
+    id: str
+    label: str
+    sublabel: str | None
+
+
+class SearchResultsOut(BaseModel):
+    leads: list[SearchResultRow]
+    deals: list[SearchResultRow]
+    contacts: list[SearchResultRow]
+    companies: list[SearchResultRow]
+
+
+# --- Bulk actions & saved views (Addendum 12, Phase 3) --------------------------------------
+
+class LeadBulkOwnerRequest(BaseModel):
+    lead_ids: list[str] = Field(min_length=1, max_length=200)
+    owner_user_id: str | None = None
+
+
+class DealBulkOwnerRequest(BaseModel):
+    deal_ids: list[str] = Field(min_length=1, max_length=200)
+    owner_user_id: str | None = None
+
+
+class LeadBulkDeleteRequest(BaseModel):
+    lead_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class DealBulkDeleteRequest(BaseModel):
+    deal_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+class SavedViewOut(BaseModel):
+    id: str
+    applies_to: str
+    name: str
+    filters: dict
+    created_at: str
+
+
+class SavedViewCreateRequest(BaseModel):
+    applies_to: str = Field(pattern="^(lead|deal|crm_contact)$")
+    name: str = Field(min_length=1, max_length=80)
+    filters: dict = {}
+
+
+# --- CSV import (Addendum 13) ----------------------------------------------------------------
+
+class ImportResultOut(BaseModel):
+    created: int
+    skipped: int
+    errors: list[str]
+
+
+# --- Duplicate detection & merge (Addendum 13) ------------------------------------------------
+
+class DuplicateGroupOut(BaseModel):
+    match_on: str  # "phone" | "email"
+    contacts: list[CrmContactOut]
+
+
+class MergeContactsRequest(BaseModel):
+    primary_id: str
+    duplicate_ids: list[str] = Field(min_length=1, max_length=10)
 
 
 # --- Segments & campaigns ----------------------------------------------------------------------
@@ -2325,11 +3051,13 @@ class BusinessHoursUpdateRequest(BaseModel):
 class SlaPolicyOut(BaseModel):
     enabled: bool
     first_response_minutes: int
+    resolution_minutes: int
 
 
 class SlaPolicyUpdateRequest(BaseModel):
     enabled: bool
     first_response_minutes: int = Field(gt=0, le=10080)
+    resolution_minutes: int = Field(gt=0, le=43200)
 
 
 class AgentCapacityUpdateRequest(BaseModel):

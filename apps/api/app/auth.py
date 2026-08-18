@@ -505,6 +505,7 @@ def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
     return UserProfile(
         id=user.id, email=user.email, full_name=user.full_name, mobile=user.mobile, email_verified=user.email_verified, mobile_verified=user.mobile_verified,
         status=user.status, organization_id=user.organization_id, role=user.role, profile_completed=profile_completed,
+        channel_scope=user.channel_scope, page_scope=user.page_scope,
     )
 
 

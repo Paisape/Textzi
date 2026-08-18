@@ -2,6 +2,7 @@
 definePage({
   meta: {
     layout: 'default',
+    channel: 'waba',
   },
 })
 
@@ -9,8 +10,11 @@ const route = useRoute('waba-customers-id')
 const router = useRouter()
 
 type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null, consent_given_at: string | null, consent_source: string | null }
-type Lead = { id: string, stage: string, source: string, owner_user_id: string | null, notes: string | null }
+type Lead = { id: string, company_name: string | null, source: string, status: string, owner_user_id: string | null, notes: string | null, converted_deal_id: string | null }
+type Deal = { id: string, stage: string, source: string, owner_user_id: string | null, notes: string | null, status: string }
 type Customer = { id: string, owner_user_id: string | null, notes: string | null }
+type PipelineStage = { name: string, probability: number, forecast_category: string }
+type Pipeline = { id: string, name: string, stages: PipelineStage[] }
 type Message = {
   id: string
   direction: 'inbound' | 'outbound'
@@ -26,13 +30,15 @@ type Message = {
 type Timeline = {
   contact: Contact
   conversation_id: string | null
+  crm_contact_id: string | null
   lead: Lead | null
+  deals: Deal[]
   customer: Customer | null
   tickets: { open: number, resolved: number }
   messages: Message[]
 }
 type AssignableUser = { id: string, full_name: string, email: string }
-type CustomerRow = { id: string, contact: Contact }
+type CustomerRow = { id: string, contact: { id: string, name: string | null, phone: string | null, email: string | null } }
 type Task = { id: string, title: string, type: string, due_at: string | null, done: boolean, assigned_user_id: string | null, recurrence: string }
 type Attachment = { id: string, contact_id: string, filename: string, uploaded_by_user_id: string | null, created_at: string }
 
@@ -43,23 +49,30 @@ const users = ref<AssignableUser[]>([])
 const existingCustomers = ref<CustomerRow[]>([])
 const tasks = ref<Task[]>([])
 const attachments = ref<Attachment[]>([])
+const pipelines = ref<Pipeline[]>([])
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [tl, userResult, settingsResult, taskResult, attachmentResult] = await Promise.all([
+    const [tl, userResult, pipelineResult] = await Promise.all([
       $api<Timeline>(`/v1/waba/contacts/${route.params.id}/timeline`),
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
-      $api<{ pipeline_stages: string[] }>('/v1/crm/settings'),
-      $api<Task[]>('/v1/crm/tasks', { params: { contact_id: route.params.id } }),
-      $api<Attachment[]>(`/v1/crm/contacts/${route.params.id}/attachments`),
+      $api<Pipeline[]>('/v1/crm/pipelines'),
     ])
     timeline.value = tl
     users.value = userResult
-    LEAD_STAGES.value = settingsResult.pipeline_stages
-    tasks.value = taskResult
-    attachments.value = attachmentResult
+    pipelines.value = pipelineResult
+    // Tasks/attachments are keyed by the linked CrmContact, not this WhatsApp contact -- only
+    // fetchable once this contact has actually been converted into CRM at least once.
+    if (tl.crm_contact_id) {
+      const [taskResult, attachmentResult] = await Promise.all([
+        $api<Task[]>('/v1/crm/tasks', { params: { contact_id: tl.crm_contact_id } }),
+        $api<Attachment[]>(`/v1/crm/contacts/${tl.crm_contact_id}/attachments`),
+      ])
+      tasks.value = taskResult
+      attachments.value = attachmentResult
+    }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load this customer.')
@@ -74,14 +87,14 @@ const attachmentError = ref('')
 
 async function uploadFile(event: Event) {
   const file = (event.target as HTMLInputElement).files?.[0]
-  if (!file)
+  if (!file || !timeline.value?.crm_contact_id)
     return
   uploading.value = true
   attachmentError.value = ''
   try {
     const formData = new FormData()
     formData.append('file', file)
-    const created = await $api<Attachment>(`/v1/crm/contacts/${route.params.id}/attachments`, { method: 'POST', body: formData })
+    const created = await $api<Attachment>(`/v1/crm/contacts/${timeline.value.crm_contact_id}/attachments`, { method: 'POST', body: formData })
     attachments.value.unshift(created)
   }
   catch (error: any) {
@@ -193,13 +206,13 @@ const newTaskTitle = ref('')
 const addingTask = ref(false)
 
 async function addTask() {
-  if (!newTaskTitle.value.trim())
+  if (!newTaskTitle.value.trim() || !timeline.value?.crm_contact_id)
     return
   addingTask.value = true
   try {
     const created = await $api<Task>('/v1/crm/tasks', {
       method: 'POST',
-      body: { contact_id: route.params.id, title: newTaskTitle.value.trim() },
+      body: { contact_id: timeline.value.crm_contact_id, title: newTaskTitle.value.trim() },
     })
     tasks.value.unshift(created)
     newTaskTitle.value = ''
@@ -243,20 +256,28 @@ function handleActionError(error: any, fallback: string) {
     actionError.value = extractErrorMessage(error, fallback)
 }
 
-// --- Create lead / create customer ---
+// --- Create lead / create deal / create customer ---
 
-const crmForm = ref<{ mode: 'lead' | 'customer', stage: string, owner_user_id: string | null, notes: string } | null>(null)
+const crmForm = ref<{ mode: 'lead' | 'deal' | 'customer', company_name: string, pipeline_id: string | null, stage: string, value: number | null, probability: number | null, owner_user_id: string | null, notes: string } | null>(null)
 const crmFormSubmitting = ref(false)
 const crmFormError = ref('')
-const LEAD_STAGES = ref<string[]>(['inquiry'])
 
 function openLeadForm() {
-  crmForm.value = { mode: 'lead', stage: LEAD_STAGES.value[0], owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'lead', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
+  crmFormError.value = ''
+}
+
+function openDealForm() {
+  const defaultPipeline = pipelines.value[0] || null
+  crmForm.value = {
+    mode: 'deal', company_name: '', pipeline_id: defaultPipeline?.id || null, stage: defaultPipeline?.stages[0]?.name || 'inquiry',
+    value: null, probability: defaultPipeline?.stages[0]?.probability ?? null, owner_user_id: null, notes: '',
+  }
   crmFormError.value = ''
 }
 
 function openCustomerForm() {
-  crmForm.value = { mode: 'customer', stage: '', owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'customer', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
   crmFormError.value = ''
 }
 
@@ -269,7 +290,16 @@ async function submitCrmForm() {
     if (crmForm.value.mode === 'lead') {
       await $api(`/v1/crm/contacts/${route.params.id}/convert-to-lead`, {
         method: 'POST',
-        body: { stage: crmForm.value.stage, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+        body: { company_name: crmForm.value.company_name || null, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+      })
+    }
+    else if (crmForm.value.mode === 'deal') {
+      await $api(`/v1/crm/contacts/${route.params.id}/convert-to-deal`, {
+        method: 'POST',
+        body: {
+          pipeline_id: crmForm.value.pipeline_id, stage: crmForm.value.stage, value: crmForm.value.value,
+          probability: crmForm.value.probability, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null,
+        },
       })
     }
     else {
@@ -374,8 +404,11 @@ onMounted(load)
         </p>
       </div>
       <div class="d-flex ga-2">
-        <VChip v-if="timeline.lead" size="small" color="info">
-          Lead: {{ timeline.lead.stage }}
+        <VChip v-if="timeline.lead && timeline.lead.status !== 'converted'" size="small" color="info">
+          Lead: {{ timeline.lead.status }}
+        </VChip>
+        <VChip v-for="deal in timeline.deals.filter(d => d.status === 'open')" :key="deal.id" size="small" color="warning">
+          Deal: {{ deal.stage }}
         </VChip>
         <VChip v-if="timeline.customer" size="small" color="primary">
           Customer
@@ -397,8 +430,11 @@ onMounted(load)
       <VBtn prepend-icon="tabler-messages" :disabled="!timeline.conversation_id" @click="openChat">
         Open chat
       </VBtn>
-      <VBtn v-if="!timeline.lead" variant="tonal" prepend-icon="tabler-target-arrow" @click="openLeadForm">
+      <VBtn v-if="!timeline.lead || timeline.lead.status === 'converted'" variant="tonal" prepend-icon="tabler-target-arrow" @click="openLeadForm">
         Create lead
+      </VBtn>
+      <VBtn variant="tonal" prepend-icon="tabler-briefcase" @click="openDealForm">
+        Create deal
       </VBtn>
       <VBtn v-if="!timeline.customer" variant="tonal" prepend-icon="tabler-user-check" @click="openCustomerForm">
         Create customer
@@ -420,12 +456,26 @@ onMounted(load)
     <VCard v-if="crmForm" max-width="480" class="mb-6">
       <VCardText>
         <h3 class="text-subtitle-1 mb-3">
-          {{ crmForm.mode === 'lead' ? 'Create lead' : 'Create customer' }}
+          {{ crmForm.mode === 'lead' ? 'Create lead' : crmForm.mode === 'deal' ? 'Create deal' : 'Create customer' }}
         </h3>
         <VAlert v-if="crmFormError" type="error" variant="tonal" density="compact" class="mb-3">
           {{ crmFormError }}
         </VAlert>
-        <VSelect v-if="crmForm.mode === 'lead'" v-model="crmForm.stage" :items="LEAD_STAGES" label="Stage" density="compact" class="mb-3" />
+        <VTextField v-if="crmForm.mode === 'lead'" v-model="crmForm.company_name" label="Company (optional)" density="compact" class="mb-3" />
+        <template v-if="crmForm.mode === 'deal'">
+          <VSelect
+            v-model="crmForm.pipeline_id"
+            :items="pipelines.map(p => ({ title: p.name, value: p.id }))"
+            label="Pipeline" density="compact" class="mb-3"
+          />
+          <VSelect
+            v-model="crmForm.stage"
+            :items="(pipelines.find(p => p.id === crmForm!.pipeline_id)?.stages || []).map(s => ({ title: formatLabel(s.name), value: s.name }))"
+            label="Stage" density="compact" class="mb-3"
+          />
+          <VTextField v-model.number="crmForm.value" label="Deal value (INR)" type="number" min="0" density="compact" class="mb-3" />
+          <VTextField v-model.number="crmForm.probability" label="Probability (%)" type="number" min="0" max="100" density="compact" class="mb-3" />
+        </template>
         <VSelect
           v-model="crmForm.owner_user_id"
           :items="[{ title: 'Unassigned', value: null }, ...users.map(u => ({ title: u.full_name, value: u.id }))]"
@@ -450,31 +500,36 @@ onMounted(load)
     </h2>
     <VCard class="mb-6">
       <VCardText>
-        <div class="d-flex ga-2 mb-3">
-          <VTextField
-            v-model="newTaskTitle" placeholder="Add a follow-up…" density="compact" hide-details
-            @keydown.enter="addTask"
-          />
-          <VBtn :loading="addingTask" :disabled="!newTaskTitle.trim()" @click="addTask">
-            Add
-          </VBtn>
-        </div>
-        <VList v-if="tasks.length" density="compact">
-          <VListItem v-for="task in tasks" :key="task.id">
-            <template #prepend>
-              <VCheckbox :model-value="task.done" hide-details @update:model-value="toggleTaskDone(task)" />
-            </template>
-            <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
-              {{ task.title }}
-            </VListItemTitle>
-            <VListItemSubtitle v-if="task.due_at">
-              Due {{ new Date(task.due_at).toLocaleString('en-IN') }}
-            </VListItemSubtitle>
-          </VListItem>
-        </VList>
-        <p v-else class="text-medium-emphasis mb-0">
-          No tasks for this contact yet.
+        <p v-if="!timeline?.crm_contact_id" class="text-medium-emphasis mb-0">
+          Convert this contact to a lead, deal, or customer first to add tasks.
         </p>
+        <template v-else>
+          <div class="d-flex ga-2 mb-3">
+            <VTextField
+              v-model="newTaskTitle" placeholder="Add a follow-up…" density="compact" hide-details
+              @keydown.enter="addTask"
+            />
+            <VBtn :loading="addingTask" :disabled="!newTaskTitle.trim()" @click="addTask">
+              Add
+            </VBtn>
+          </div>
+          <VList v-if="tasks.length" density="compact">
+            <VListItem v-for="task in tasks" :key="task.id">
+              <template #prepend>
+                <VCheckbox :model-value="task.done" hide-details @update:model-value="toggleTaskDone(task)" />
+              </template>
+              <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
+                {{ task.title }}
+              </VListItemTitle>
+              <VListItemSubtitle v-if="task.due_at">
+                Due {{ new Date(task.due_at).toLocaleString('en-IN') }}
+              </VListItemSubtitle>
+            </VListItem>
+          </VList>
+          <p v-else class="text-medium-emphasis mb-0">
+            No tasks for this contact yet.
+          </p>
+        </template>
       </VCardText>
     </VCard>
 
@@ -483,6 +538,10 @@ onMounted(load)
     </h2>
     <VCard class="mb-6">
       <VCardText>
+        <p v-if="!timeline?.crm_contact_id" class="text-medium-emphasis mb-0">
+          Convert this contact to a lead, deal, or customer first to add attachments.
+        </p>
+        <template v-else>
         <VAlert v-if="attachmentError" type="error" variant="tonal" density="compact" class="mb-3">
           {{ attachmentError }}
         </VAlert>
@@ -503,6 +562,7 @@ onMounted(load)
         <p v-else class="text-medium-emphasis mb-0">
           No files attached to this contact yet.
         </p>
+        </template>
       </VCardText>
     </VCard>
 
@@ -569,16 +629,19 @@ onMounted(load)
     </VCard>
   </template>
 
-  <VDialog v-model="mapDialog" max-width="420">
+  <VDialog v-model="mapDialog" max-width="420" persistent>
     <VCard>
-      <VCardTitle>Map to existing customer</VCardTitle>
+      <VCardTitle class="d-flex align-center justify-space-between">
+        <span>Map to existing customer</span>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="mapDialog = false" />
+      </VCardTitle>
       <VCardText>
         <VAlert v-if="mapError" type="error" variant="tonal" density="compact" class="mb-3">
           {{ mapError }}
         </VAlert>
         <VSelect
           v-model="mapCustomerId"
-          :items="existingCustomers.map(c => ({ title: c.contact.name || c.contact.wa_id || c.id, value: c.id }))"
+          :items="existingCustomers.map(c => ({ title: c.contact.name || c.contact.phone || c.id, value: c.id }))"
           label="Existing customer"
         />
       </VCardText>
@@ -611,8 +674,11 @@ onMounted(load)
     </VCard>
   </VDialog>
 
-  <VDialog v-model="consentDialog" max-width="420">
+  <VDialog v-model="consentDialog" max-width="420" persistent>
     <VCard title="Record consent">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="consentDialog = false" />
+      </template>
       <VCardText class="d-flex flex-column gap-4">
         <VAlert v-if="consentError" type="error" variant="tonal" density="compact">
           {{ consentError }}

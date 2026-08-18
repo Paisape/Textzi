@@ -10,5 +10,6 @@ declare module 'vue-router' {
     public?: boolean
     requiresAdmin?: boolean
     staffArea?: 'finance' | 'sales' | 'support'
+    channel?: 'sms' | 'waba' | 'crm'
   }
 }
