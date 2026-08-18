@@ -27,6 +27,8 @@ type EmailThread = {
   last_message_preview: string | null
   last_message_at: string | null
   created_at: string
+  is_ticket: boolean
+  ticket_number: string | null
 }
 type EmailThreadDetail = EmailThread & { messages: EmailMessage[] }
 
@@ -102,6 +104,30 @@ async function selectThread(id: string) {
   }
   finally {
     threadLoading.value = false
+  }
+}
+
+const convertingToTicket = ref(false)
+
+async function convertToTicket() {
+  if (!selected.value)
+    return
+  convertingToTicket.value = true
+  try {
+    const updated = await $api<EmailThread>(`/v1/waba/conversations/${selected.value.id}/convert-to-ticket`, { method: 'POST' })
+    selected.value.is_ticket = updated.is_ticket
+    selected.value.ticket_number = updated.ticket_number
+    const item = threads.value.find(t => t.id === selected.value!.id)
+    if (item) {
+      item.is_ticket = updated.is_ticket
+      item.ticket_number = updated.ticket_number
+    }
+  }
+  catch (error: any) {
+    threadError.value = extractErrorMessage(error, 'Could not convert this email to a ticket.')
+  }
+  finally {
+    convertingToTicket.value = false
   }
 }
 
@@ -318,13 +344,21 @@ onMounted(() => {
       </p>
     </VCard>
     <VCard v-else class="flex-grow-1 d-flex flex-column overflow-hidden">
-      <VCardText class="flex-grow-0">
-        <h2 class="text-h6 mb-1">
-          {{ latestSubject(selected) }}
-        </h2>
-        <p class="text-body-2 text-medium-emphasis mb-0">
-          {{ contactLabel(selected.contact) }} · {{ selected.contact.email }}
-        </p>
+      <VCardText class="flex-grow-0 d-flex align-start justify-space-between ga-2">
+        <div>
+          <h2 class="text-h6 mb-1">
+            {{ latestSubject(selected) }}
+          </h2>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            {{ contactLabel(selected.contact) }} · {{ selected.contact.email }}
+          </p>
+        </div>
+        <VChip v-if="selected.is_ticket" color="primary" variant="tonal" size="small">
+          {{ selected.ticket_number }}
+        </VChip>
+        <VBtn v-else size="small" variant="outlined" prepend-icon="tabler-ticket" :loading="convertingToTicket" @click="convertToTicket">
+          Create ticket
+        </VBtn>
       </VCardText>
       <VDivider />
 
