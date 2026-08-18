@@ -146,8 +146,18 @@ def _get_or_create_default_pipeline(db: Session, entity_id: str) -> Pipeline:
     return pipeline
 
 
+def _pipeline_stages(pipeline: Pipeline) -> list[dict]:
+    # Pipelines created before per-stage probability/forecast_category existed stored `stages` as
+    # a flat list[str] -- normalize those on read instead of a one-off migration script, since a
+    # pipeline this old may still be edited/reordered by stage name alone.
+    stages = pipeline.stages
+    if stages and isinstance(stages[0], str):
+        stages = [{"name": s, "probability": 50, "forecast_category": "pipeline"} for s in stages]
+    return stages
+
+
 def _pipeline_out(pipeline: Pipeline) -> PipelineOut:
-    return PipelineOut(id=pipeline.id, name=pipeline.name, stages=pipeline.stages)
+    return PipelineOut(id=pipeline.id, name=pipeline.name, stages=_pipeline_stages(pipeline))
 
 
 def _resolve_entity(db: Session, user: User):
@@ -1109,7 +1119,7 @@ def _missing_stage_requirements(deal: Deal, pipeline: Pipeline | None) -> list[s
     a process-designer graph, but it's what "can't skip stage 3 without X" needs in practice."""
     if not pipeline:
         return []
-    stage_def = next((s for s in pipeline.stages if s.get("name") == deal.stage), None)
+    stage_def = next((s for s in _pipeline_stages(pipeline) if s.get("name") == deal.stage), None)
     if not stage_def or not stage_def.get("required_fields"):
         return []
     missing = []
@@ -1130,7 +1140,7 @@ def _missing_stage_approvals(deal: Deal, pipeline: Pipeline | None) -> list[str]
     other half of the "Blueprint" gate, alongside _missing_stage_requirements above."""
     if not pipeline:
         return []
-    stage_def = next((s for s in pipeline.stages if s.get("name") == deal.stage), None)
+    stage_def = next((s for s in _pipeline_stages(pipeline) if s.get("name") == deal.stage), None)
     required = (stage_def or {}).get("required_approval_user_ids") or []
     if not required:
         return []
@@ -1176,7 +1186,7 @@ def approve_deal_stage(deal_id: str, user: User = Depends(require_user), db: Ses
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
     pipeline = db.get(Pipeline, deal.pipeline_id) if deal.pipeline_id else None
-    stage_def = next((s for s in pipeline.stages if s.get("name") == deal.stage), None) if pipeline else None
+    stage_def = next((s for s in _pipeline_stages(pipeline) if s.get("name") == deal.stage), None) if pipeline else None
     required = (stage_def or {}).get("required_approval_user_ids") or []
     if user.id not in required:
         raise HTTPException(status_code=403, detail="You're not one of this stage's configured approvers")
@@ -1412,7 +1422,7 @@ def update_deal_pipeline(deal_id: str, pipeline_id: str, stage: str | None = Non
     pipeline = db.get(Pipeline, pipeline_id)
     if not pipeline or pipeline.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Pipeline not found")
-    stage_names = [s["name"] for s in pipeline.stages]
+    stage_names = [s["name"] for s in _pipeline_stages(pipeline)]
     if stage and stage not in stage_names:
         raise HTTPException(status_code=422, detail="Stage not found in the target pipeline")
     _close_open_deal_stage_event(db, deal.id)
