@@ -12,10 +12,18 @@ type Template = {
   language: string
   category: string
   header_text: string | null
+  header_format: string
   body: string | null
   footer_text: string | null
   buttons: TemplateButton[]
 }
+
+const HEADER_FORMATS = [
+  { title: 'Text (or none)', value: 'TEXT' as const },
+  { title: 'Image', value: 'IMAGE' as const },
+  { title: 'Video', value: 'VIDEO' as const },
+  { title: 'Document', value: 'DOCUMENT' as const },
+]
 
 const templates = ref<Template[]>([])
 const loading = ref(false)
@@ -63,11 +71,14 @@ const form = ref({
   category: 'UTILITY',
   language: 'en_US',
   header_text: '',
+  header_format: 'TEXT' as 'TEXT' | 'IMAGE' | 'VIDEO' | 'DOCUMENT',
+  header_file: null as File | null,
   body_text: '',
   example_params: '',
   footer_text: '',
   buttons: [] as TemplateButton[],
 })
+const headerUploading = ref(false)
 
 const placeholderCount = computed(() => {
   const matches = form.value.body_text.match(/\{\{\d+\}\}/g)
@@ -78,7 +89,7 @@ const quickReplyCount = computed(() => form.value.buttons.filter(b => b.type ===
 const ctaButtonCount = computed(() => form.value.buttons.filter(b => b.type !== 'QUICK_REPLY').length)
 
 function openCreateDialog() {
-  form.value = { name: '', category: 'UTILITY', language: 'en_US', header_text: '', body_text: '', example_params: '', footer_text: '', buttons: [] }
+  form.value = { name: '', category: 'UTILITY', language: 'en_US', header_text: '', header_format: 'TEXT', header_file: null, body_text: '', example_params: '', footer_text: '', buttons: [] }
   createError.value = ''
   createDialog.value = true
 }
@@ -96,16 +107,31 @@ function removeButton(index: number) {
 async function createTemplate() {
   if (!form.value.name.trim() || !form.value.body_text.trim())
     return
+  if (form.value.header_format !== 'TEXT' && !form.value.header_file) {
+    createError.value = 'Upload a sample file for this header type.'
+    return
+  }
   creating.value = true
   createError.value = ''
   try {
+    let headerHandle: string | null = null
+    if (form.value.header_format !== 'TEXT' && form.value.header_file) {
+      headerUploading.value = true
+      const uploadForm = new FormData()
+      uploadForm.set('file', form.value.header_file)
+      const uploadResult = await $api<{ header_handle: string }>('/v1/waba/templates/header-media', { method: 'POST', body: uploadForm })
+      headerHandle = uploadResult.header_handle
+      headerUploading.value = false
+    }
     const template = await $api<Template>('/v1/waba/templates', {
       method: 'POST',
       body: {
         name: form.value.name.trim(),
         category: form.value.category,
         language: form.value.language,
-        header_text: form.value.header_text.trim() || null,
+        header_text: form.value.header_format === 'TEXT' ? (form.value.header_text.trim() || null) : null,
+        header_format: form.value.header_format,
+        header_handle: headerHandle,
         body_text: form.value.body_text.trim(),
         example_params: form.value.example_params ? form.value.example_params.split(',').map(p => p.trim()).filter(Boolean) : [],
         footer_text: form.value.footer_text.trim() || null,
@@ -120,6 +146,7 @@ async function createTemplate() {
   }
   finally {
     creating.value = false
+    headerUploading.value = false
   }
 }
 
@@ -231,7 +258,14 @@ onMounted(loadTemplates)
                 <AppTextField v-model="form.language" label="Language code" placeholder="en_US" />
               </VCol>
             </VRow>
-            <AppTextField v-model="form.header_text" label="Header (optional)" placeholder="Order Update" :maxlength="60" class="mb-3" />
+            <VSelect v-model="form.header_format" label="Header type" :items="HEADER_FORMATS" class="mb-3" />
+            <AppTextField v-if="form.header_format === 'TEXT'" v-model="form.header_text" label="Header text (optional)" placeholder="Order Update" :maxlength="60" class="mb-3" />
+            <VFileInput
+              v-else
+              v-model="form.header_file" :label="`Sample ${form.header_format.toLowerCase()} for review`" :loading="headerUploading"
+              :accept="form.header_format === 'IMAGE' ? 'image/*' : form.header_format === 'VIDEO' ? 'video/*' : undefined"
+              class="mb-3"
+            />
             <VTextarea
               v-model="form.body_text"
               label="Body"

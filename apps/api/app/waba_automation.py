@@ -9,18 +9,18 @@ import logging
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .models import AutomationRule, CannedResponse, Contact, Conversation, ConversationLabel
+from .models import AutomationRule, BusinessHours, CannedResponse, Contact, Conversation, ConversationLabel
 from .waba_meta import MetaApiError
 
 logger = logging.getLogger("textzi.waba")
 
 
-def apply_rules(db: Session, entity_id: str, contact: Contact, conversation: Conversation, message_body: str | None, is_new_contact: bool) -> None:
+def apply_rules(db: Session, entity_id: str, contact: Contact, conversation: Conversation, message_body: str | None, is_new_contact: bool, is_outside_hours: bool = False) -> None:
     rules = db.scalars(
         select(AutomationRule).where(AutomationRule.entity_id == entity_id, AutomationRule.active == True).order_by(AutomationRule.priority.asc()),  # noqa: E712
     ).all()
     for rule in rules:
-        if not _trigger_matches(rule, message_body, is_new_contact):
+        if not _trigger_matches(rule, message_body, is_new_contact, is_outside_hours):
             continue
         try:
             _apply_action(db, entity_id, contact, conversation, rule)
@@ -31,13 +31,18 @@ def apply_rules(db: Session, entity_id: str, contact: Contact, conversation: Con
             logger.exception("waba automation: rule %s failed to apply for entity_id=%s", rule.id, entity_id)
 
 
-def _trigger_matches(rule: AutomationRule, message_body: str | None, is_new_contact: bool) -> bool:
+def _trigger_matches(rule: AutomationRule, message_body: str | None, is_new_contact: bool, is_outside_hours: bool) -> bool:
     if rule.trigger_type == "new_contact":
         return is_new_contact
     if rule.trigger_type == "keyword":
         if not rule.trigger_value or not message_body:
             return False
         return rule.trigger_value.strip().lower() in message_body.lower()
+    if rule.trigger_type == "outside_hours":
+        # Complements (doesn't replace) waba_webhooks._maybe_send_business_hours_reply's own
+        # fixed-message auto-reply -- a rule here can additionally assign/label an after-hours
+        # conversation, not just reply, since BusinessHours.outside_hours_message alone can't.
+        return is_outside_hours
     return False
 
 

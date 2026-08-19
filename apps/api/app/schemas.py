@@ -1586,11 +1586,13 @@ class TemplateButtonOut(BaseModel):
 
 
 class WabaTemplateOut(BaseModel):
+    id: str | None = None
     name: str
     status: str
     language: str
     category: str
     header_text: str | None = None
+    header_format: str = "TEXT"
     body: str | None
     footer_text: str | None = None
     buttons: list[TemplateButtonOut] = []
@@ -1627,6 +1629,8 @@ class TemplateCreateRequest(BaseModel):
     category: str = Field(pattern="^(MARKETING|UTILITY|AUTHENTICATION)$")
     language: str = Field(min_length=1, max_length=20)
     header_text: str | None = Field(default=None, max_length=60)
+    header_format: str = Field(default="TEXT", pattern="^(TEXT|IMAGE|VIDEO|DOCUMENT)$")
+    header_handle: str | None = None
     body_text: str = Field(min_length=1, max_length=1024)
     example_params: list[str] = []
     footer_text: str | None = Field(default=None, max_length=60)
@@ -1711,7 +1715,7 @@ class AutomationRuleOut(BaseModel):
 
 class AutomationRuleCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    trigger_type: str = Field(pattern="^(keyword|new_contact)$")
+    trigger_type: str = Field(pattern="^(keyword|new_contact|outside_hours)$")
     trigger_value: str | None = Field(default=None, max_length=200)
     action_type: str = Field(pattern="^(assign|reply|label)$")
     action_value: str = Field(min_length=1, max_length=64)
@@ -3201,3 +3205,15 @@ class WabaReportsOut(BaseModel):
     sla_breached_count: int
     avg_csat: float | None
     csat_response_count: int
+
+
+class TemplateAnalyticsRow(BaseModel):
+    template_name: str
+    sent: int
+    delivered: int
+    read: int
+    clicked: int
+
+
+class TemplateAnalyticsOut(BaseModel):
+    templates: list[TemplateAnalyticsRow]

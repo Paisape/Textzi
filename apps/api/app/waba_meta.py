@@ -223,18 +223,46 @@ def fetch_phone_number_status(phone_number_id: str, access_token: str) -> dict:
     return _get(phone_number_id, {"access_token": access_token, "fields": "quality_rating,throughput"})
 
 
+def upload_template_header_media(app_id: str, access_token: str, content: bytes, mime_type: str) -> str:
+    """The example media handle a media-header template (IMAGE/VIDEO/DOCUMENT) needs -- a
+    genuinely separate flow from upload_media above, which uploads to a phone number for an
+    actual send and returns a media_id, not a handle. This is Meta's Resumable Upload API: start
+    a session under the app (not the WABA/phone number), then POST the raw bytes to the session
+    URI it returns, which hands back the `h` handle create_message_template's HEADER.example
+    needs (`{"header_handle": [handle]}`)."""
+    session = _get(f"{app_id}/uploads", {"access_token": access_token, "file_length": len(content), "file_type": mime_type})
+    session_id = session.get("id")
+    if not session_id:
+        raise MetaApiError("Meta did not return an upload session id", response_body=session)
+    try:
+        response = requests.post(
+            f"{GRAPH_API_BASE}/{session_id}",
+            headers={"Authorization": f"OAuth {access_token}", "file_offset": "0"},
+            data=content, timeout=60,
+        )
+    except requests.exceptions.RequestException as exc:
+        raise MetaApiError(f"Could not reach Meta's Graph API: {exc}") from exc
+    body = _parse(response)
+    handle = body.get("h")
+    if not handle:
+        raise MetaApiError("Meta did not return a media handle for this upload", response_body=body)
+    return handle
+
+
 def create_message_template(
     waba_id: str, access_token: str, name: str, category: str, language: str, body_text: str,
-    example_params: list[str] | None = None, header_text: str | None = None, footer_text: str | None = None,
-    buttons: list[dict] | None = None,
+    example_params: list[str] | None = None, header_text: str | None = None, header_format: str = "TEXT",
+    header_handle: str | None = None, footer_text: str | None = None, buttons: list[dict] | None = None,
 ) -> dict:
     """Submits a new template for Meta's review -- it comes back PENDING, not immediately usable;
     the existing list_message_templates() call is how a caller later sees it move to APPROVED (or
-    REJECTED). Supports a TEXT header, footer, and buttons (quick-reply/URL/phone-number) per
-    Meta's real component model -- media headers (IMAGE/VIDEO/DOCUMENT) need a separate
-    resumable-upload flow for the example media handle, not added here."""
+    REJECTED). header_format "TEXT" uses header_text as before; "IMAGE"/"VIDEO"/"DOCUMENT" needs
+    header_handle (from upload_template_header_media above) as the example media Meta's reviewers
+    see -- no text field on a media header component."""
     components: list[dict] = []
-    if header_text:
+    if header_format != "TEXT" and header_handle:
+        components.append({"type": "HEADER", "format": header_format, "example": {"header_handle": [header_handle]}})
+    elif header_text:
         components.append({"type": "HEADER", "format": "TEXT", "text": header_text})
     body_component: dict = {"type": "BODY", "text": body_text}
     if example_params:
@@ -322,7 +350,23 @@ def list_message_templates(waba_id: str, access_token: str) -> list[dict]:
     regardless of review status, so callers filter on `status` themselves (kept here rather than
     filtered in this function so the admin-facing template list can still show pending/rejected
     ones for visibility)."""
-    body = _get(f"{waba_id}/message_templates", {"access_token": access_token, "fields": "name,status,language,category,components", "limit": 100})
+    body = _get(f"{waba_id}/message_templates", {"access_token": access_token, "fields": "id,name,status,language,category,components", "limit": 100})
+    return body.get("data", [])
+
+
+def get_template_analytics(waba_id: str, access_token: str, template_ids: list[str], start: int, end: int) -> list[dict]:
+    """Meta's real per-template performance endpoint (distinct from list_message_templates above,
+    which only returns definitions/status) -- sent/delivered/read/clicked counts per template,
+    daily granularity, over [start, end) unix-second timestamps. Returns Meta's raw
+    `data_points` list per template (each carries its own template_id), left unshaped here since
+    waba_reports.py is the one that knows how to aggregate this for display."""
+    body = _get(
+        f"{waba_id}/template_analytics",
+        {
+            "access_token": access_token, "start": start, "end": end, "granularity": "DAILY",
+            "template_ids": ",".join(template_ids), "metric_types": "SENT,DELIVERED,READ,CLICKED",
+        },
+    )
     return body.get("data", [])
 
 

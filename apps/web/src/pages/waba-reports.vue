@@ -21,8 +21,11 @@ type Reports = {
   csat_response_count: number
 }
 
+type TemplateRow = { template_name: string, sent: number, delivered: number, read: number, clicked: number }
+
 const days = ref(30)
 const reports = ref<Reports | null>(null)
+const templateRows = ref<TemplateRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
 
@@ -30,7 +33,12 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    reports.value = await $api<Reports>('/v1/waba/reports', { params: { days: days.value } })
+    const [reportsResult, templateResult] = await Promise.all([
+      $api<Reports>('/v1/waba/reports', { params: { days: days.value } }),
+      $api<{ templates: TemplateRow[] }>('/v1/waba/reports/template-analytics', { params: { days: days.value } }),
+    ])
+    reports.value = reportsResult
+    templateRows.value = templateResult.templates
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load reports.')
@@ -38,6 +46,14 @@ async function load() {
   finally {
     loading.value = false
   }
+}
+
+function deliveryRate(row: TemplateRow) {
+  return row.sent ? `${Math.round((row.delivered / row.sent) * 100)}%` : '—'
+}
+
+function readRate(row: TemplateRow) {
+  return row.delivered ? `${Math.round((row.read / row.delivered) * 100)}%` : '—'
 }
 
 const maxVolume = computed(() => {
@@ -237,6 +253,45 @@ onMounted(load)
             </VTable>
             <p v-if="!reports.labels.length" class="text-medium-emphasis text-center pa-4 mb-0">
               No labelled conversations.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+
+    <VRow class="mt-2">
+      <VCol cols="12">
+        <VCard>
+          <VCardText>
+            <h2 class="text-h6 mb-3">
+              Template performance
+            </h2>
+            <VTable density="compact">
+              <thead>
+                <tr>
+                  <th>Template</th>
+                  <th>Sent</th>
+                  <th>Delivered</th>
+                  <th>Delivery rate</th>
+                  <th>Read</th>
+                  <th>Read rate</th>
+                  <th>Clicked</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in templateRows" :key="row.template_name">
+                  <td>{{ row.template_name }}</td>
+                  <td>{{ row.sent }}</td>
+                  <td>{{ row.delivered }}</td>
+                  <td>{{ deliveryRate(row) }}</td>
+                  <td>{{ row.read }}</td>
+                  <td>{{ readRate(row) }}</td>
+                  <td>{{ row.clicked }}</td>
+                </tr>
+              </tbody>
+            </VTable>
+            <p v-if="!templateRows.length" class="text-medium-emphasis text-center pa-4 mb-0">
+              No template sends in this range.
             </p>
           </VCardText>
         </VCard>

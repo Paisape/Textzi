@@ -1408,13 +1408,14 @@ class AutomationRule(Base):
     that's the WhatsApp-Flow-style bot builder the plan scoped separately as its own product
     surface (Phase B), not this. trigger_value/action_value are plain strings whose meaning
     depends on the type (trigger_value is the keyword to match for "keyword", unused for
-    "new_contact"; action_value is a user_id/canned_response_id/label_id depending on action_type)
-    -- avoids a wide sparse-column table for what's fundamentally a handful of small variants."""
+    "new_contact"/"outside_hours"; action_value is a user_id/canned_response_id/label_id depending
+    on action_type) -- avoids a wide sparse-column table for what's fundamentally a handful of
+    small variants."""
     __tablename__ = "automation_rules"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
-    trigger_type: Mapped[str] = mapped_column(String(20))  # "keyword" | "new_contact"
+    trigger_type: Mapped[str] = mapped_column(String(20))  # "keyword" | "new_contact" | "outside_hours"
     trigger_value: Mapped[str | None] = mapped_column(String(200), nullable=True)
     action_type: Mapped[str] = mapped_column(String(20))  # "assign" | "reply" | "label"
     action_value: Mapped[str] = mapped_column(String(64))

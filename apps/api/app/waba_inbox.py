@@ -36,12 +36,12 @@ from .schemas import (
 from . import waba_media
 from .permissions import require_channel_scope_any
 from .security import decrypt_secret
-from .services import DomainError, channel_active, resolve_user_entity
+from .services import DomainError, channel_active, get_platform_waba_settings, resolve_user_entity
 from .waba_dispatch import (
     mark_conversation_read, send_whatsapp_contact, send_whatsapp_interactive_buttons, send_whatsapp_interactive_list,
     send_whatsapp_location, send_whatsapp_media, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
 )
-from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates
+from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates, upload_template_header_media
 from .waba_realtime import authenticate_query_token, message_payload, publish_event
 
 # Shared inbox module -- owns the Conversation/Task/ticket tables both the plain WhatsApp inbox
@@ -685,12 +685,14 @@ def list_templates(user: User = Depends(require_user), db: Session = Depends(get
     for t in templates:
         components = t.get("components", [])
         body_component = next((c for c in components if c.get("type") == "BODY"), None)
-        header_component = next((c for c in components if c.get("type") == "HEADER" and c.get("format") == "TEXT"), None)
+        header_component = next((c for c in components if c.get("type") == "HEADER"), None)
         footer_component = next((c for c in components if c.get("type") == "FOOTER"), None)
         buttons_component = next((c for c in components if c.get("type") == "BUTTONS"), None)
+        header_format = header_component.get("format", "TEXT") if header_component else "TEXT"
         out.append(WabaTemplateOut(
-            name=t["name"], status=t.get("status", "UNKNOWN"), language=t.get("language", ""), category=t.get("category", ""),
-            header_text=header_component.get("text") if header_component else None,
+            id=t.get("id"), name=t["name"], status=t.get("status", "UNKNOWN"), language=t.get("language", ""), category=t.get("category", ""),
+            header_text=header_component.get("text") if header_component and header_format == "TEXT" else None,
+            header_format=header_format,
             body=body_component.get("text") if body_component else None,
             footer_text=footer_component.get("text") if footer_component else None,
             buttons=[
@@ -772,6 +774,30 @@ def _validate_template_buttons(buttons: list) -> None:
             raise HTTPException(status_code=422, detail="A phone-number button needs a phone_number")
 
 
+@router.post("/templates/header-media")
+def upload_template_header(file: UploadFile = File(...), user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Returns a header_handle for TemplateCreateRequest.header_handle -- a separate call from
+    template creation itself since Meta's Resumable Upload API is a genuinely different flow
+    (uploads under the app, not the WABA/phone number) from create_template's plain JSON body."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    connection = db.get(WabaConnection, entity.id)
+    if not connection or connection.status != "connected":
+        raise HTTPException(status_code=422, detail="Connect a WhatsApp number before creating templates")
+    app_id, _config_id, _app_secret = get_platform_waba_settings(db)
+    if not app_id:
+        raise HTTPException(status_code=422, detail="WhatsApp is not fully configured on this platform yet")
+    access_token = decrypt_secret(connection.access_token_encrypted)
+    content = file.file.read()
+    try:
+        handle = upload_template_header_media(app_id, access_token, content, file.content_type or "application/octet-stream")
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not upload this file to Meta: {exc}") from exc
+    return {"header_handle": handle}
+
+
 @router.post("/templates", response_model=WabaTemplateOut)
 def create_template(payload: TemplateCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Submits a new template for Meta's review -- it comes back PENDING, not immediately
@@ -784,19 +810,22 @@ def create_template(payload: TemplateCreateRequest, user: User = Depends(require
     connection = db.get(WabaConnection, entity.id)
     if not connection or connection.status != "connected":
         raise HTTPException(status_code=422, detail="Connect a WhatsApp number before creating templates")
+    if payload.header_format != "TEXT" and not payload.header_handle:
+        raise HTTPException(status_code=422, detail="Upload the header media first (POST /templates/header-media) before submitting a media-header template")
     _validate_template_buttons(payload.buttons)
     access_token = decrypt_secret(connection.access_token_encrypted)
     buttons_payload = [{"type": b.type, "text": b.text, **({"url": b.url} if b.type == "URL" else {}), **({"phone_number": b.phone_number} if b.type == "PHONE_NUMBER" else {})} for b in payload.buttons]
     try:
         create_message_template(
             connection.waba_id, access_token, payload.name, payload.category, payload.language, payload.body_text,
-            payload.example_params or None, header_text=payload.header_text, footer_text=payload.footer_text, buttons=buttons_payload or None,
+            payload.example_params or None, header_text=payload.header_text, header_format=payload.header_format,
+            header_handle=payload.header_handle, footer_text=payload.footer_text, buttons=buttons_payload or None,
         )
     except MetaApiError as exc:
         raise HTTPException(status_code=422, detail=f"Could not submit this template: {exc}") from exc
     return WabaTemplateOut(
         name=payload.name, status="PENDING", language=payload.language, category=payload.category,
-        header_text=payload.header_text, body=payload.body_text, footer_text=payload.footer_text,
+        header_text=payload.header_text, header_format=payload.header_format, body=payload.body_text, footer_text=payload.footer_text,
         buttons=[TemplateButtonOut(type=b.type, text=b.text, url=b.url, phone_number=b.phone_number) for b in payload.buttons],
     )
 

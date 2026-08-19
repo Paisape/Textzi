@@ -11,10 +11,12 @@ from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import ConversationLabel, ConversationMessage, CsatResponse, Conversation, Label, User
+from .models import ConversationLabel, ConversationMessage, CsatResponse, Conversation, Label, User, WabaConnection
 from .permissions import require_channel_scope
-from .schemas import ReportAgentRow, ReportLabelRow, ReportVolumePoint, WabaReportsOut
+from .schemas import ReportAgentRow, ReportLabelRow, ReportVolumePoint, TemplateAnalyticsOut, TemplateAnalyticsRow, WabaReportsOut
+from .security import decrypt_secret
 from .services import DomainError, resolve_user_entity
+from .waba_meta import MetaApiError, get_template_analytics, list_message_templates
 
 router = APIRouter(prefix="/v1/waba/reports", tags=["waba-reports"], dependencies=[Depends(require_channel_scope("waba"))])
 
@@ -85,3 +87,49 @@ def get_reports(days: int = 30, user: User = Depends(require_user), db: Session 
         volume=volume, agents=agents, labels=labels, total_conversations=total, open_conversations=open_count,
         resolved_conversations=resolved_count, sla_breached_count=sla_breached, avg_csat=avg_csat, csat_response_count=len(csat_rows),
     )
+
+
+@router.get("/template-analytics", response_model=TemplateAnalyticsOut)
+def get_template_analytics_report(days: int = 30, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Sent/delivered/read/clicked per template, from Meta's own template_analytics endpoint --
+    fetched live (not cached) same as list_templates, since these counts change continuously."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    connection = db.get(WabaConnection, entity.id)
+    if not connection or connection.status != "connected":
+        return TemplateAnalyticsOut(templates=[])
+    access_token = decrypt_secret(connection.access_token_encrypted)
+    days = max(1, min(days, 90))
+    end = int(datetime.now(timezone.utc).timestamp())
+    start = int((datetime.now(timezone.utc) - timedelta(days=days)).timestamp())
+
+    try:
+        templates = list_message_templates(connection.waba_id, access_token)
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not load templates from Meta: {exc}") from exc
+    template_ids = [t["id"] for t in templates if t.get("id")]
+    names_by_id = {t["id"]: t["name"] for t in templates if t.get("id")}
+    if not template_ids:
+        return TemplateAnalyticsOut(templates=[])
+
+    try:
+        analytics = get_template_analytics(connection.waba_id, access_token, template_ids, start, end)
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not load template analytics from Meta: {exc}") from exc
+
+    rows: dict[str, dict[str, int]] = {}
+    for entry in analytics:
+        template_id = entry.get("template_id")
+        name = names_by_id.get(template_id, template_id or "Unknown")
+        totals = rows.setdefault(name, {"sent": 0, "delivered": 0, "read": 0, "clicked": 0})
+        for point in entry.get("data_points", []):
+            metric = (point.get("type") or "").lower()
+            if metric in totals:
+                totals[metric] += point.get("count", 0)
+
+    return TemplateAnalyticsOut(templates=[
+        TemplateAnalyticsRow(template_name=name, sent=t["sent"], delivered=t["delivered"], read=t["read"], clicked=t["clicked"])
+        for name, t in rows.items()
+    ])

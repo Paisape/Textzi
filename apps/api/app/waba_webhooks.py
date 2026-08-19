@@ -236,6 +236,30 @@ def _stamp_sla_due_at(db: Session, entity_id: str, conversation: Conversation, n
     conversation.sla_breached = False
 
 
+def _is_outside_business_hours(db: Session, entity_id: str, now: datetime) -> bool:
+    """Same day/time check _maybe_send_business_hours_reply itself uses to decide whether to send
+    its own fixed auto-reply -- factored out so waba_automation's "outside_hours" trigger can
+    fire without duplicating this logic. Returns False (not outside hours) whenever hours aren't
+    configured at all, matching the existing auto-reply's own "nothing to do" default."""
+    hours = db.get(BusinessHours, entity_id)
+    if not hours or not hours.enabled:
+        return False
+    try:
+        local_now = now.astimezone(ZoneInfo(hours.timezone))
+    except Exception:
+        return False
+    day_key = local_now.strftime("%a").lower()[:3]
+    day_hours = hours.schedule.get(day_key)
+    if not day_hours:
+        return True
+    try:
+        open_t = time.fromisoformat(day_hours["open"])
+        close_t = time.fromisoformat(day_hours["close"])
+        return not (open_t <= local_now.time() <= close_t)
+    except (KeyError, ValueError):
+        return False
+
+
 def _maybe_send_business_hours_reply(db: Session, connection: WabaConnection, contact: Contact, conversation: Conversation, now: datetime) -> None:
     """Best-effort outside-hours auto-reply -- at most once every 12 hours per conversation, so a
     fast back-and-forth outside hours doesn't repeat the same message on every inbound. A failure
@@ -300,15 +324,28 @@ def _handle_inbound_messages(db: Session, connection: WabaConnection, value: dic
             body=body, media_url=media_url, payload=payload, meta_message_id=wamid, created_at=created_at,
         )
         db.add(message)
+        _stamp_ad_referral(contact, msg.get("referral"))
         conversation.status = "open"
         conversation.last_message_at = created_at
         _stamp_sla_due_at(db, connection.entity_id, conversation, created_at)
         _match_csat_response(db, conversation, message_type, payload)
         db.flush()
         _maybe_send_business_hours_reply(db, connection, contact, conversation, created_at)
-        apply_rules(db, connection.entity_id, contact, conversation, body, is_new_contact)
+        apply_rules(db, connection.entity_id, contact, conversation, body, is_new_contact, _is_outside_business_hours(db, connection.entity_id, created_at))
         created.append((connection.entity_id, message))
     return created
+
+
+def _stamp_ad_referral(contact: Contact, referral: dict | None) -> None:
+    """Meta attaches a `referral` object to the first inbound message of a conversation that
+    started from a Click-to-WhatsApp ad (source_id/source_type/source_url/headline/body/
+    media_type/ctwa_clid) -- captured once, on first touch only, so a contact's own attribution
+    survives even after the conversation moves on to unrelated messages with no referral block.
+    Stored on Contact.custom_attributes (the existing flexible per-contact field) rather than a
+    new column, matching this codebase's own stated reasoning for that column's design."""
+    if not referral or contact.custom_attributes.get("ad_referral"):
+        return
+    contact.custom_attributes = {**contact.custom_attributes, "ad_referral": referral}
 
 
 def _match_csat_response(db: Session, conversation: Conversation, message_type: str, payload: dict | None) -> None:

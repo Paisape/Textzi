@@ -9,7 +9,11 @@ definePage({
 const route = useRoute('waba-customers-id')
 const router = useRouter()
 
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null, consent_given_at: string | null, consent_source: string | null }
+type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null, consent_given_at: string | null, consent_source: string | null, custom_attributes: Record<string, any> }
+
+function adReferral(contact: Contact) {
+  return contact.custom_attributes?.ad_referral as { headline?: string, source_url?: string, source_type?: string } | undefined
+}
 type Lead = { id: string, company_name: string | null, source: string, status: string, owner_user_id: string | null, notes: string | null, converted_deal_id: string | null }
 type Deal = { id: string, stage: string, source: string, owner_user_id: string | null, notes: string | null, status: string }
 type Customer = { id: string, owner_user_id: string | null, notes: string | null }
@@ -401,6 +405,10 @@ onMounted(load)
         </h1>
         <p class="text-medium-emphasis mb-0">
           {{ timeline.contact.wa_id || '—' }}
+        </p>
+        <p v-if="adReferral(timeline.contact)" class="text-caption text-medium-emphasis mb-0">
+          <VIcon icon="tabler-ad" size="14" class="me-1" />
+          From an ad: {{ adReferral(timeline.contact)?.headline || 'Click-to-WhatsApp' }}
         </p>
       </div>
       <div class="d-flex ga-2">

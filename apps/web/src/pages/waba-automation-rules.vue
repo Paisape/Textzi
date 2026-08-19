@@ -8,7 +8,7 @@ definePage({
 type Rule = {
   id: string
   name: string
-  trigger_type: 'keyword' | 'new_contact'
+  trigger_type: 'keyword' | 'new_contact' | 'outside_hours'
   trigger_value: string | null
   action_type: 'assign' | 'reply' | 'label'
   action_value: string
@@ -89,7 +89,7 @@ const createError = ref('')
 const creating = ref(false)
 const form = ref({
   name: '',
-  trigger_type: 'keyword' as 'keyword' | 'new_contact',
+  trigger_type: 'keyword' as 'keyword' | 'new_contact' | 'outside_hours',
   trigger_value: '',
   action_type: 'reply' as 'assign' | 'reply' | 'label',
   action_value: '',
@@ -176,7 +176,7 @@ onMounted(loadAll)
       <tbody>
         <tr v-for="rule in rules" :key="rule.id">
           <td>{{ rule.name }}</td>
-          <td>{{ rule.trigger_type === 'keyword' ? `keyword: "${rule.trigger_value}"` : 'new contact' }}</td>
+          <td>{{ rule.trigger_type === 'keyword' ? `keyword: "${rule.trigger_value}"` : rule.trigger_type === 'outside_hours' ? 'outside business hours' : 'new contact' }}</td>
           <td>{{ rule.action_type }}: {{ actionValueLabel(rule) }}</td>
           <td>{{ rule.priority }}</td>
           <td>
@@ -204,7 +204,7 @@ onMounted(loadAll)
         <VSelect
           v-model="form.trigger_type"
           label="Trigger"
-          :items="[{ title: 'Keyword in message', value: 'keyword' }, { title: 'New contact', value: 'new_contact' }]"
+          :items="[{ title: 'Keyword in message', value: 'keyword' }, { title: 'New contact', value: 'new_contact' }, { title: 'Message arrives outside business hours', value: 'outside_hours' }]"
           class="mb-3"
         />
         <AppTextField v-if="form.trigger_type === 'keyword'" v-model="form.trigger_value" label="Keyword to match" class="mb-3" />
