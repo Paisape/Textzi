@@ -3067,6 +3067,41 @@ class BusinessHoursUpdateRequest(BaseModel):
     outside_hours_message: str | None = Field(default=None, max_length=500)
 
 
+class BookingLinkOut(BaseModel):
+    id: str
+    slug: str
+    duration_minutes: int
+    active: bool
+
+
+class BookingLinkUpdateRequest(BaseModel):
+    slug: str = Field(min_length=3, max_length=60, pattern="^[a-z0-9-]+$")
+    duration_minutes: int = Field(default=30, ge=5, le=240)
+    active: bool = True
+
+
+class PublicBookingLinkOut(BaseModel):
+    duration_minutes: int
+    entity_name: str
+
+
+class PublicBookingSlotsOut(BaseModel):
+    date: str  # "YYYY-MM-DD"
+    slots: list[str]  # "HH:MM", local to BusinessHours.timezone
+
+
+class PublicBookingRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    email: str | None = None
+    phone: str | None = None
+    slot_start: str  # ISO datetime, must be one of the slots GET /availability returned
+    turnstile_token: str
+
+
+class PublicBookingResponse(BaseModel):
+    confirmed_at: str
+
+
 class SlaPolicyOut(BaseModel):
     enabled: bool
     first_response_minutes: int

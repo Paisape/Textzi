@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import require_user
@@ -24,12 +25,12 @@ from .crm_sequences import apply_lead_routing
 from .database import SessionLocal, get_db
 from .email_service import render_email, send_email
 from .models import (
-    Attachment, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
+    Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
     Customer, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesTarget, SavedReport, SavedView, ScoringRule,
     Task, Territory, User, UserRole, WebForm,
 )
 from .schemas import (
-    ActivityMessageOut, AttachmentOut, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
+    ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
     CustomerCreateRequest, CustomerDetailOut, CustomerOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
@@ -1333,6 +1334,34 @@ def update_pipeline_stages(payload: PipelineStagesUpdateRequest, user: User = De
     db.commit()
     db.refresh(settings_row)
     return _settings_out(settings_row)
+
+
+@router.get("/settings/booking-link", response_model=BookingLinkOut | None)
+def get_booking_link(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    link = db.scalar(select(BookingLink).where(BookingLink.entity_id == entity.id))
+    return BookingLinkOut(id=link.id, slug=link.slug, duration_minutes=link.duration_minutes, active=link.active) if link else None
+
+
+@router.put("/settings/booking-link", response_model=BookingLinkOut)
+def update_booking_link(payload: BookingLinkUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    link = db.scalar(select(BookingLink).where(BookingLink.entity_id == entity.id))
+    if not link:
+        link = BookingLink(entity_id=entity.id, slug=payload.slug)
+        db.add(link)
+    else:
+        link.slug = payload.slug
+    link.duration_minutes = payload.duration_minutes
+    link.active = payload.active
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This booking link URL is already taken -- pick a different one")
+    db.refresh(link)
+    return BookingLinkOut(id=link.id, slug=link.slug, duration_minutes=link.duration_minutes, active=link.active)
 
 
 @router.post("/settings/logo", response_model=CrmSettingsOut)

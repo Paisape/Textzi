@@ -960,10 +960,125 @@ async function copyEmbedSnippet() {
   setTimeout(() => { webFormCopied.value = false }, 2000)
 }
 
+// --- Booking link ---
+
+type DayHours = { open: string, close: string }
+type BusinessHours = { enabled: boolean, timezone: string, schedule: Record<string, DayHours>, outside_hours_message: string | null }
+type BookingLink = { id: string, slug: string, duration_minutes: number, active: boolean }
+
+const DAYS = [
+  { key: 'mon', label: 'Monday' }, { key: 'tue', label: 'Tuesday' }, { key: 'wed', label: 'Wednesday' },
+  { key: 'thu', label: 'Thursday' }, { key: 'fri', label: 'Friday' }, { key: 'sat', label: 'Saturday' }, { key: 'sun', label: 'Sunday' },
+]
+
+const businessHours = ref<BusinessHours | null>(null)
+const bookingLink = ref<BookingLink | null>(null)
+const bookingLoading = ref(false)
+const bookingError = ref('')
+const bookingSaving = ref(false)
+const bookingSaved = ref(false)
+const bookingLinkCopied = ref(false)
+const bookingSlug = ref('')
+const bookingDuration = ref(30)
+const bookingActive = ref(true)
+
+function dayEnabled(key: string) {
+  return !!businessHours.value?.schedule[key]
+}
+
+function toggleDay(key: string) {
+  if (!businessHours.value)
+    return
+  const schedule = { ...businessHours.value.schedule }
+  if (schedule[key])
+    delete schedule[key]
+  else
+    schedule[key] = { open: '09:00', close: '18:00' }
+  businessHours.value.schedule = schedule
+}
+
+async function loadBooking() {
+  bookingLoading.value = true
+  bookingError.value = ''
+  try {
+    const [hoursResult, linkResult] = await Promise.all([
+      $api<BusinessHours>('/v1/waba/business-hours'),
+      $api<BookingLink | null>('/v1/crm/settings/booking-link'),
+    ])
+    businessHours.value = hoursResult
+    bookingLink.value = linkResult
+    bookingSlug.value = linkResult?.slug || ''
+    bookingDuration.value = linkResult?.duration_minutes || 30
+    bookingActive.value = linkResult?.active ?? true
+  }
+  catch (error: any) {
+    bookingError.value = extractErrorMessage(error, 'Could not load booking link settings.')
+  }
+  finally {
+    bookingLoading.value = false
+  }
+}
+
+async function saveBusinessHours() {
+  if (!businessHours.value)
+    return
+  bookingSaving.value = true
+  bookingError.value = ''
+  bookingSaved.value = false
+  try {
+    businessHours.value = await $api<BusinessHours>('/v1/waba/business-hours', {
+      method: 'PUT',
+      body: {
+        enabled: businessHours.value.enabled, timezone: businessHours.value.timezone,
+        schedule: businessHours.value.schedule, outside_hours_message: businessHours.value.outside_hours_message,
+      },
+    })
+    bookingSaved.value = true
+  }
+  catch (error: any) {
+    bookingError.value = extractErrorMessage(error, 'Could not save your hours.')
+  }
+  finally {
+    bookingSaving.value = false
+  }
+}
+
+async function saveBookingLink() {
+  if (!bookingSlug.value.trim())
+    return
+  bookingSaving.value = true
+  bookingError.value = ''
+  bookingSaved.value = false
+  try {
+    bookingLink.value = await $api<BookingLink>('/v1/crm/settings/booking-link', {
+      method: 'PUT',
+      body: { slug: bookingSlug.value.trim(), duration_minutes: bookingDuration.value, active: bookingActive.value },
+    })
+    bookingSaved.value = true
+  }
+  catch (error: any) {
+    bookingError.value = extractErrorMessage(error, 'Could not save the booking link.')
+  }
+  finally {
+    bookingSaving.value = false
+  }
+}
+
+const bookingUrl = computed(() => bookingLink.value ? `${window.location.origin}/public-booking/${bookingLink.value.slug}` : '')
+
+async function copyBookingUrl() {
+  if (!bookingUrl.value)
+    return
+  await navigator.clipboard.writeText(bookingUrl.value)
+  bookingLinkCopied.value = true
+  setTimeout(() => { bookingLinkCopied.value = false }, 2000)
+}
+
 onMounted(() => {
   load()
   loadExtras()
   loadWebForm()
+  loadBooking()
 })
 </script>
 
@@ -1016,6 +1131,9 @@ onMounted(() => {
     </VTab>
     <VTab value="webform">
       Web Form
+    </VTab>
+    <VTab value="booking">
+      Booking Link
     </VTab>
     <VTab value="billing">
       Billing
@@ -1550,6 +1668,68 @@ onMounted(() => {
               {{ webFormCopied ? 'Copied' : 'Copy snippet' }}
             </VBtn>
           </template>
+        </VCardText>
+      </VCard>
+    </VWindowItem>
+
+    <VWindowItem value="booking">
+      <VCard max-width="640">
+        <VCardText>
+          <h2 class="text-h6 mb-1">
+            Meeting booking link
+          </h2>
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            Share one link so a lead or customer can pick their own open slot — it books directly onto your calendar (Tasks → meeting).
+          </p>
+          <VAlert v-if="bookingError" type="error" variant="tonal" density="compact" class="mb-3">
+            {{ bookingError }}
+          </VAlert>
+          <VAlert v-if="bookingSaved" type="success" variant="tonal" density="compact" class="mb-3">
+            Saved.
+          </VAlert>
+
+          <template v-if="businessHours">
+            <p class="text-body-2 font-weight-medium mb-2">
+              Weekly hours
+            </p>
+            <VSwitch v-model="businessHours.enabled" label="Enable business hours" density="compact" class="mb-2" />
+            <template v-if="businessHours.enabled">
+              <div v-for="day in DAYS" :key="day.key" class="d-flex align-center ga-3 mb-2">
+                <VCheckbox :model-value="dayEnabled(day.key)" density="compact" hide-details @update:model-value="toggleDay(day.key)" />
+                <span style="min-inline-size: 100px;">{{ day.label }}</span>
+                <template v-if="businessHours.schedule[day.key]">
+                  <VTextField v-model="businessHours.schedule[day.key].open" type="time" density="compact" hide-details style="max-inline-size: 130px;" />
+                  <span>to</span>
+                  <VTextField v-model="businessHours.schedule[day.key].close" type="time" density="compact" hide-details style="max-inline-size: 130px;" />
+                </template>
+              </div>
+            </template>
+            <div class="mb-6">
+              <VBtn size="small" :loading="bookingSaving" @click="saveBusinessHours">
+                Save hours
+              </VBtn>
+            </div>
+          </template>
+
+          <VDivider class="mb-4" />
+
+          <p class="text-body-2 font-weight-medium mb-2">
+            Your booking link
+          </p>
+          <div class="d-flex align-center ga-2 mb-3">
+            <span class="text-body-2 text-medium-emphasis">{{ `${window.location.origin}/public-booking/` }}</span>
+            <VTextField v-model="bookingSlug" density="compact" hide-details style="max-inline-size: 200px;" />
+          </div>
+          <VTextField v-model.number="bookingDuration" type="number" label="Meeting length (minutes)" density="compact" class="mb-3" style="max-inline-size: 220px;" />
+          <VSwitch v-model="bookingActive" label="Active" density="compact" class="mb-3" />
+          <div class="d-flex ga-2 align-center">
+            <VBtn :loading="bookingSaving" @click="saveBookingLink">
+              Save link
+            </VBtn>
+            <VBtn v-if="bookingLink" size="small" variant="tonal" prepend-icon="tabler-copy" @click="copyBookingUrl">
+              {{ bookingLinkCopied ? 'Copied' : 'Copy link' }}
+            </VBtn>
+          </div>
         </VCardText>
       </VCard>
     </VWindowItem>

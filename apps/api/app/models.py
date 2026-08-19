@@ -2035,6 +2035,22 @@ class BusinessHours(Base):
     outside_hours_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class BookingLink(Base):
+    """One row per entity -- a public "pick a slot" link (crm_public.py's /booking/{slug}
+    endpoints). Available slots are computed from BusinessHours.schedule (this entity's existing
+    weekly hours, already built for WhatsApp's own outside-hours auto-reply) minus any Task
+    type="meeting" already occupying that window -- no separate schedule concept, no stored slot
+    table. A booked slot becomes a normal Task, indistinguishable from one created by hand, so
+    crm-tasks.vue's existing FullCalendar needs zero changes to show it."""
+    __tablename__ = "booking_links"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), unique=True, index=True)
+    slug: Mapped[str] = mapped_column(String(60), unique=True)
+    duration_minutes: Mapped[int] = mapped_column(Integer, default=30)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class SlaPolicy(Base):
     """One row per entity -- how many minutes a first reply, and separately a full resolution, are
     due within. Conversation.first_response_due_at/sla_breached and resolution_due_at/
