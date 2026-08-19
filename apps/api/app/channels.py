@@ -418,6 +418,11 @@ def _mark_dlt_request_paid(db: Session, request_row: DltOnboardingRequest, refer
 
 @router.post("/dlt/request/{request_id}/recharge", response_model=DltOnboardingRequestOut)
 def simulate_dlt_request_payment(request_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Development-only stand-in that marks a DLT request paid and issues its invoice with no real
+    payment collected -- same convention as wallet.py's _require_dev_recharge, which this mirrors;
+    the real path is /dlt/request/{id}/razorpay/order + /verify below."""
+    if settings.environment != "development":
+        raise HTTPException(status_code=403, detail="Self-service payment is a development-only stand-in; use the Razorpay checkout flow instead.")
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:

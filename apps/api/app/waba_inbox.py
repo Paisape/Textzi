@@ -1398,7 +1398,11 @@ def delete_segment(segment_id: str, user: User = Depends(require_user), db: Sess
     if not segment or segment.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Segment not found")
     db.delete(segment)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This segment is used by one or more campaigns -- delete those campaigns first")
     return {"deleted": True}
 
 

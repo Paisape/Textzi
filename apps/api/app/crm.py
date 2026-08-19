@@ -853,6 +853,9 @@ def bulk_update_deal_stage(payload: DealBulkStageRequest, user: User = Depends(r
             updated.append(deal)
             continue
         pipeline = db.get(Pipeline, deal.pipeline_id) if deal.pipeline_id else None
+        if pipeline and payload.stage not in [s["name"] for s in _pipeline_stages(pipeline)]:
+            skipped[deal.id] = f"\"{payload.stage}\" is not a stage in this deal's pipeline"
+            continue
         missing_fields = _missing_stage_requirements(deal, pipeline)
         if missing_fields:
             skipped[deal.id] = f"Missing: {', '.join(missing_fields)}"
@@ -1200,6 +1203,8 @@ def update_deal_stage(deal_id: str, payload: DealStageUpdateRequest, user: User 
         raise HTTPException(status_code=404, detail="Deal not found")
     if deal.stage != payload.stage:
         pipeline = db.get(Pipeline, deal.pipeline_id) if deal.pipeline_id else None
+        if pipeline and payload.stage not in [s["name"] for s in _pipeline_stages(pipeline)]:
+            raise HTTPException(status_code=422, detail=f"\"{payload.stage}\" is not a stage in this deal's pipeline")
         missing_fields = _missing_stage_requirements(deal, pipeline)
         if missing_fields:
             raise HTTPException(status_code=422, detail=f"Complete these fields before leaving \"{deal.stage}\": {', '.join(missing_fields)}")
