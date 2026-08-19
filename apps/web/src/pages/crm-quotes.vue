@@ -29,6 +29,8 @@ type Quote = {
   converted_invoice_id: string | null
   created_at: string
   sent_at: string | null
+  signed_by_name: string | null
+  signed_at: string | null
 }
 
 const route = useRoute()
@@ -325,6 +327,9 @@ onMounted(async () => {
             <VChip size="small" :color="statusColor[quote.status]">
               {{ quote.status }}
             </VChip>
+            <p v-if="quote.signed_by_name" class="text-caption text-medium-emphasis mb-0 mt-1">
+              Signed by {{ quote.signed_by_name }}
+            </p>
           </td>
           <td>
             <div v-if="quote.approval_status !== 'not_required'" class="d-flex align-center ga-1">

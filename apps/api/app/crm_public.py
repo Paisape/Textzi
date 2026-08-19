@@ -1,17 +1,21 @@
-"""Unauthenticated endpoint backing the embeddable web lead-capture form (crm.py's /web-form
-settings CRUD manages the config this reads; the actual <iframe> target is a frontend route that
-calls these two endpoints). Same posture as public.py: no require_user anywhere in this file."""
+"""Unauthenticated endpoints reachable by someone outside the org: the embeddable web
+lead-capture form (crm.py's /web-form settings CRUD manages the config this reads; the actual
+<iframe> target is a frontend route that calls these two endpoints), and the public quote
+signing link (crm_quotes.py's send_quote_via_whatsapp sends this URL alongside the PDF).
+Same posture as public.py: no require_user anywhere in this file."""
+from datetime import datetime, timezone
 from html import escape
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from .crm import rescore_lead
+from .crm_quotes import _quote_out
 from .crm_sequences import apply_lead_routing
 from .database import get_db
-from .models import CrmContact, Entity, Lead, WebForm
-from .schemas import PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse
-from .services import channel_active, log_activity
+from .models import Company, CrmContact, Deal, Entity, Lead, Quote, WebForm
+from .schemas import PublicQuoteOut, PublicQuoteSignRequest, PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse
+from .services import channel_active, client_ip, log_activity
 from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
@@ -74,3 +78,48 @@ def submit_public_lead_form(entity_id: str, payload: WebFormSubmitRequest, reque
     db.commit()
 
     return WebFormSubmitResponse(message=form.success_message)
+
+
+def _get_sendable_quote(db: Session, quote_id: str) -> Quote:
+    quote = db.get(Quote, quote_id)
+    if not quote or quote.status not in ("sent", "accepted", "rejected"):
+        # A draft quote was never sent to this customer -- nothing to show at this link yet, and
+        # a not-found response here (vs. a 403) avoids confirming the id is a real, unsent quote.
+        raise HTTPException(status_code=404, detail="Quote not found")
+    return quote
+
+
+def _public_quote_out(db: Session, quote: Quote) -> PublicQuoteOut:
+    out = _quote_out(db, quote)
+    deal = db.get(Deal, quote.deal_id)
+    contact = db.get(CrmContact, deal.contact_id) if deal else None
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
+    return PublicQuoteOut(
+        quote_number=out.quote_number, line_items=out.line_items, status=out.status,
+        subtotal=out.subtotal, cgst=out.cgst, sgst=out.sgst, igst=out.igst, total=out.total,
+        company_name=company.name if company else "", contact_name=contact.name if contact else "",
+        signed_by_name=out.signed_by_name, signed_at=out.signed_at,
+    )
+
+
+@router.get("/quote/{quote_id}", response_model=PublicQuoteOut)
+def get_public_quote(quote_id: str, db: Session = Depends(get_db)):
+    return _public_quote_out(db, _get_sendable_quote(db, quote_id))
+
+
+@router.post("/quote/{quote_id}/sign", response_model=PublicQuoteOut)
+def sign_public_quote(quote_id: str, payload: PublicQuoteSignRequest, request: Request, db: Session = Depends(get_db)):
+    quote = _get_sendable_quote(db, quote_id)
+    require_turnstile(payload.turnstile_token, request, db)
+    if quote.status != "sent":
+        raise HTTPException(status_code=409, detail=f"This quote has already been {quote.status}")
+
+    quote.status = "accepted" if payload.accept else "rejected"
+    quote.signed_by_name = payload.signed_by_name.strip()
+    quote.signed_at = datetime.now(timezone.utc)
+    quote.signed_ip = client_ip(request)
+    entity = db.get(Entity, quote.entity_id)
+    log_activity(db, entity.organization_id, "quote_signed", f"Quote {quote.quote_number or quote.id} {quote.status} by {quote.signed_by_name}", request=request)
+    db.commit()
+    db.refresh(quote)
+    return _public_quote_out(db, quote)

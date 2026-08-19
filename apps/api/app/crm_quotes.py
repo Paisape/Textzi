@@ -136,6 +136,7 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
         has_pdf=bool(quote.pdf_path), approval_status=quote.approval_status, approvals=quote.approvals or [],
         approvers_required=approvers_required, converted_invoice_id=quote.converted_invoice_id,
         created_at=quote.created_at.isoformat(), sent_at=quote.sent_at.isoformat() if quote.sent_at else None,
+        signed_by_name=quote.signed_by_name, signed_at=quote.signed_at.isoformat() if quote.signed_at else None,
     )
 
 
@@ -349,11 +350,13 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
         f.write(pdf_bytes)
     quote.pdf_path = local_copy_path
 
-    from .waba_dispatch import send_whatsapp_media
+    from .waba_dispatch import send_whatsapp_media, send_whatsapp_text
     from .waba_meta import MetaApiError
     filename = f"{quote.quote_number}.pdf"
     try:
         send_whatsapp_media(db, entity.id, wa_id, pdf_bytes, filename, "application/pdf", "document", f"Quote {quote.quote_number}", sent_by_user_id=user.id)
+        signing_link = f"{settings.web_origin}/public-quote/{quote.id}"
+        send_whatsapp_text(db, entity.id, wa_id, f"Review and accept this quote online: {signing_link}", sent_by_user_id=user.id)
     except (DomainError, MetaApiError) as exc:
         raise HTTPException(status_code=422, detail=f"Could not send this quote: {exc}") from exc
 

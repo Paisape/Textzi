@@ -1754,6 +1754,13 @@ class Quote(Base):
     approvals: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Set once the public /v1/public/quote/{id}/sign endpoint records an accept -- a lightweight
+    # typed-name + timestamp + IP signature (not a cryptographic DocuSign-grade one), matching this
+    # product's own SME-scope discipline elsewhere (e.g. Quote itself being a proforma, not an
+    # IRN-registered e-invoice). status flips to "accepted"/"rejected" alongside these.
+    signed_by_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    signed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
 
 class Product(Base):

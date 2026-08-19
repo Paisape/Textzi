@@ -2403,6 +2403,29 @@ class QuoteOut(BaseModel):
     converted_invoice_id: str | None
     created_at: str
     sent_at: str | None
+    signed_by_name: str | None = None
+    signed_at: str | None = None
+
+
+class PublicQuoteOut(BaseModel):
+    quote_number: str | None
+    line_items: list[QuoteLineItem]
+    status: str
+    subtotal: float
+    cgst: float
+    sgst: float
+    igst: float
+    total: float
+    company_name: str
+    contact_name: str
+    signed_by_name: str | None
+    signed_at: str | None
+
+
+class PublicQuoteSignRequest(BaseModel):
+    signed_by_name: str = Field(min_length=1, max_length=160)
+    accept: bool  # true = accepted, false = rejected
+    turnstile_token: str
 
 
 class QuoteCreateRequest(BaseModel):
