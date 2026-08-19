@@ -416,6 +416,11 @@ class WabaConnection(Base):
     # (TIER_250/TIER_2K/TIER_10K/TIER_100K/UNLIMITED, from the throughput field).
     quality_rating: Mapped[str | None] = mapped_column(String(20), nullable=True)
     messaging_tier: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Meta Commerce Manager catalog id -- created and populated (products/prices/images) entirely
+    # in Meta's own tools, not by Textzi; this is just the reference a catalog/product message's
+    # `action.catalog_id` needs. Optional/self-service (a plain text field the customer pastes
+    # in), not fetched or validated via a Graph API call at save time.
+    catalog_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     status_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

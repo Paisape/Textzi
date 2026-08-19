@@ -942,6 +942,44 @@ async function sendContactCard() {
   }
 }
 
+const productDialog = ref(false)
+const productForm = ref({ product_retailer_id: '', body_text: '' })
+const productError = ref('')
+const productSending = ref(false)
+
+function openProductDialog() {
+  productForm.value = { product_retailer_id: '', body_text: '' }
+  productError.value = ''
+  productDialog.value = true
+}
+
+async function sendProduct() {
+  if (!activeConversation.value)
+    return
+  if (!productForm.value.product_retailer_id.trim()) {
+    productError.value = 'Enter the product ID from your Meta catalog.'
+    return
+  }
+  productError.value = ''
+  productSending.value = true
+  try {
+    const message = await $api<ConversationMessage>(`/v1/waba/conversations/${activeConversation.value.id}/product`, {
+      method: 'POST',
+      body: { product_retailer_id: productForm.value.product_retailer_id.trim(), body_text: productForm.value.body_text.trim() || null },
+    })
+    activeConversation.value.messages.push(message)
+    productDialog.value = false
+    scrollToBottom()
+    await loadConversations()
+  }
+  catch (error: any) {
+    productError.value = extractErrorMessage(error, 'Could not send this product.')
+  }
+  finally {
+    productSending.value = false
+  }
+}
+
 const buttonsDialog = ref(false)
 const buttonsForm = ref({ body_text: '', button_labels: [''] })
 const buttonsError = ref('')
@@ -1468,6 +1506,32 @@ watch(statusFilter, loadConversations)
                 {{ message.payload.title }}
               </VChip>
 
+              <VChip v-else-if="message.message_type === 'product' && message.payload" size="small" variant="outlined" prepend-icon="tabler-shopping-bag" class="mt-2">
+                {{ message.payload.product_retailer_id }}
+              </VChip>
+
+              <div v-else-if="message.message_type === 'product_list' && message.payload">
+                <div class="d-flex flex-column ga-1 mt-2">
+                  <VChip
+                    v-for="item in (message.payload.sections || []).flatMap((s: any) => s.product_items || [])" :key="item.product_retailer_id"
+                    size="small" variant="outlined" prepend-icon="tabler-shopping-bag" class="align-self-start"
+                  >
+                    {{ item.product_retailer_id }}
+                  </VChip>
+                </div>
+              </div>
+
+              <div v-else-if="message.message_type === 'order' && message.payload">
+                <div class="d-flex flex-column ga-1 mt-2">
+                  <VChip
+                    v-for="(item, idx) in message.payload.product_items || []" :key="idx"
+                    size="small" color="success" variant="tonal" prepend-icon="tabler-shopping-cart" class="align-self-start"
+                  >
+                    {{ item.product_retailer_id }} × {{ item.quantity }}
+                  </VChip>
+                </div>
+              </div>
+
               <p v-if="message.message_type === 'reaction'" class="mb-1" style="font-size: 20px;">
                 {{ message.payload?.emoji || message.body }}
               </p>
@@ -1586,6 +1650,7 @@ watch(statusFilter, loadConversations)
                   <VListItem prepend-icon="tabler-address-book" title="Contact card" @click="openContactDialog" />
                   <VListItem prepend-icon="tabler-list-details" title="Quick-reply buttons" @click="openButtonsDialog" />
                   <VListItem prepend-icon="tabler-list" title="List message" @click="openListDialog" />
+                  <VListItem prepend-icon="tabler-shopping-bag" title="Product" @click="openProductDialog" />
                 </VList>
               </VMenu>
             </VBtn>
@@ -1933,6 +1998,27 @@ watch(statusFilter, loadConversations)
           Cancel
         </VBtn>
         <VBtn :loading="locationSending" @click="sendLocation">
+          Send
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="productDialog" max-width="420">
+    <VCard>
+      <VCardTitle>Send a product</VCardTitle>
+      <VCardText>
+        <VAlert v-if="productError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ productError }}
+        </VAlert>
+        <AppTextField v-model="productForm.product_retailer_id" label="Product ID (from your Meta catalog)" class="mb-3" />
+        <AppTextField v-model="productForm.body_text" label="Message (optional)" />
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="productDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn :loading="productSending" @click="sendProduct">
           Send
         </VBtn>
       </VCardText>

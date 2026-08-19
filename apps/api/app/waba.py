@@ -12,7 +12,7 @@ from .auth import require_user
 from .database import get_db
 from .models import User, WabaConnection
 from .schemas import (
-    BusinessProfileOut, BusinessProfileUpdateRequest, RegisterPhoneRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest,
+    BusinessProfileOut, BusinessProfileUpdateRequest, CatalogIdUpdateRequest, RegisterPhoneRequest, WabaConfigOut, WabaConnectRequest, WabaDirectConnectRequest,
     WabaStatusOut, WabaStatusRefreshOut,
 )
 from .permissions import require_channel_scope
@@ -56,7 +56,25 @@ def get_waba_status(user: User = Depends(require_user), db: Session = Depends(ge
         waba_id=connection.waba_id, connected_at=connection.connected_at.isoformat(),
         quality_rating=connection.quality_rating, messaging_tier=connection.messaging_tier,
         status_checked_at=connection.status_checked_at.isoformat() if connection.status_checked_at else None,
+        catalog_id=connection.catalog_id,
     )
+
+
+@router.put("/catalog-id", response_model=WabaStatusOut)
+def update_catalog_id(payload: CatalogIdUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Plain text field, not validated against Meta -- the catalog itself lives entirely in Meta
+    Commerce Manager, created and populated by the customer there; this is just the reference
+    product/catalog message sends need for `action.catalog_id`."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    connection = db.get(WabaConnection, entity.id)
+    if not connection or connection.status != "connected":
+        raise HTTPException(status_code=422, detail="Connect a WhatsApp number first")
+    connection.catalog_id = payload.catalog_id.strip() if payload.catalog_id else None
+    db.commit()
+    return get_waba_status(user, db)
 
 
 @router.post("/connect", response_model=WabaStatusOut)

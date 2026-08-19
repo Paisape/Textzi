@@ -1373,6 +1373,11 @@ class WabaStatusOut(BaseModel):
     quality_rating: str | None = None
     messaging_tier: str | None = None
     status_checked_at: str | None = None
+    catalog_id: str | None = None
+
+
+class CatalogIdUpdateRequest(BaseModel):
+    catalog_id: str | None = Field(default=None, max_length=64)
 
 
 class LabelOut(BaseModel):
@@ -1670,6 +1675,11 @@ class InteractiveListRequest(BaseModel):
     body_text: str = Field(min_length=1, max_length=1024)
     button_label: str = Field(min_length=1, max_length=20)
     rows: list[InteractiveListRow] = Field(min_length=1, max_length=10)
+
+
+class ProductMessageRequest(BaseModel):
+    product_retailer_id: str = Field(min_length=1, max_length=100)
+    body_text: str | None = Field(default=None, max_length=1024)
 
 
 class ReactionRequest(BaseModel):

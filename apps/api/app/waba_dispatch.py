@@ -13,8 +13,8 @@ from .security import decrypt_secret
 from .services import DomainError, channel_active, check_message_quota, increment_message_usage
 from .waba_meta import (
     MetaApiError, send_contact_message, send_interactive_button_message, send_interactive_list_message,
-    send_location_message, send_media_message, send_reaction_message, send_read_receipt, send_template_message,
-    send_text_message, upload_media,
+    send_location_message, send_media_message, send_product_list_message, send_product_message,
+    send_reaction_message, send_read_receipt, send_template_message, send_text_message, upload_media,
 )
 from .waba_realtime import message_payload, publish_event
 
@@ -156,6 +156,27 @@ def send_whatsapp_interactive_list(db: Session, entity_id: str, to_wa_id: str, b
     access_token = decrypt_secret(connection.access_token_encrypted)
     wamid = send_interactive_list_message(connection.phone_number_id, access_token, to_wa_id, body_text, button_label, sections)
     return _persist_outbound(db, entity_id, conversation, "interactive_list", body_text, None, wamid, sent_by_user_id, {"button_label": button_label, "sections": sections})
+
+
+def send_whatsapp_product(db: Session, entity_id: str, to_wa_id: str, product_retailer_id: str, body_text: str | None = None, sent_by_user_id: str | None = None) -> ConversationMessage:
+    connection, conversation = _resolve_send_target(db, entity_id, to_wa_id)
+    if not connection.catalog_id:
+        raise DomainError("Add your Meta catalog id in Manage WhatsApp before sending product messages")
+    access_token = decrypt_secret(connection.access_token_encrypted)
+    wamid = send_product_message(connection.phone_number_id, access_token, to_wa_id, connection.catalog_id, product_retailer_id, body_text)
+    return _persist_outbound(db, entity_id, conversation, "product", body_text, None, wamid, sent_by_user_id, {"catalog_id": connection.catalog_id, "product_retailer_id": product_retailer_id})
+
+
+def send_whatsapp_product_list(db: Session, entity_id: str, to_wa_id: str, header_text: str, body_text: str, sections: list[dict], sent_by_user_id: str | None = None) -> ConversationMessage:
+    total_items = sum(len(s.get("product_items", [])) for s in sections)
+    if not 1 <= total_items <= 30:
+        raise DomainError("A product list needs between 1 and 30 total items")
+    connection, conversation = _resolve_send_target(db, entity_id, to_wa_id)
+    if not connection.catalog_id:
+        raise DomainError("Add your Meta catalog id in Manage WhatsApp before sending product messages")
+    access_token = decrypt_secret(connection.access_token_encrypted)
+    wamid = send_product_list_message(connection.phone_number_id, access_token, to_wa_id, connection.catalog_id, header_text, body_text, sections)
+    return _persist_outbound(db, entity_id, conversation, "product_list", body_text, None, wamid, sent_by_user_id, {"catalog_id": connection.catalog_id, "header_text": header_text, "sections": sections})
 
 
 def send_whatsapp_reaction(db: Session, entity_id: str, to_wa_id: str, reacted_to_wamid: str, emoji: str, sent_by_user_id: str | None = None) -> ConversationMessage:

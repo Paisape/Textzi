@@ -193,6 +193,32 @@ def send_interactive_list_message(phone_number_id: str, access_token: str, to: s
     return _extract_wamid(response)
 
 
+def send_product_message(phone_number_id: str, access_token: str, to: str, catalog_id: str, product_retailer_id: str, body_text: str | None = None) -> str:
+    """A single catalog item -- Meta's `interactive.type: "product"`. No `header` component is
+    valid for this type (Meta rejects it), unlike buttons/list above."""
+    interactive: dict = {"type": "product", "action": {"catalog_id": catalog_id, "product_retailer_id": product_retailer_id}}
+    if body_text:
+        interactive["body"] = {"text": body_text}
+    response = _post(f"{phone_number_id}/messages", access_token, {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "interactive", "interactive": interactive})
+    return _extract_wamid(response)
+
+
+def send_product_list_message(phone_number_id: str, access_token: str, to: str, catalog_id: str, header_text: str, body_text: str, sections: list[dict]) -> str:
+    """Multiple catalog items grouped into sections -- Meta's `interactive.type: "product_list"`.
+    `sections` is [{title, product_items: [{product_retailer_id}, ...]}, ...], up to 30 items
+    total across sections (Meta's own hard cap, same "caller enforces before this is called"
+    convention as send_interactive_button_message's 3-button cap above). Unlike single-product,
+    this type requires both a header and body."""
+    interactive = {
+        "type": "product_list",
+        "header": {"type": "text", "text": header_text},
+        "body": {"text": body_text},
+        "action": {"catalog_id": catalog_id, "sections": sections},
+    }
+    response = _post(f"{phone_number_id}/messages", access_token, {"messaging_product": "whatsapp", "recipient_type": "individual", "to": to, "type": "interactive", "interactive": interactive})
+    return _extract_wamid(response)
+
+
 def send_reaction_message(phone_number_id: str, access_token: str, to: str, reacted_to_wamid: str, emoji: str) -> str:
     """An empty string emoji removes a previously-sent reaction -- Meta's own convention, not a
     separate "remove reaction" call."""

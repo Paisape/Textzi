@@ -220,6 +220,14 @@ def _parse_inbound_content(msg: dict, message_type: str) -> tuple[str | None, di
         # "interactive" button_reply above) -- Meta still sends this shape for some template
         # button taps.
         return msg.get("button", {}).get("text"), msg.get("button")
+    if message_type == "order":
+        # Sent when a customer taps through a catalog/product message and places an order --
+        # catalog_id/product_items(retailer_id, quantity, item_price, currency)/text, per Meta's
+        # own order-message schema. Previously fell through to (None, None) here, silently
+        # discarding the order contents entirely (the row was still created, just empty).
+        order = msg.get("order", {})
+        item_count = len(order.get("product_items", []))
+        return order.get("text") or f"Order: {item_count} item{'s' if item_count != 1 else ''}", order
     return None, None
 
 

@@ -28,6 +28,7 @@ type WabaStatus = {
   quality_rating: string | null
   messaging_tier: string | null
   status_checked_at: string | null
+  catalog_id: string | null
 }
 
 type BusinessProfile = {
@@ -195,11 +196,35 @@ async function loadStatus() {
   loadError.value = ''
   try {
     status.value = await $api<WabaStatus>('/v1/waba/status')
-    if (status.value.connected)
+    if (status.value.connected) {
       loadBusinessProfile()
+      catalogIdInput.value = status.value.catalog_id || ''
+    }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load WhatsApp connection status.')
+  }
+}
+
+// --- Catalog id --------------------------------------------------------------------------
+
+const catalogIdInput = ref('')
+const catalogSaving = ref(false)
+const catalogError = ref('')
+
+async function saveCatalogId() {
+  catalogSaving.value = true
+  catalogError.value = ''
+  try {
+    const result = await $api<WabaStatus>('/v1/waba/catalog-id', { method: 'PUT', body: { catalog_id: catalogIdInput.value.trim() || null } })
+    if (status.value)
+      Object.assign(status.value, result)
+  }
+  catch (error: any) {
+    catalogError.value = extractErrorMessage(error, 'Could not save the catalog id.')
+  }
+  finally {
+    catalogSaving.value = false
   }
 }
 
@@ -616,6 +641,26 @@ watch(activeTab, tab => {
           <VBtn size="small" variant="tonal" :loading="refreshingStatus" @click="refreshWabaStatus">
             Refresh from Meta
           </VBtn>
+        </VCardText>
+      </VCard>
+
+      <VCard v-if="status?.connected" max-width="640" class="mt-6">
+        <VCardText>
+          <h2 class="text-h6 mb-1">
+            Product catalog
+          </h2>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            Products themselves are managed in Meta Commerce Manager -- paste your catalog id here to send product/catalog messages from the inbox.
+          </p>
+          <VAlert v-if="catalogError" type="error" variant="tonal" density="compact" class="mb-3">
+            {{ catalogError }}
+          </VAlert>
+          <div class="d-flex align-center ga-2">
+            <VTextField v-model="catalogIdInput" label="Catalog id" density="compact" hide-details style="max-inline-size: 320px;" />
+            <VBtn size="small" :loading="catalogSaving" @click="saveCatalogId">
+              Save
+            </VBtn>
+          </div>
         </VCardText>
       </VCard>
 
