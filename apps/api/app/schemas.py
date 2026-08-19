@@ -947,6 +947,28 @@ class PaymentLedgerEntryOut(BaseModel):
     created_at: str
 
 
+class SmsVolumeDay(BaseModel):
+    date: str  # "YYYY-MM-DD"
+    sent: int
+    delivered: int
+    failed: int
+
+
+class SmsFailureReason(BaseModel):
+    reason: str
+    count: int
+
+
+class SmsAnalyticsOut(BaseModel):
+    total_sent: int
+    delivered_count: int
+    failed_count: int
+    pending_count: int
+    delivery_rate: float | None  # delivered / (delivered + failed), null if neither happened yet
+    failure_reasons: list[SmsFailureReason]
+    volume_by_day: list[SmsVolumeDay]
+
+
 class PurchaseLedgerEntryOut(BaseModel):
     id: str
     invoice_number: str | None

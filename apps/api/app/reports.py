@@ -1,12 +1,12 @@
 """Read-only reporting for a logged-in customer: Wallet Ledger (every credit/debit, both
 channels), Payment Ledger (every payment-gateway order attempt, whatever its outcome), Purchase
-Ledger (only successful recharges -- rupees paid, credits received, rate applied), and Activity
-Log (org-wide login/security events). Wallet/Payment ledgers require no special capability,
-matching GET /v1/wallet's own visibility; Purchase Ledger reuses invoices:view since it's sourced
-from the same Invoice rows the Invoices page already shows; Activity Log is gated by the new
-activity:view capability, which -- unlike team:view/invoices:view -- is account-owner-only (see
-services.ROLE_CAPABILITIES)."""
-from datetime import datetime, time, timezone
+Ledger (only successful recharges -- rupees paid, credits received, rate applied), Activity
+Log (org-wide login/security events), and SMS Analytics (delivery rate/failure breakdown/volume
+over time). Wallet/Payment ledgers require no special capability, matching GET /v1/wallet's own
+visibility; Purchase Ledger reuses invoices:view since it's sourced from the same Invoice rows the
+Invoices page already shows; Activity Log is gated by the new activity:view capability, which --
+unlike team:view/invoices:view -- is account-owner-only (see services.ROLE_CAPABILITIES)."""
+from datetime import datetime, time, timedelta, timezone
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -18,7 +18,7 @@ from .auth import require_user
 from .database import get_db
 from .models import AccountActivity, ApiLog, DeliveryAttempt, Invoice, Message, PaymentOrder, User, WalletTransaction
 from .permissions import require_capability
-from .schemas import ActivityLogEntryOut, ApiLogEntryOut, PaymentLedgerEntryOut, PurchaseLedgerEntryOut, WalletLedgerEntryOut
+from .schemas import ActivityLogEntryOut, ApiLogEntryOut, PaymentLedgerEntryOut, PurchaseLedgerEntryOut, SmsAnalyticsOut, SmsFailureReason, SmsVolumeDay, WalletLedgerEntryOut
 from .security import decrypt_recipient_lenient
 from .services import DomainError, mask_mobile, resolve_user_entity
 
@@ -50,6 +50,58 @@ def wallet_ledger(channel: str | None = None, user: User = Depends(require_user)
         )
         for t in rows
     ]
+
+
+@router.get("/sms-analytics", response_model=SmsAnalyticsOut)
+def sms_analytics(days: int = 30, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Delivery rate, failure-reason breakdown, and volume-over-time for the caller's own SMS
+    sends -- Message.status is the source of truth for the three buckets ("accepted" is still
+    pending a delivery report, "failed" is a send-time all-routes-failure, "delivered"/
+    "delivery_failed" are set once a DR webhook lands, see webhooks.py); DeliveryAttempt.error
+    already carries the human-readable failure label (admin-configured DeliveryStatusCodeRule.label
+    or the raw provider status), reused as-is rather than re-deriving one."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    days = max(1, min(days, EXPORT_MAX_RANGE_DAYS))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+    messages = db.scalars(
+        select(Message).where(Message.entity_id == entity.id, Message.created_at >= since),
+    ).all()
+
+    delivered_count = sum(1 for m in messages if m.status == "delivered")
+    failed_count = sum(1 for m in messages if m.status in ("failed", "delivery_failed"))
+    pending_count = sum(1 for m in messages if m.status == "accepted")
+    resolved = delivered_count + failed_count
+    delivery_rate = round(delivered_count / resolved * 100, 1) if resolved else None
+
+    failed_attempts = db.scalars(
+        select(DeliveryAttempt).where(
+            DeliveryAttempt.entity_id == entity.id, DeliveryAttempt.created_at >= since,
+            DeliveryAttempt.status == "delivery_failed", DeliveryAttempt.error.is_not(None),
+        ),
+    ).all()
+    reason_counts: dict[str, int] = {}
+    for attempt in failed_attempts:
+        reason_counts[attempt.error] = reason_counts.get(attempt.error, 0) + 1
+    failure_reasons = [SmsFailureReason(reason=reason, count=count) for reason, count in sorted(reason_counts.items(), key=lambda kv: -kv[1])][:10]
+
+    by_day: dict[str, dict[str, int]] = {}
+    for m in messages:
+        key = m.created_at.strftime("%Y-%m-%d")
+        bucket = by_day.setdefault(key, {"sent": 0, "delivered": 0, "failed": 0})
+        bucket["sent"] += 1
+        if m.status == "delivered":
+            bucket["delivered"] += 1
+        elif m.status in ("failed", "delivery_failed"):
+            bucket["failed"] += 1
+    volume_by_day = [SmsVolumeDay(date=day, **counts) for day, counts in sorted(by_day.items())]
+
+    return SmsAnalyticsOut(
+        total_sent=len(messages), delivered_count=delivered_count, failed_count=failed_count, pending_count=pending_count,
+        delivery_rate=delivery_rate, failure_reasons=failure_reasons, volume_by_day=volume_by_day,
+    )
 
 
 @router.get("/payment-ledger", response_model=list[PaymentLedgerEntryOut])

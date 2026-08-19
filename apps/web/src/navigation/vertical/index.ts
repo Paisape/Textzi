@@ -115,6 +115,11 @@ export const SMS_NAV_ITEMS = [
     icon: { icon: 'tabler-message-2' },
   },
   {
+    title: 'Analytics',
+    to: { name: 'sms-analytics' },
+    icon: { icon: 'tabler-chart-line' },
+  },
+  {
     title: 'Manage',
     to: { name: 'channels-sms' },
     icon: { icon: 'tabler-settings' },
