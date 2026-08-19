@@ -39,7 +39,7 @@ from .team import router as team_router
 from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
 from .waba import router as waba_router
-from .waba_campaigns import router as waba_campaigns_router
+from .waba_campaigns import router as waba_campaigns_router, run_due_campaigns
 from .waba_inbox import router as waba_inbox_router
 from .waba_realtime import router as waba_realtime_router
 from .waba_reports import router as waba_reports_router
@@ -92,8 +92,12 @@ async def lifespan(_: FastAPI):
     # shape as the archive job above), not a per-report cron; the function itself decides what's
     # actually due today.
     scheduler.add_job(send_due_scheduled_reports, CronTrigger(hour=6, minute=0), id="scheduled_report_runner", misfire_grace_time=3600)
+    # WhatsApp campaign scheduling -- picks up any campaign whose scheduled_at has passed. 5
+    # minutes is granular enough that a customer scheduling "9am" actually goes out close to 9am,
+    # unlike the hour/day-granularity jobs above.
+    scheduler.add_job(run_due_campaigns, IntervalTrigger(minutes=5), id="waba_campaign_runner", misfire_grace_time=600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, and daily report-schedule check")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, and 5-minute campaign runner")
 
     yield
 

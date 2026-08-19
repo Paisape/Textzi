@@ -3040,6 +3040,7 @@ class CampaignOut(BaseModel):
     failed_count: int
     created_at: str
     completed_at: str | None
+    scheduled_at: str | None = None
 
 
 class CampaignCreateRequest(BaseModel):
@@ -3048,6 +3049,10 @@ class CampaignCreateRequest(BaseModel):
     template_language: str = Field(min_length=1, max_length=20)
     body_params: list[str] = []
     segment_id: str
+
+
+class CampaignScheduleRequest(BaseModel):
+    scheduled_at: str  # ISO datetime, must be in the future
 
 
 # --- Business hours & SLA ----------------------------------------------------------------------

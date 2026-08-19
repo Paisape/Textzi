@@ -20,6 +20,7 @@ type Campaign = {
   failed_count: number
   created_at: string
   completed_at: string | null
+  scheduled_at: string | null
 }
 type Template = { name: string, status: string, language: string, body: string | null }
 type Label = { id: string, scope: string, name: string, color: string }
@@ -63,6 +64,8 @@ function statusColor(status: string) {
     return 'error'
   if (status === 'sending')
     return 'warning'
+  if (status === 'scheduled')
+    return 'info'
   return 'default'
 }
 
@@ -177,6 +180,53 @@ async function sendCampaign(campaign: Campaign) {
   }
 }
 
+const scheduleDialog = ref(false)
+const scheduleCampaignId = ref<string | null>(null)
+const scheduleAt = ref('')
+const scheduleSaving = ref(false)
+const scheduleError = ref('')
+
+function openScheduleDialog(campaign: Campaign) {
+  scheduleCampaignId.value = campaign.id
+  scheduleAt.value = ''
+  scheduleError.value = ''
+  scheduleDialog.value = true
+}
+
+async function confirmSchedule() {
+  if (!scheduleCampaignId.value || !scheduleAt.value)
+    return
+  scheduleSaving.value = true
+  scheduleError.value = ''
+  try {
+    const iso = new Date(scheduleAt.value).toISOString()
+    const updated = await $api<Campaign>(`/v1/waba/campaigns/${scheduleCampaignId.value}/schedule`, { method: 'POST', body: { scheduled_at: iso } })
+    const i = campaigns.value.findIndex(c => c.id === updated.id)
+    if (i !== -1)
+      campaigns.value[i] = updated
+    scheduleDialog.value = false
+  }
+  catch (error: any) {
+    scheduleError.value = extractErrorMessage(error, 'Could not schedule this campaign.')
+  }
+  finally {
+    scheduleSaving.value = false
+  }
+}
+
+async function unscheduleCampaign(campaign: Campaign) {
+  loadError.value = ''
+  try {
+    const updated = await $api<Campaign>(`/v1/waba/campaigns/${campaign.id}/unschedule`, { method: 'POST' })
+    const i = campaigns.value.findIndex(c => c.id === updated.id)
+    if (i !== -1)
+      campaigns.value[i] = updated
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not unschedule this campaign.')
+  }
+}
+
 async function deleteCampaign(campaign: Campaign) {
   try {
     await $api(`/v1/waba/campaigns/${campaign.id}`, { method: 'DELETE' })
@@ -240,13 +290,24 @@ onMounted(loadAll)
                 <VChip size="small" :color="statusColor(campaign.status)">
                   {{ campaign.status }}
                 </VChip>
+                <p v-if="campaign.scheduled_at" class="text-caption text-medium-emphasis mb-0 mt-1">
+                  {{ new Date(campaign.scheduled_at).toLocaleString() }}
+                </p>
               </td>
               <td>{{ campaign.sent_count }} sent, {{ campaign.failed_count }} failed / {{ campaign.total_recipients }}</td>
               <td>
-                <VBtn v-if="campaign.status === 'draft'" size="small" variant="tonal" :loading="sending === campaign.id" @click="sendCampaign(campaign)">
-                  Send
+                <template v-if="campaign.status === 'draft'">
+                  <VBtn size="small" variant="tonal" :loading="sending === campaign.id" @click="sendCampaign(campaign)">
+                    Send now
+                  </VBtn>
+                  <VBtn size="small" variant="text" @click="openScheduleDialog(campaign)">
+                    Schedule
+                  </VBtn>
+                  <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteCampaign(campaign)" />
+                </template>
+                <VBtn v-else-if="campaign.status === 'scheduled'" size="small" variant="text" @click="unscheduleCampaign(campaign)">
+                  Unschedule
                 </VBtn>
-                <VBtn v-if="campaign.status === 'draft'" size="small" variant="text" icon="tabler-trash" @click="deleteCampaign(campaign)" />
               </td>
             </tr>
           </tbody>
@@ -319,6 +380,26 @@ onMounted(loadAll)
         </VBtn>
         <VBtn :loading="campaignSaving" @click="createCampaign">
           Create
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="scheduleDialog" max-width="380">
+    <VCard>
+      <VCardTitle>Schedule send</VCardTitle>
+      <VCardText>
+        <VAlert v-if="scheduleError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ scheduleError }}
+        </VAlert>
+        <VTextField v-model="scheduleAt" type="datetime-local" label="Send at" density="compact" />
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="scheduleDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn :loading="scheduleSaving" @click="confirmSchedule">
+          Schedule
         </VBtn>
       </VCardText>
     </VCard>

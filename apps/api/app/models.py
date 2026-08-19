@@ -2004,13 +2004,17 @@ class Campaign(Base):
     template_language: Mapped[str] = mapped_column(String(20))
     body_params: Mapped[list] = mapped_column(JSON, default=list)
     segment_id: Mapped[str] = mapped_column(ForeignKey("segments.id"))
-    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|sending|completed|failed
+    status: Mapped[str] = mapped_column(String(20), default="draft")  # draft|scheduled|sending|completed|failed
     total_recipients: Mapped[int] = mapped_column(Integer, default=0)
     sent_count: Mapped[int] = mapped_column(Integer, default=0)
     failed_count: Mapped[int] = mapped_column(Integer, default=0)
     created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Null = send immediately via POST .../send (today's only path, unchanged). Set = the campaign
+    # sits at status="scheduled" until run_due_campaigns (main.py's scheduler, same pattern as
+    # CRM sequences/scheduled reports) picks it up and runs the exact same send logic.
+    scheduled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class CampaignRecipient(Base):
