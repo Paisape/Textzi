@@ -157,6 +157,41 @@ def close_virtual_account(user: User = Depends(require_user), db: Session = Depe
     return {"status": "closed"}
 
 
+def _handle_smart_collect_refund(db: Session, payload: dict) -> dict:
+    """A Smart Collect transfer refunded from Razorpay's dashboard (bank transfers can be refunded
+    back to the sender same as any other Razorpay payment) -- reverses the TextziWallet credit that
+    was given at virtual_account.credited time, keyed by the same razorpay_payment_id used as that
+    credit's ledger reference. Best-effort: if the balance has since been spent, the reversal is
+    skipped and logged rather than pushing the wallet negative -- same posture as the admin-side
+    reconcile fallback (payments_smart_collect.py has no direct read of that code path, but mirrors
+    its reasoning) for the Checkout flow's own refund handling."""
+    payment_entity = payload.get("payload", {}).get("payment", {}).get("entity", {})
+    razorpay_payment_id = payment_entity.get("id")
+    if not razorpay_payment_id:
+        return {"status": "ignored", "reason": "missing_payment_id"}
+
+    credit_txn = db.scalar(select(TextziWalletTransaction).where(TextziWalletTransaction.reference == razorpay_payment_id))
+    if not credit_txn:
+        logger.info("smart collect refund webhook: no matching wallet credit for payment_id=%s (never credited, or already reversed)", razorpay_payment_id)
+        return {"status": "ignored", "reason": "no_matching_credit"}
+
+    reversal_reference = f"refund:{razorpay_payment_id}"
+    if db.scalar(select(TextziWalletTransaction).where(TextziWalletTransaction.reference == reversal_reference)):
+        return {"status": "ok", "reason": "already_processed"}
+
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == razorpay_payment_id))
+    reversed_credit = False
+    try:
+        debit_textzi_wallet(db, credit_txn.entity_id, float(credit_txn.amount), transaction_type="smart_collect_refund", reference=reversal_reference)
+        reversed_credit = True
+    except DomainError:
+        logger.warning("smart collect refund webhook: could not reverse credit for payment_id=%s -- balance already spent, needs manual review", razorpay_payment_id)
+    if order:
+        order.status = "refunded"
+    db.commit()
+    return {"status": "ok", "reversed": reversed_credit}
+
+
 @webhook_router.post("/smart-collect")
 async def receive_smart_collect_webhook(request: Request, db: Session = Depends(get_db)):
     """Signature-verified the identical way waba_webhooks.py verifies Meta's own webhooks: HMAC-
@@ -179,6 +214,9 @@ async def receive_smart_collect_webhook(request: Request, db: Session = Depends(
         payload = json.loads(raw_body)
     except ValueError:
         return {"status": "ignored", "reason": "invalid_json"}
+
+    if payload.get("event") == "refund.processed":
+        return _handle_smart_collect_refund(db, payload)
 
     if payload.get("event") != "virtual_account.credited":
         return {"status": "ignored", "reason": "unhandled_event"}

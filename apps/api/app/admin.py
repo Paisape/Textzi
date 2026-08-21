@@ -41,7 +41,7 @@ from .security import decode_access_token, decrypt_recipient_lenient, decrypt_se
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
 from . import archive_jobs
-from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -1531,6 +1531,8 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
     captured = [p for p in payments.get("items", []) if p.get("status") == "captured"]
     action_taken = "no_change"
 
+    refunded = [p for p in payments.get("items", []) if p.get("status") == "refunded" or (p.get("amount_refunded") or 0) > 0]
+
     if order.status == "suspicious":
         # Already flagged by an earlier reconcile (or the original /verify call) -- re-entering
         # the mismatch branch below on every subsequent reconcile attempt would re-send the
@@ -1538,6 +1540,17 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
         # being "suspicious" (not "paid") still satisfies the condition below. Nothing has changed
         # since the last flag; an admin already has this order queued for manual review.
         action_taken = "already_suspicious"
+    elif order.status == "refunded":
+        # Already flagged -- same "don't re-alert every click" reasoning as the suspicious branch.
+        action_taken = "already_refunded"
+    elif order.status == "paid" and refunded:
+        # Razorpay shows this order's payment was refunded after we already credited the wallet
+        # and marked it paid -- there's no webhook for this (see flag_refunded_payment's own
+        # docstring), so this manual reconcile click is the only path back to catching it.
+        entity = db.get(Entity, order.entity_id)
+        payment_id = refunded[0]["id"]
+        flag_refunded_payment(db, order, entity, payment_id, f"Razorpay reports payment {payment_id} as refunded")
+        action_taken = "flagged_refunded"
     elif order.status != "paid" and captured:
         payment_id = captured[0]["id"]
         captured_amount = captured[0].get("amount")

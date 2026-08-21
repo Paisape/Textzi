@@ -697,6 +697,38 @@ def flag_suspicious_payment(db: Session, order: PaymentOrder, entity: Entity, re
     )
 
 
+def flag_refunded_payment(db: Session, order: PaymentOrder, entity: Entity, payment_id: str, reason: str, user: User | None = None) -> None:
+    """Called when Razorpay's own record shows a payment we'd already marked "paid" (and credited
+    the wallet for) has since been refunded on Razorpay's side -- a refund is issued from
+    Razorpay's own dashboard, entirely outside this codebase, so there's no webhook/client call
+    that tells us about it automatically; this only runs when an admin re-checks via reconcile.
+    Best-effort reverses the wallet credit (skipped, not blocked, if the balance has since been
+    spent) and always flags for manual review either way, mirroring flag_suspicious_payment's
+    "never silently trust a mismatch" posture."""
+    order.status = "refunded"
+    reversed_credit = False
+    try:
+        debit_wallet(db, entity.id, float(order.amount), reference=f"refund:{payment_id}")
+        reversed_credit = True
+    except DomainError:
+        pass
+    log_activity(
+        db, entity.organization_id, "payment_flagged_refunded",
+        f"Payment order {order.id} refunded on Razorpay: {reason} (wallet reversal {'applied' if reversed_credit else 'skipped -- insufficient balance, needs manual review'})",
+        user_id=user.id if user else None, actor_email=user.email if user else None,
+    )
+    info = get_platform_company_info(db)
+    send_email(
+        db, to=info.support_email,
+        subject=f"[Review] Payment order {order.id} was refunded on Razorpay",
+        html_body=render_email(
+            "A previously-paid order was refunded",
+            f"<p>Order <strong>{order.id}</strong> (entity {entity.id}) shows as refunded on Razorpay: {reason}</p>"
+            f"<p>{'The wallet credit was automatically reversed.' if reversed_credit else 'The wallet credit could NOT be automatically reversed (balance already spent) -- review and adjust manually.'}</p>",
+        ),
+    )
+
+
 def resolve_rate_card(db: Session, user: User) -> RateCard:
     assignment = db.get(UserRateCard, user.id)
     if assignment:
