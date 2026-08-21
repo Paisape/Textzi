@@ -18,6 +18,7 @@ from decimal import Decimal
 import razorpay
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import require_user
@@ -154,8 +155,12 @@ async def receive_smart_collect_webhook(request: Request, db: Session = Depends(
         logger.warning("smart collect webhook: missing required fields in payload")
         return {"status": "ignored", "reason": "missing_fields"}
 
-    # Idempotency: Razorpay retries on non-2xx -- a payment id already recorded means this exact
-    # credit was already processed, so short-circuit rather than crediting twice.
+    # Idempotency: Razorpay retries on non-2xx, and can deliver near-simultaneous duplicates for
+    # the same payment_id -- this SELECT is a fast-path only (avoids redundant work on the common
+    # case), NOT the actual correctness guarantee, since a plain check-then-act here has a real
+    # race window under concurrent delivery. The real guarantee is PaymentOrder.provider_order_id's
+    # DB-level unique constraint below: two concurrent credits for the same payment_id will have
+    # one succeed and one hit IntegrityError, which is what actually prevents a double-credit.
     if db.scalar(select(TextziWalletTransaction).where(TextziWalletTransaction.reference == razorpay_payment_id)):
         return {"status": "ok", "reason": "already_processed"}
 
@@ -173,7 +178,16 @@ async def receive_smart_collect_webhook(request: Request, db: Session = Depends(
     net_rupees = net_paise / 100
     wallet = credit_textzi_wallet(db, virtual_account.entity_id, net_rupees, transaction_type="smart_collect_topup", reference=razorpay_payment_id)
     db.add(PaymentOrder(entity_id=virtual_account.entity_id, provider="razorpay_smart_collect", provider_order_id=razorpay_payment_id, amount=net_rupees, purpose="textzi_wallet_topup", status="paid"))
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # The race the SELECT above couldn't fully close: a concurrent delivery for this same
+        # payment_id committed first. Roll back this attempt's credit entirely -- the other
+        # request's commit is the one that actually counts -- and report success either way,
+        # since from Razorpay's perspective the payment IS processed.
+        db.rollback()
+        logger.info("smart collect webhook: concurrent duplicate delivery for payment_id=%s, discarding this attempt's credit", razorpay_payment_id)
+        return {"status": "ok", "reason": "already_processed"}
     logger.info("smart collect: credited %.2f to TextziWallet for entity_id=%s (gross=%s paise, fee=%s paise)", net_rupees, virtual_account.entity_id, gross_paise, fee_paise)
     return {"status": "ok"}
 
