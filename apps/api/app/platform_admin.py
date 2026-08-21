@@ -195,17 +195,17 @@ def test_turnstile_connection(db: Session = Depends(get_db)):
 def get_razorpay_settings(db: Session = Depends(get_db)):
     row = db.get(PlatformRazorpaySettings, "platform")
     key_id, _ = get_platform_razorpay_keys(db)
-    return PlatformRazorpaySettingsOut(key_id=key_id, key_secret_configured=bool(row and row.key_secret_encrypted))
+    return PlatformRazorpaySettingsOut(key_id=key_id, key_secret_configured=bool(row and row.key_secret_encrypted), webhook_secret_configured=bool(row and row.webhook_secret_encrypted))
 
 
 @router.put("/razorpay-settings", response_model=PlatformRazorpaySettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def update_razorpay_settings(payload: PlatformRazorpaySettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """key_secret is write-only, same convention as SMTP's password / R2's secret_access_key --
-    GET never returns it, a blank value on PUT keeps whatever was already stored. A blank key_id
-    also keeps the existing value rather than clearing it -- get_platform_razorpay_keys only falls
-    back to .env when the DB row's field is None, so an explicit blank-out would otherwise silently
-    break the .env-based keys already live in production for SMS the moment this page is opened
-    without both fields filled in."""
+    """key_secret/webhook_secret are write-only, same convention as SMTP's password / R2's
+    secret_access_key -- GET never returns them, a blank value on PUT keeps whatever was already
+    stored. A blank key_id also keeps the existing value rather than clearing it --
+    get_platform_razorpay_keys only falls back to .env when the DB row's field is None, so an
+    explicit blank-out would otherwise silently break the .env-based keys already live in
+    production for SMS the moment this page is opened without both fields filled in."""
     row = db.get(PlatformRazorpaySettings, "platform")
     if not row:
         row = PlatformRazorpaySettings(id="platform")
@@ -214,10 +214,12 @@ def update_razorpay_settings(payload: PlatformRazorpaySettingsUpdate, request: R
         row.key_id = payload.key_id
     if payload.key_secret:
         row.key_secret_encrypted = encrypt_secret(payload.key_secret)
+    if payload.webhook_secret:
+        row.webhook_secret_encrypted = encrypt_secret(payload.webhook_secret)
     log_activity(db, None, "platform_razorpay_settings_updated", "Platform Razorpay settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     key_id, _ = get_platform_razorpay_keys(db)
-    return PlatformRazorpaySettingsOut(key_id=key_id, key_secret_configured=bool(row.key_secret_encrypted))
+    return PlatformRazorpaySettingsOut(key_id=key_id, key_secret_configured=bool(row.key_secret_encrypted), webhook_secret_configured=bool(row.webhook_secret_encrypted))
 
 
 @router.get("/waba-settings", response_model=PlatformWabaSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

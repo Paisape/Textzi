@@ -22,12 +22,13 @@ from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
     ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, PlatformPaymentMethodConfig, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaApiCallLogOut, AdminWabaWebhookLogOut,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    PaymentMethodConfigOut, PaymentMethodConfigUpdate,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
     PlatformMessageTelemetryOut, ProfileChangeRequestAdminOut, ProfileChangeRequestStatusUpdate, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
@@ -496,6 +497,38 @@ def update_channel_fees(channel: str, payload: ChannelFeeConfigUpdate, db: Sessi
     fees.enabled = payload.enabled
     db.commit(); db.refresh(fees)
     return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee), enabled=fees.enabled)
+
+
+_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect")
+
+
+@router.get("/payment-methods", response_model=list[PaymentMethodConfigOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def list_payment_methods(db: Session = Depends(get_db)):
+    # razorpay_checkout defaults enabled (today's only method, must not silently disappear for
+    # existing customers); razorpay_smart_collect defaults disabled until an admin turns it on.
+    configs = {c.payment_method: c for c in db.scalars(select(PlatformPaymentMethodConfig)).all()}
+    return [
+        PaymentMethodConfigOut(
+            payment_method=method,
+            enabled=configs[method].enabled if method in configs else method == "razorpay_checkout",
+            flat_fee_paise=configs[method].flat_fee_paise if method in configs else 0,
+        )
+        for method in _PAYMENT_METHODS
+    ]
+
+
+@router.put("/payment-methods/{payment_method}", response_model=PaymentMethodConfigOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_payment_method(payment_method: str, payload: PaymentMethodConfigUpdate, db: Session = Depends(get_db)):
+    if payment_method not in _PAYMENT_METHODS:
+        raise HTTPException(status_code=422, detail=f"Unknown payment method '{payment_method}'")
+    config = db.get(PlatformPaymentMethodConfig, payment_method)
+    if not config:
+        config = PlatformPaymentMethodConfig(payment_method=payment_method)
+        db.add(config)
+    config.enabled = payload.enabled
+    config.flat_fee_paise = payload.flat_fee_paise
+    db.commit(); db.refresh(config)
+    return PaymentMethodConfigOut(payment_method=config.payment_method, enabled=config.enabled, flat_fee_paise=config.flat_fee_paise)
 
 
 def _billing_plan_out(plan: BillingPlan) -> BillingPlanOut:

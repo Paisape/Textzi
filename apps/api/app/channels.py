@@ -40,7 +40,7 @@ API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
 ACTION_LABELS = {
     "generate_key": "generating a new API key", "update_ip_whitelist": "updating an API key's IP allow-list",
-    "revoke_key": "revoking an API key",
+    "revoke_key": "revoking an API key", "wallet_spend": "spending from your Textzi Wallet",
 }
 
 

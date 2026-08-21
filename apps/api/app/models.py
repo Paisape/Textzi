@@ -365,6 +365,63 @@ class WabaWallet(Base):
     credit_used: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
 
 
+class TextziWallet(Base):
+    """A separate rupee-balance wallet, distinct from Wallet/WabaWallet's SMS-/WhatsApp-credit
+    balances -- funded only by Razorpay Smart Collect bank transfers (net of the platform's flat
+    fee, see PlatformPaymentMethodConfig), spendable across SMS credit top-up, WABA subscription,
+    and CRM subscription purchase. Prepaid-only, no credit_limit/credit_used -- unlike Wallet/
+    WabaWallet there's no credit-line concept here, just a plain balance."""
+    __tablename__ = "textzi_wallets"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    balance: Mapped[float] = mapped_column(Numeric(14, 4), default=0)
+
+
+class TextziWalletTransaction(Base):
+    """Audit ledger for TextziWallet, same shape/purpose as WalletTransaction -- one row per
+    credit (Smart Collect top-up) or debit (spend on SMS/WABA/CRM). type is a free string
+    following this codebase's existing convention (WalletTransaction has no enum either):
+    "smart_collect_topup" | "spend_sms_credit" | "spend_waba_subscription" |
+    "spend_crm_subscription". reference is the Razorpay payment id (credits) or the resulting
+    Message/ChannelSubscription id (debits) -- used by the Smart Collect webhook handler to
+    detect and skip an already-processed retry."""
+    __tablename__ = "textzi_wallet_transactions"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    type: Mapped[str] = mapped_column(String(40))
+    amount: Mapped[float] = mapped_column(Numeric(14, 4))
+    balance_after: Mapped[float] = mapped_column(Numeric(14, 4))
+    reference: Mapped[str | None] = mapped_column(String(160), nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RazorpayVirtualAccount(Base):
+    """One row per entity that has generated Smart Collect bank-transfer details -- entity_id as
+    primary key mirrors WabaConnection's own convention (at most one live virtual account per
+    entity). razorpay_account_id is what an incoming virtual_account.credited webhook carries,
+    used to map the credit back to this entity."""
+    __tablename__ = "razorpay_virtual_accounts"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    razorpay_account_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    ifsc: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    vpa: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    status: Mapped[str] = mapped_column(String(10), default="active")  # "active" | "closed"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PlatformPaymentMethodConfig(Base):
+    """Admin-editable, per-method kill switch for wallet/subscription payment -- same enabled-flag
+    shape and purpose as ChannelFeeConfig.enabled (checked before either Razorpay Checkout or
+    Smart Collect is offered anywhere, frontend or backend). flat_fee_paise only applies to
+    "razorpay_smart_collect" -- deducted from every bank transfer before crediting TextziWallet,
+    admin-configurable rather than hardcoded since it's meant to track Razorpay's own real cost
+    (or a margin on top), not a fixed product constant."""
+    __tablename__ = "platform_payment_method_configs"
+    payment_method: Mapped[str] = mapped_column(String(30), primary_key=True)  # "razorpay_checkout" | "razorpay_smart_collect"
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    flat_fee_paise: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class PlatformWabaSettings(Base):
     """Singleton row. Textzi's own Meta Tech Provider app credentials for WhatsApp Embedded
     Signup -- editable from the admin UI, not just `.env`, same convention as
@@ -451,7 +508,7 @@ class PaymentOrder(Base):
     __tablename__ = "payment_orders"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
-    provider: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str] = mapped_column(String(30))  # "razorpay" | "razorpay_smart_collect"
     provider_order_id: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     amount: Mapped[float] = mapped_column(Numeric(14, 4))
     purpose: Mapped[str] = mapped_column(String(30), default="wallet_recharge")
@@ -999,6 +1056,11 @@ class PlatformRazorpaySettings(Base):
     id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
     key_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     key_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Separate from key_id/key_secret above -- this is the secret configured in Razorpay
+    # Dashboard > Webhooks specifically for Smart Collect's virtual_account.credited event, used
+    # to verify X-Razorpay-Signature the same way app_secret verifies Meta's X-Hub-Signature-256
+    # in waba_webhooks.py. Never returned by GET.
+    webhook_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class PlatformZohoSettings(Base):

@@ -381,6 +381,41 @@ class RazorpayOrderResponse(BaseModel):
     currency: str = "INR"
 
 
+class RazorpayVirtualAccountOut(BaseModel):
+    account_number: str | None
+    ifsc: str | None
+    vpa: str | None
+    status: str
+
+
+class TextziWalletOut(BaseModel):
+    entity_id: str
+    balance: float
+
+
+class TextziWalletTransactionOut(BaseModel):
+    id: str
+    type: str
+    amount: float
+    balance_after: float
+    reference: str | None
+    created_at: str
+
+
+class WalletSpendOtpRequest(BaseModel):
+    purpose: str = Field(pattern="^(sms_credit|waba_subscription|crm_subscription)$")
+
+
+class TextziWalletSpendSmsRequest(BaseModel):
+    amount: float = Field(gt=0)
+    otp_code: str = Field(min_length=4, max_length=10)
+
+
+class TextziWalletSpendPlanRequest(BaseModel):
+    plan_id: str
+    otp_code: str = Field(min_length=4, max_length=10)
+
+
 class RazorpayVerifyRequest(BaseModel):
     razorpay_order_id: str
     razorpay_payment_id: str
@@ -757,6 +792,17 @@ class ChannelFeeConfigOut(BaseModel):
     dlt_platform_fee: float
     dlt_service_fee: float
     enabled: bool
+
+
+class PaymentMethodConfigOut(BaseModel):
+    payment_method: str
+    enabled: bool
+    flat_fee_paise: int
+
+
+class PaymentMethodConfigUpdate(BaseModel):
+    enabled: bool
+    flat_fee_paise: int = Field(default=0, ge=0, le=100_000)
 
 
 class ApiKeyOut(BaseModel):
@@ -1301,11 +1347,13 @@ class PublicTurnstileConfigOut(BaseModel):
 class PlatformRazorpaySettingsOut(BaseModel):
     key_id: str | None
     key_secret_configured: bool
+    webhook_secret_configured: bool = False
 
 
 class PlatformRazorpaySettingsUpdate(BaseModel):
     key_id: str | None = None
     key_secret: str | None = None  # blank = keep the existing one, same convention as SMTP's password / R2's secret_access_key
+    webhook_secret: str | None = None  # blank = keep the existing one -- the Smart Collect Dashboard > Webhooks secret
 
 
 class PlatformWabaSettingsOut(BaseModel):

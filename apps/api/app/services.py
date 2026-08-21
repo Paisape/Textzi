@@ -9,7 +9,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -174,6 +174,15 @@ def get_platform_razorpay_keys(db: Session) -> tuple[str | None, str | None]:
     key_id = row.key_id if row and row.key_id else settings.razorpay_key_id
     key_secret = decrypt_secret(row.key_secret_encrypted) if row and row.key_secret_encrypted else settings.razorpay_key_secret
     return key_id, key_secret
+
+
+def get_platform_razorpay_webhook_secret(db: Session) -> str | None:
+    """Separate from get_platform_razorpay_keys above -- this is the Dashboard > Webhooks secret
+    used to verify Smart Collect's virtual_account.credited event signature, not the API
+    key/secret used to call Razorpay's own APIs. No .env fallback (unlike key_id/key_secret) --
+    this only ever needs to exist once Smart Collect is actually being configured."""
+    row = db.get(PlatformRazorpaySettings, "platform")
+    return decrypt_secret(row.webhook_secret_encrypted) if row and row.webhook_secret_encrypted else None
 
 
 def get_platform_waba_webhook_verify_token(db: Session) -> str | None:
@@ -563,6 +572,40 @@ def debit_wallet(db: Session, entity_id: str, amount: float, reference: str | No
     return wallet
 
 
+def credit_textzi_wallet(db: Session, entity_id: str, amount: float, transaction_type: str, reference: str | None = None) -> TextziWallet:
+    """Same row-locked/Decimal-math/audit-row shape as credit_wallet above, but for the separate
+    rupee-balance TextziWallet -- a parallel function rather than a generic-over-wallet-type
+    extension of credit_wallet/debit_wallet, since TextziWallet has no credit_limit/credit_used
+    fields those functions' shared logic depends on. Creates the wallet row on first use (Smart
+    Collect can credit an entity before anyone has ever opened the Textzi Wallet page)."""
+    if amount <= 0:
+        raise DomainError("Credit amount must be positive")
+    wallet = db.get(TextziWallet, entity_id, with_for_update=True)
+    if not wallet:
+        wallet = TextziWallet(entity_id=entity_id, balance=0)
+        db.add(wallet)
+        db.flush()
+    amount_dec = Decimal(str(amount))
+    wallet.balance = wallet.balance + amount_dec
+    db.add(TextziWalletTransaction(entity_id=entity_id, type=transaction_type, amount=amount_dec, balance_after=Decimal(str(wallet.balance)), reference=reference))
+    return wallet
+
+
+def debit_textzi_wallet(db: Session, entity_id: str, amount: float, transaction_type: str, reference: str | None = None) -> TextziWallet:
+    """Deducts `amount` (must be positive) from TextziWallet.balance -- prepaid-only, no credit
+    headroom to fall back on (unlike debit_wallet), so insufficient balance always rejects
+    outright."""
+    if amount <= 0:
+        raise DomainError("Debit amount must be positive")
+    wallet = db.get(TextziWallet, entity_id, with_for_update=True)
+    if not wallet or wallet.balance < Decimal(str(amount)):
+        raise DomainError("Insufficient Textzi Wallet balance")
+    amount_dec = Decimal(str(amount))
+    wallet.balance = wallet.balance - amount_dec
+    db.add(TextziWalletTransaction(entity_id=entity_id, type=transaction_type, amount=-amount_dec, balance_after=Decimal(str(wallet.balance)), reference=reference))
+    return wallet
+
+
 TOPUP_MISMATCH_TOLERANCE = 0.01  # rupee-level float rounding noise, not a real discrepancy
 
 
@@ -814,6 +857,17 @@ def channel_enabled(db: Session, channel: str) -> bool:
     very call succeeds, so channel_active("waba") would always read false beforehand)."""
     fees = db.get(ChannelFeeConfig, channel)
     return not (fees and not fees.enabled)
+
+
+def payment_method_config(db: Session, payment_method: str) -> PlatformPaymentMethodConfig:
+    """Same "row may not exist yet" tolerance as channel_enabled -- razorpay_checkout defaults
+    enabled (today's only method, must not silently disappear before an admin ever visits the
+    settings page); razorpay_smart_collect defaults disabled until explicitly turned on. Returns
+    a real (possibly unpersisted) row rather than a bool so callers can also read flat_fee_paise."""
+    config = db.get(PlatformPaymentMethodConfig, payment_method)
+    if config:
+        return config
+    return PlatformPaymentMethodConfig(payment_method=payment_method, enabled=(payment_method == "razorpay_checkout"), flat_fee_paise=0)
 
 
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:

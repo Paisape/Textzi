@@ -31,6 +31,80 @@ const quoteLoading = ref(false)
 const payError = ref('')
 const paying = ref(false)
 
+// --- Payment method picker (Razorpay Checkout vs Textzi Wallet) ----------------------------
+
+type PaymentMethod = { payment_method: string, enabled: boolean, flat_fee_paise: number }
+type TextziWallet = { entity_id: string, balance: number }
+
+const paymentMethods = ref<PaymentMethod[]>([])
+const textziWalletBalance = ref(0)
+const selectedMethod = ref<'razorpay_checkout' | 'razorpay_smart_collect'>('razorpay_checkout')
+
+const checkoutEnabled = computed(() => paymentMethods.value.find(m => m.payment_method === 'razorpay_checkout')?.enabled ?? true)
+const walletMethodEnabled = computed(() => paymentMethods.value.find(m => m.payment_method === 'razorpay_smart_collect')?.enabled ?? false)
+const canPayWithWallet = computed(() => walletMethodEnabled.value && quote.value !== null && textziWalletBalance.value >= quote.value.total_amount)
+
+async function loadPaymentOptions() {
+  try {
+    const [methods, wallet] = await Promise.all([
+      $api<PaymentMethod[]>('/v1/wallet/payment-methods').catch(() => [] as PaymentMethod[]),
+      $api<TextziWallet>('/v1/wallet/textzi').catch(() => ({ entity_id: '', balance: 0 })),
+    ])
+    paymentMethods.value = methods
+    textziWalletBalance.value = wallet.balance
+    selectedMethod.value = checkoutEnabled.value ? 'razorpay_checkout' : 'razorpay_smart_collect'
+  }
+  catch {
+    // Payment-method listing is admin-only in some deployments -- fall back to Checkout-only, the existing default behavior.
+  }
+}
+
+// --- OTP confirmation for Textzi Wallet spend -----------------------------------------------
+
+const otpDialogOpen = ref(false)
+const otpCode = ref('')
+const otpError = ref('')
+const otpSubmitting = ref(false)
+const otpSentVia = ref<'mobile' | 'email' | null>(null)
+const otpMaskedDestination = ref('')
+
+async function openOtpDialog() {
+  payError.value = ''
+  try {
+    const result = await $api<{ sent_via: 'mobile' | 'email', masked_destination: string, dev_otp_code: string | null }>('/v1/wallet/textzi/spend/request-otp', {
+      method: 'POST',
+      body: { purpose: 'sms_credit' },
+    })
+    otpSentVia.value = result.sent_via
+    otpMaskedDestination.value = result.masked_destination
+    otpCode.value = result.dev_otp_code ?? ''
+    otpError.value = ''
+    otpDialogOpen.value = true
+  }
+  catch (error: any) {
+    payError.value = extractErrorMessage(error, 'Could not send a verification code.')
+  }
+}
+
+async function onSubmitOtp() {
+  if (!quote.value)
+    return
+  otpSubmitting.value = true
+  otpError.value = ''
+  try {
+    await $api('/v1/wallet/textzi/spend/sms-credit', { method: 'POST', body: { amount: amount.value, otp_code: otpCode.value } })
+    otpDialogOpen.value = false
+    emit('recharged')
+    emit('update:isDialogVisible', false)
+  }
+  catch (error: any) {
+    otpError.value = extractErrorMessage(error, 'Incorrect or expired code.')
+  }
+  finally {
+    otpSubmitting.value = false
+  }
+}
+
 let quoteTimer: ReturnType<typeof setTimeout> | null = null
 
 async function fetchQuote() {
@@ -71,6 +145,7 @@ watch(() => props.isDialogVisible, async visible => {
       // Keep the previous default if the resolved card can't be fetched yet (e.g. no entity).
     }
     fetchQuote()
+    loadPaymentOptions()
   }
 })
 
@@ -99,6 +174,10 @@ async function onContinueToPay() {
   payError.value = ''
   if (!amount.value || amount.value < minRecharge.value) {
     payError.value = `Minimum top-up is ₹${minRecharge.value.toLocaleString('en-IN')}.`
+    return
+  }
+  if (selectedMethod.value === 'razorpay_smart_collect') {
+    await openOtpDialog()
     return
   }
   paying.value = true
@@ -239,6 +318,15 @@ async function onSimulateRecharge() {
           color="primary"
           class="mb-6"
         />
+
+        <VRadioGroup v-if="checkoutEnabled && walletMethodEnabled" v-model="selectedMethod" density="compact" class="mb-2">
+          <VRadio label="Pay now (card / UPI / netbanking)" value="razorpay_checkout" />
+          <VRadio
+            :label="`Textzi Wallet (balance: ₹${formatNumber(textziWalletBalance)}${!canPayWithWallet && quote ? ' — insufficient' : ''})`"
+            value="razorpay_smart_collect"
+            :disabled="!canPayWithWallet"
+          />
+        </VRadioGroup>
       </VCardText>
 
       <VCardText class="d-flex flex-column gap-3">
@@ -251,10 +339,10 @@ async function onSimulateRecharge() {
           </VBtn>
           <VBtn
             :loading="paying"
-            :disabled="!quote"
+            :disabled="!quote || (selectedMethod === 'razorpay_smart_collect' && !canPayWithWallet)"
             @click="onContinueToPay"
           >
-            Continue to Pay
+            {{ selectedMethod === 'razorpay_smart_collect' ? 'Pay with Textzi Wallet' : 'Continue to Pay' }}
           </VBtn>
         </div>
         <div v-if="quote?.dev_recharge_available" class="text-end">
@@ -271,4 +359,15 @@ async function onSimulateRecharge() {
       </VCardText>
     </VCard>
   </VDialog>
+
+  <WalletOtpDialog
+    v-model="otpDialogOpen"
+    v-model:code="otpCode"
+    :error="otpError"
+    :submitting="otpSubmitting"
+    :sent-via="otpSentVia"
+    :masked-destination="otpMaskedDestination"
+    @submit="onSubmitOtp"
+    @cancel="otpDialogOpen = false"
+  />
 </template>

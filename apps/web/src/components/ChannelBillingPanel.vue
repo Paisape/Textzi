@@ -115,7 +115,83 @@ async function subscribeToPlan(plan: Plan) {
   }
 }
 
-onMounted(load)
+// --- Textzi Wallet payment method ------------------------------------------------------------
+
+type PaymentMethod = { payment_method: string, enabled: boolean, flat_fee_paise: number }
+type TextziWallet = { entity_id: string, balance: number }
+
+const walletMethodEnabled = ref(false)
+const textziWalletBalance = ref(0)
+
+async function loadPaymentOptions() {
+  try {
+    const [methods, wallet] = await Promise.all([
+      $api<PaymentMethod[]>('/v1/wallet/payment-methods').catch(() => [] as PaymentMethod[]),
+      $api<TextziWallet>('/v1/wallet/textzi').catch(() => ({ entity_id: '', balance: 0 })),
+    ])
+    walletMethodEnabled.value = methods.find(m => m.payment_method === 'razorpay_smart_collect')?.enabled ?? false
+    textziWalletBalance.value = wallet.balance
+  }
+  catch {
+    // Falls back to Checkout-only if this can't be reached.
+  }
+}
+
+function canPayWithWallet(plan: Plan) {
+  return walletMethodEnabled.value && textziWalletBalance.value >= plan.price * 1.18
+}
+
+const otpDialogOpen = ref(false)
+const otpCode = ref('')
+const otpError = ref('')
+const otpSubmitting = ref(false)
+const otpSentVia = ref<'mobile' | 'email' | null>(null)
+const otpMaskedDestination = ref('')
+const pendingPlan = ref<Plan | null>(null)
+
+async function subscribeWithWallet(plan: Plan) {
+  payError.value = ''
+  pendingPlan.value = plan
+  try {
+    const result = await $api<{ sent_via: 'mobile' | 'email', masked_destination: string, dev_otp_code: string | null }>('/v1/wallet/textzi/spend/request-otp', {
+      method: 'POST',
+      body: { purpose: props.channel === 'waba' ? 'waba_subscription' : 'crm_subscription' },
+    })
+    otpSentVia.value = result.sent_via
+    otpMaskedDestination.value = result.masked_destination
+    otpCode.value = result.dev_otp_code ?? ''
+    otpError.value = ''
+    otpDialogOpen.value = true
+  }
+  catch (error: any) {
+    payError.value = extractErrorMessage(error, 'Could not send a verification code.')
+  }
+}
+
+async function onSubmitOtp() {
+  if (!pendingPlan.value)
+    return
+  otpSubmitting.value = true
+  otpError.value = ''
+  try {
+    subscription.value = await $api<Subscription>(`/v1/wallet/textzi/spend/plan/${pendingPlan.value.id}`, {
+      method: 'POST',
+      body: { plan_id: pendingPlan.value.id, otp_code: otpCode.value },
+    })
+    otpDialogOpen.value = false
+  }
+  catch (error: any) {
+    otpError.value = extractErrorMessage(error, 'Incorrect or expired code.')
+  }
+  finally {
+    otpSubmitting.value = false
+  }
+}
+
+onMounted(() => {
+  load()
+  loadPaymentOptions()
+})
 </script>
 
 <template>
@@ -198,6 +274,17 @@ onMounted(load)
           >
             {{ subscription?.plan?.id === plan.id && isActive ? 'Current plan' : 'Subscribe' }}
           </VBtn>
+          <VBtn
+            v-if="walletMethodEnabled && !(subscription?.plan?.id === plan.id && isActive)"
+            block
+            variant="text"
+            size="small"
+            class="mt-1"
+            :disabled="!canPayWithWallet(plan)"
+            @click="subscribeWithWallet(plan)"
+          >
+            Pay with Textzi Wallet{{ !canPayWithWallet(plan) ? ' (insufficient balance)' : '' }}
+          </VBtn>
         </VCardText>
       </VCard>
     </VCol>
@@ -205,4 +292,15 @@ onMounted(load)
   <p v-if="!loading && !plans.length" class="text-medium-emphasis">
     No plans published yet for this channel.
   </p>
+
+  <WalletOtpDialog
+    v-model="otpDialogOpen"
+    v-model:code="otpCode"
+    :error="otpError"
+    :submitting="otpSubmitting"
+    :sent-via="otpSentVia"
+    :masked-destination="otpMaskedDestination"
+    @submit="onSubmitOtp"
+    @cancel="otpDialogOpen = false"
+  />
 </template>

@@ -10,12 +10,24 @@ from .auth import require_user
 from .config import settings
 from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
-from .models import User, WabaWallet, Wallet, WalletTransaction
+from .models import PlatformPaymentMethodConfig, User, WabaWallet, Wallet, WalletTransaction
 from .permissions import require_capability
-from .schemas import RateCardSlabOut, RateCardSummary, RechargeRequest, RechargeResponse, WalletQuoteRequest, WalletQuoteResponse, WalletResponse, WalletTransactionOut
-from .services import GST_RATE, DomainError, credit_wallet, quote_credits, rate_card_slabs, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .schemas import PaymentMethodConfigOut, RateCardSlabOut, RateCardSummary, RechargeRequest, RechargeResponse, WalletQuoteRequest, WalletQuoteResponse, WalletResponse, WalletTransactionOut
+from .services import GST_RATE, DomainError, credit_wallet, payment_method_config, quote_credits, rate_card_slabs, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet", tags=["wallet"])
+
+_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect")
+
+
+@router.get("/payment-methods", response_model=list[PaymentMethodConfigOut])
+def list_payment_methods_for_customer(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Read-only, any logged-in user -- unlike /v1/admin/payment-methods (which also exposes
+    editing), this just tells a customer's own checkout UI which methods are currently offered."""
+    return [
+        PaymentMethodConfigOut(payment_method=method, enabled=payment_method_config(db, method).enabled, flat_fee_paise=payment_method_config(db, method).flat_fee_paise)
+        for method in _PAYMENT_METHODS
+    ]
 
 
 def _require_dev_recharge() -> None:

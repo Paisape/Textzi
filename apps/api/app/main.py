@@ -30,6 +30,7 @@ from .invoices import router as invoices_router
 from .models import ApiLog, Entity, Message, Organization, RoutePolicy, User
 from .onboarding import router as onboarding_router
 from .payments import router as payments_router
+from .payments_smart_collect import router as payments_smart_collect_router, webhook_router as smart_collect_webhook_router
 from .platform_admin import router as platform_admin_router
 from .provider_routes import router as provider_routes_router
 from .public import router as public_router
@@ -119,6 +120,8 @@ app.include_router(crm_sequences_router)
 app.include_router(invoices_router)
 app.include_router(onboarding_router)
 app.include_router(payments_router)
+app.include_router(payments_smart_collect_router)
+app.include_router(smart_collect_webhook_router)
 app.include_router(platform_admin_router)
 app.include_router(provider_routes_router)
 app.include_router(public_router)
