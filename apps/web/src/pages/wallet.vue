@@ -5,7 +5,7 @@ definePage({
   },
 })
 
-const activeTab = ref('sms')
+const activeTab = ref('textzi')
 const channelActive = ref<boolean | null>(null)
 
 async function loadChannelStatus() {
@@ -23,6 +23,7 @@ async function loadChannelStatus() {
 type TextziWallet = { entity_id: string, balance: number }
 type VirtualAccount = { account_number: string | null, ifsc: string | null, status: string }
 type TextziTransaction = { id: string, type: string, amount: number, balance_after: number, reference: string | null, created_at: string }
+type PaymentMethod = { payment_method: string, enabled: boolean, flat_fee_paise: number }
 
 const textziWallet = ref<TextziWallet | null>(null)
 const virtualAccount = ref<VirtualAccount | null>(null)
@@ -30,17 +31,22 @@ const textziTransactions = ref<TextziTransaction[]>([])
 const textziLoading = ref(false)
 const textziError = ref('')
 const generatingAccount = ref(false)
+const smartCollectFeePaise = ref<number | null>(null)
+
+const smartCollectFeeLabel = computed(() => smartCollectFeePaise.value === null ? null : inr(smartCollectFeePaise.value / 100))
 
 async function loadTextziWallet() {
   textziLoading.value = true
   textziError.value = ''
   try {
-    const [walletResult, txnResult] = await Promise.all([
+    const [walletResult, txnResult, methodsResult] = await Promise.all([
       $api<TextziWallet>('/v1/wallet/textzi'),
       $api<TextziTransaction[]>('/v1/wallet/textzi/transactions'),
+      $api<PaymentMethod[]>('/v1/wallet/payment-methods').catch(() => [] as PaymentMethod[]),
     ])
     textziWallet.value = walletResult
     textziTransactions.value = txnResult
+    smartCollectFeePaise.value = methodsResult.find(m => m.payment_method === 'razorpay_smart_collect')?.flat_fee_paise ?? null
   }
   catch (error: any) {
     textziError.value = extractErrorMessage(error, 'Could not load your Textzi Wallet.')
@@ -80,7 +86,11 @@ watch(activeTab, tab => {
     loadTextziWallet()
 })
 
-onMounted(loadChannelStatus)
+onMounted(() => {
+  loadChannelStatus()
+  if (activeTab.value === 'textzi')
+    loadTextziWallet()
+})
 </script>
 
 <template>
@@ -92,14 +102,14 @@ onMounted(loadChannelStatus)
   </p>
 
   <VTabs v-model="activeTab" class="mb-6">
+    <VTab value="textzi">
+      Textzi Wallet
+    </VTab>
     <VTab value="sms">
       SMS Wallet
     </VTab>
     <VTab value="waba">
       WhatsApp Wallet
-    </VTab>
-    <VTab value="textzi">
-      Textzi Wallet
     </VTab>
   </VTabs>
 
@@ -147,6 +157,12 @@ onMounted(loadChannelStatus)
               <template v-else>
                 <VDivider class="mb-4" />
                 <div class="d-flex flex-column ga-3">
+                  <div>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      Account holder name
+                    </p>
+                    <span class="text-body-1">Textzi</span>
+                  </div>
                   <div v-if="virtualAccount.account_number">
                     <p class="text-caption text-medium-emphasis mb-0">
                       Account number
@@ -169,7 +185,13 @@ onMounted(loadChannelStatus)
                   </div>
                 </div>
                 <VAlert type="info" variant="tonal" density="compact" class="mt-4">
-                  Transfer any amount via IMPS, NEFT, or RTGS only — UPI transfers to this account are not supported. A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                  Transfer any amount via IMPS, NEFT, or RTGS only — UPI transfers to this account are not supported.
+                  <template v-if="smartCollectFeeLabel">
+                    A flat fee of {{ smartCollectFeeLabel }} applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                  </template>
+                  <template v-else>
+                    A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                  </template>
                 </VAlert>
               </template>
             </VCardText>
