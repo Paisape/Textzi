@@ -59,11 +59,23 @@ def dispatch_message(db: Session, message: Message) -> dict:
     body = decrypt_secret(message.rendered_body) if message.is_encrypted else message.rendered_body
     recipient = decrypt_recipient_lenient(message.recipient) if message.is_encrypted else message.recipient
     for route in route_plan:
-        provider = provider_for_route(db, route)
-        result = provider.send(ProviderMessage(
-            message_id=message.id, recipient=recipient, sender=header.value, body=body,
-            pe_id=pe_id_row.value if pe_id_row else None, template_id=template.dlt_template_id,
-        ))
+        try:
+            provider = provider_for_route(db, route)
+            result = provider.send(ProviderMessage(
+                message_id=message.id, recipient=recipient, sender=header.value, body=body,
+                pe_id=pe_id_row.value if pe_id_row else None, template_id=template.dlt_template_id,
+            ))
+        except HTTPException as exc:
+            # A route can be mis-configured (missing endpoint/creds) or its stored secret can fail
+            # to decrypt (e.g. a rotated Fernet key) -- either is this route's own failure, not a
+            # reason to abandon the rest of the route plan. Record it and try the next route, same
+            # as a provider-reported failure below.
+            attempt = DeliveryAttempt(
+                message_id=message.id, entity_id=message.entity_id, route=route,
+                status="failed", error=str(exc.detail),
+            )
+            db.add(attempt)
+            continue
         # Whatever actually went to the provider is, by definition, the real plaintext -- the
         # recipient's handset has to receive readable text regardless of Textzi's own storage
         # encryption toggle. Scrub the same two plaintext values (by value, not by field name --

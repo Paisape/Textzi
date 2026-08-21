@@ -271,7 +271,10 @@ def approve_quote(quote_id: str, user: User = Depends(require_user), db: Session
     list falls back to the original "anyone can approve" behavior."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    quote = db.get(Quote, quote_id)
+    # Row-locked, not a plain db.get -- two approvers signing off at the same instant both read
+    # the same Quote.approvals JSON before either writes, and a plain read-modify-write silently
+    # drops one approval (lost update). Locking serializes concurrent approvers onto this row.
+    quote = db.scalar(select(Quote).where(Quote.id == quote_id).with_for_update())
     if not quote or quote.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.approval_status != "pending":

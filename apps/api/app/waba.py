@@ -6,6 +6,7 @@ point of the native rebuild is that a WABA bug can't touch SMS and vice versa.""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import require_user
@@ -143,7 +144,14 @@ def connect_waba(payload: WabaConnectRequest, request: Request, user: User = Dep
     connection.connected_at = datetime.now(timezone.utc)
     connection.disconnected_at = None
     log_activity(db, user.organization_id, "waba_connected", f"WhatsApp Business Account connected (waba_id={payload.waba_id}).", user_id=user.id, actor_email=user.email, request=request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # WabaConnection.entity_id is the PK -- a concurrent connect attempt for this same
+        # never-before-connected entity can insert first. The Meta-side calls above already
+        # happened either way; report a clean 409 instead of a raw 500.
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This WhatsApp number was just connected by another request. Refresh and try again.") from None
     db.refresh(connection)
     return WabaStatusOut(
         connected=True, phone_number=connection.phone_number, verified_name=connection.verified_name,
@@ -204,7 +212,11 @@ def connect_waba_direct(payload: WabaDirectConnectRequest, request: Request, use
     connection.connected_at = datetime.now(timezone.utc)
     connection.disconnected_at = None
     log_activity(db, user.organization_id, "waba_connected", f"WhatsApp Business Account connected directly (waba_id={payload.waba_id}).", user_id=user.id, actor_email=user.email, request=request)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="This WhatsApp number was just connected by another request. Refresh and try again.") from None
     db.refresh(connection)
     return WabaStatusOut(
         connected=True, phone_number=connection.phone_number, verified_name=connection.verified_name,

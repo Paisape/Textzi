@@ -232,9 +232,22 @@ def _resolve_or_create_contact(db: Session, entity_id: str, contact_id: str | No
         existing = db.scalar(select(CrmContact).where(CrmContact.entity_id == entity_id, CrmContact.email == email))
     if existing:
         return existing
+    # The SELECT above is a fast-path only -- two concurrent requests for the same never-before-
+    # seen phone can both pass it before either commits. uq_crm_contacts_entity_phone (a partial
+    # unique index on entity_id+phone where phone IS NOT NULL) is the real guarantee: on a
+    # concurrent duplicate, this flush raises IntegrityError and we re-fetch the row the other
+    # request just created instead of creating a second contact for the same phone number.
     contact = CrmContact(entity_id=entity_id, name=name.strip(), phone=phone, email=email, title=title, source="manual")
     db.add(contact)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        if phone:
+            existing = db.scalar(select(CrmContact).where(CrmContact.entity_id == entity_id, CrmContact.phone == phone))
+            if existing:
+                return existing
+        raise
     return contact
 
 
@@ -1230,7 +1243,10 @@ def update_deal_stage(deal_id: str, payload: DealStageUpdateRequest, user: User 
 def approve_deal_stage(deal_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    deal = db.scalar(select(Deal).where(Deal.id == deal_id, Deal.entity_id == entity.id))
+    # Row-locked -- two approvers signing off on the same stage at the same instant both read
+    # the same Deal.stage_approvals JSON before either writes, and a plain read-modify-write
+    # silently drops one approval (lost update). Locking serializes concurrent approvers here.
+    deal = db.scalar(select(Deal).where(Deal.id == deal_id, Deal.entity_id == entity.id).with_for_update())
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
     pipeline = db.get(Pipeline, deal.pipeline_id) if deal.pipeline_id else None

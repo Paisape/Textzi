@@ -946,7 +946,10 @@ def check_message_quota(db: Session, entity_id: str, channel: str) -> None:
 
 
 def increment_message_usage(db: Session, entity_id: str, channel: str) -> None:
-    subscription = db.get(ChannelSubscription, (entity_id, channel))
+    """Row-locked (SELECT ... FOR UPDATE), same reasoning as credit_wallet/debit_wallet -- without
+    it, two concurrent sends both read the same messages_used before either writes, and one
+    increment is silently lost (the counter ends up short by however many sends raced)."""
+    subscription = db.get(ChannelSubscription, (entity_id, channel), with_for_update=True)
     if subscription and subscription.plan_id:
         subscription.messages_used += 1
 

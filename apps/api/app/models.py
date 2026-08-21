@@ -1,7 +1,7 @@
 import enum
 import uuid
 from datetime import datetime
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Index, Integer, JSON, Numeric, String, Text, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 from .database import Base
 
@@ -1527,6 +1527,15 @@ class CrmContact(Base):
     consent_given_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consent_source: Mapped[str | None] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    # Real dedup guard for _resolve_or_create_contact's find-or-create -- a plain SELECT-then-INSERT
+    # has a race window under concurrent requests for the same never-before-seen phone number.
+    # Partial (phone IS NOT NULL) since phone is optional and many contacts share NULL.
+    # sync_schema only emits plain (non-unique, non-partial) CREATE INDEX, so this one is created
+    # manually -- see the manual ALTER note in services.py's _resolve_or_create_contact usage.
+    __table_args__ = (
+        Index("uq_crm_contacts_entity_phone", "entity_id", "phone", unique=True, postgresql_where=text("phone IS NOT NULL")),
+    )
 
 
 class Pipeline(Base):

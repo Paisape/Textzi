@@ -5,6 +5,7 @@ SMS-specific pipeline) -- same isolation principle as waba.py itself."""
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import waba_media
@@ -44,7 +45,15 @@ def _resolve_send_target(db: Session, entity_id: str, to_wa_id: str) -> tuple[Wa
     if not contact:
         contact = Contact(entity_id=entity_id, wa_id=to_wa_id)
         db.add(contact)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # uq_contacts_entity_wa_id -- a concurrent send to this same brand-new wa_id can
+            # insert first. Re-fetch the row the other request just created instead of crashing.
+            db.rollback()
+            contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.wa_id == to_wa_id))
+            if not contact:
+                raise
     if contact.opted_out:
         raise DomainError("This contact has opted out of WhatsApp messages")
 
@@ -54,7 +63,15 @@ def _resolve_send_target(db: Session, entity_id: str, to_wa_id: str) -> tuple[Wa
     if not conversation:
         conversation = Conversation(entity_id=entity_id, contact_id=contact.id, channel="whatsapp")
         db.add(conversation)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            conversation = db.scalar(
+                select(Conversation).where(Conversation.entity_id == entity_id, Conversation.contact_id == contact.id, Conversation.channel == "whatsapp"),
+            )
+            if not conversation:
+                raise
     return connection, conversation
 
 
