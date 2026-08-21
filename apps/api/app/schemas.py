@@ -384,7 +384,6 @@ class RazorpayOrderResponse(BaseModel):
 class RazorpayVirtualAccountOut(BaseModel):
     account_number: str | None
     ifsc: str | None
-    vpa: str | None
     status: str
 
 

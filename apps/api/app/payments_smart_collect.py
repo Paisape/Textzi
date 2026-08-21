@@ -26,7 +26,7 @@ from .channels import _consume_api_key_otp, _issue_api_key_otp
 from .channel_billing import PERIOD_DAYS
 from .database import SessionLocal, get_db
 from .invoicing import create_draft_invoice, issue_invoice
-from .models import BillingPlan, ChannelSubscription, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
+from .models import BillingPlan, ChannelSubscription, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
 from .schemas import (
     ApiKeyOtpResponse, BillingPlanOut, ChannelSubscriptionStatusOut, RazorpayVirtualAccountOut, RechargeResponse,
     TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
@@ -86,38 +86,52 @@ def get_or_create_virtual_account(user: User = Depends(require_user), db: Sessio
     entity = _resolve_entity(db, user)
     existing = db.get(RazorpayVirtualAccount, entity.id)
     if existing and existing.status == "active":
-        return RazorpayVirtualAccountOut(account_number=existing.account_number, ifsc=existing.ifsc, vpa=existing.vpa, status=existing.status)
+        return RazorpayVirtualAccountOut(account_number=existing.account_number, ifsc=existing.ifsc, status=existing.status)
 
     client = _razorpay_client(db)
+    # Cosmetic only -- Razorpay's "notes" is a free-form key-value bag it stores and echoes back
+    # as-is (no schema, nothing validated), shown on their dashboard so a payment is recognizable
+    # by more than just entity_id. This does NOT enable TPV (payer-identity verification) --
+    # that's a deliberately separate, unused feature (see this module's own docstring on non-TPV).
+    organization = db.get(Organization, entity.organization_id)
+    notes = {"entity_id": entity.id}
+    if organization:
+        if organization.name:
+            notes["company_name"] = organization.name
+        if organization.gstin:
+            notes["gstin"] = organization.gstin
+        if organization.contact_email:
+            notes["contact_email"] = organization.contact_email
+        if organization.contact_mobile:
+            notes["contact_mobile"] = organization.contact_mobile
     try:
         account = client.virtual_account.create({
-            "receivers": {"types": ["bank_account", "vpa"]},
+            # Bank rails only (IMPS/NEFT/RTGS all land on the same account_number+ifsc) --
+            # deliberately no "vpa" receiver type, so no UPI ID is provisioned or shown.
+            "receivers": {"types": ["bank_account"]},
             "description": f"Textzi Wallet top-up -- entity {entity.id}",
-            "notes": {"entity_id": entity.id},
+            "notes": notes,
         })
     except razorpay.errors.BadRequestError as exc:
         raise HTTPException(status_code=422, detail=f"Razorpay rejected the virtual account request: {exc}") from exc
 
     bank_receiver = next((r for r in account.get("receivers", []) if r.get("entity") == "bank_account"), None)
-    vpa_receiver = next((r for r in account.get("receivers", []) if r.get("entity") == "vpa"), None)
-    vpa = f"{vpa_receiver['username']}@{vpa_receiver['handle']}" if vpa_receiver else None
 
     if existing:
         existing.razorpay_account_id = account["id"]
         existing.account_number = bank_receiver.get("account_number") if bank_receiver else None
         existing.ifsc = bank_receiver.get("ifsc") if bank_receiver else None
-        existing.vpa = vpa
         existing.status = "active"
         row = existing
     else:
         row = RazorpayVirtualAccount(
             entity_id=entity.id, razorpay_account_id=account["id"],
             account_number=bank_receiver.get("account_number") if bank_receiver else None,
-            ifsc=bank_receiver.get("ifsc") if bank_receiver else None, vpa=vpa,
+            ifsc=bank_receiver.get("ifsc") if bank_receiver else None,
         )
         db.add(row)
     db.commit()
-    return RazorpayVirtualAccountOut(account_number=row.account_number, ifsc=row.ifsc, vpa=row.vpa, status=row.status)
+    return RazorpayVirtualAccountOut(account_number=row.account_number, ifsc=row.ifsc, status=row.status)
 
 
 @webhook_router.post("/smart-collect")

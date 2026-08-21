@@ -21,7 +21,7 @@ async function loadChannelStatus() {
 // --- Textzi Wallet (Smart Collect bank-transfer balance) -----------------------------------
 
 type TextziWallet = { entity_id: string, balance: number }
-type VirtualAccount = { account_number: string | null, ifsc: string | null, vpa: string | null, status: string }
+type VirtualAccount = { account_number: string | null, ifsc: string | null, status: string }
 type TextziTransaction = { id: string, type: string, amount: number, balance_after: number, reference: string | null, created_at: string }
 
 const textziWallet = ref<TextziWallet | null>(null)
@@ -136,7 +136,7 @@ onMounted(loadChannelStatus)
                 {{ textziWallet ? inr(textziWallet.balance) : '—' }}
               </p>
               <p class="text-body-2 text-medium-emphasis mb-4">
-                Funded by bank transfer via Razorpay Smart Collect. Spendable on SMS credit top-up, WhatsApp subscription, or CRM subscription — each spend requires a one-time code sent to your mobile or email.
+                Funded by bank transfer (IMPS, NEFT, or RTGS only) via Razorpay Smart Collect. Spendable on SMS credit top-up, WhatsApp subscription, or CRM subscription — each spend requires a one-time code sent to your mobile or email.
               </p>
 
               <template v-if="!virtualAccount">
@@ -167,19 +167,9 @@ onMounted(loadChannelStatus)
                       <span v-if="copied === 'ifsc'" class="text-caption text-success">Copied</span>
                     </div>
                   </div>
-                  <div v-if="virtualAccount.vpa">
-                    <p class="text-caption text-medium-emphasis mb-0">
-                      UPI ID
-                    </p>
-                    <div class="d-flex align-center ga-2">
-                      <span class="text-body-1">{{ virtualAccount.vpa }}</span>
-                      <VBtn icon="tabler-copy" size="x-small" variant="text" @click="copyValue(virtualAccount.vpa!, 'vpa')" />
-                      <span v-if="copied === 'vpa'" class="text-caption text-success">Copied</span>
-                    </div>
-                  </div>
                 </div>
                 <VAlert type="info" variant="tonal" density="compact" class="mt-4">
-                  Transfer any amount from your bank or UPI app. A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                  Transfer any amount via IMPS, NEFT, or RTGS only — UPI transfers to this account are not supported. A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
                 </VAlert>
               </template>
             </VCardText>
