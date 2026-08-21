@@ -70,6 +70,25 @@ async function generateAccount() {
   }
 }
 
+const removingAccount = ref(false)
+const removeConfirmOpen = ref(false)
+
+async function removeAccount() {
+  removingAccount.value = true
+  textziError.value = ''
+  try {
+    await $api('/v1/wallet/textzi/account/close', { method: 'POST' })
+    virtualAccount.value = null
+    removeConfirmOpen.value = false
+  }
+  catch (error: any) {
+    textziError.value = extractErrorMessage(error, 'Could not remove this bank transfer account.')
+  }
+  finally {
+    removingAccount.value = false
+  }
+}
+
 const copied = ref<string | null>(null)
 async function copyValue(value: string, field: string) {
   await navigator.clipboard.writeText(value)
@@ -193,6 +212,9 @@ onMounted(() => {
                     A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
                   </template>
                 </VAlert>
+                <VBtn variant="text" color="error" size="small" class="mt-3" @click="removeConfirmOpen = true">
+                  Remove this account
+                </VBtn>
               </template>
             </VCardText>
           </VCard>
@@ -233,4 +255,22 @@ onMounted(() => {
       </VRow>
     </VWindowItem>
   </VWindow>
+
+  <VDialog v-model="removeConfirmOpen" max-width="420">
+    <VCard title="Remove this account?">
+      <VCardText>
+        <p class="text-body-2 text-medium-emphasis mb-0">
+          This account number will stop working for new transfers. You'll be able to generate a new one right after — any balance already in your Textzi Wallet is unaffected.
+        </p>
+      </VCardText>
+      <VCardText class="d-flex gap-3 justify-end">
+        <VBtn variant="outlined" :disabled="removingAccount" @click="removeConfirmOpen = false">
+          Cancel
+        </VBtn>
+        <VBtn color="error" :loading="removingAccount" @click="removeAccount">
+          Remove account
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
 </template>

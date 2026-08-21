@@ -134,6 +134,29 @@ def get_or_create_virtual_account(user: User = Depends(require_user), db: Sessio
     return RazorpayVirtualAccountOut(account_number=row.account_number, ifsc=row.ifsc, status=row.status)
 
 
+@router.post("/account/close")
+def close_virtual_account(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Lets a customer remove their current bank-transfer account and generate a fresh one --
+    e.g. if the wrong one was set up, or as a reset. Closing on Razorpay's side is best-effort:
+    if Razorpay already sees it as closed (or the call otherwise fails), we still mark it closed
+    locally so get_or_create_virtual_account provisions a new one on the next request, rather than
+    leaving the customer stuck with a dead account they can't replace."""
+    entity = _resolve_entity(db, user)
+    existing = db.get(RazorpayVirtualAccount, entity.id)
+    if not existing or existing.status != "active":
+        raise HTTPException(status_code=422, detail="No active bank transfer account to remove")
+    try:
+        client = _razorpay_client(db)
+        client.virtual_account.close(existing.razorpay_account_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("could not close virtual account %s on Razorpay's side: %s", existing.razorpay_account_id, exc)
+    existing.status = "closed"
+    db.commit()
+    return {"status": "closed"}
+
+
 @webhook_router.post("/smart-collect")
 async def receive_smart_collect_webhook(request: Request, db: Session = Depends(get_db)):
     """Signature-verified the identical way waba_webhooks.py verifies Meta's own webhooks: HMAC-
