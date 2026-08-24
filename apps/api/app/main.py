@@ -30,7 +30,7 @@ from .invoices import router as invoices_router
 from .models import ApiLog, Entity, Message, Organization, RoutePolicy, User
 from .onboarding import router as onboarding_router
 from .payments import router as payments_router
-from .payments_smart_collect import router as payments_smart_collect_router, webhook_router as smart_collect_webhook_router
+from .payments_smart_collect import router as payments_smart_collect_router, run_smart_collect_reconciliation, webhook_router as smart_collect_webhook_router
 from .platform_admin import router as platform_admin_router
 from .provider_routes import router as provider_routes_router
 from .public import router as public_router
@@ -97,8 +97,13 @@ async def lifespan(_: FastAPI):
     # minutes is granular enough that a customer scheduling "9am" actually goes out close to 9am,
     # unlike the hour/day-granularity jobs above.
     scheduler.add_job(run_due_campaigns, IntervalTrigger(minutes=5), id="waba_campaign_runner", misfire_grace_time=600)
+    # Smart Collect's webhook is the primary/real-time credit path -- this is the fallback for a
+    # payment that succeeded on Razorpay's side but whose webhook delivery never reached us
+    # (network blip, a briefly-misconfigured secret, downtime). 15 minutes balances catching a
+    # missed credit reasonably quickly against not hammering Razorpay's API per active account.
+    scheduler.add_job(run_smart_collect_reconciliation, IntervalTrigger(minutes=15), id="smart_collect_reconcile_job", misfire_grace_time=900)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, and 5-minute campaign runner")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, and 15-minute Smart Collect reconcile")
 
     yield
 

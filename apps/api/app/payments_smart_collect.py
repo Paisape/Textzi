@@ -21,6 +21,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .admin import require_admin, require_admin_recent_2fa
 from .auth import require_user
 from .channels import _consume_api_key_otp, _issue_api_key_otp
 from .channel_billing import PERIOD_DAYS
@@ -157,6 +158,41 @@ def close_virtual_account(user: User = Depends(require_user), db: Session = Depe
     return {"status": "closed"}
 
 
+@router.post("/admin/reconcile/{entity_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def admin_reconcile_smart_collect_entity(entity_id: str, db: Session = Depends(get_db)):
+    """Manual fallback for a payment whose webhook never arrived (delivery failure, misconfigured
+    secret, server downtime while Razorpay was retrying) -- pulls this entity's actual payment
+    history straight from Razorpay and credits anything we're missing. Mirrors admin.py's own
+    payment-orders/{id}/reconcile for the Checkout flow, which Smart Collect had no equivalent of
+    until now. Also runs automatically on a schedule (see main.py's smart_collect_reconcile_job) --
+    this endpoint is for an admin who wants to check one specific entity right now, not wait for
+    the next scheduled sweep."""
+    virtual_account = db.get(RazorpayVirtualAccount, entity_id)
+    if not virtual_account:
+        raise HTTPException(status_code=404, detail="This entity has no Smart Collect virtual account")
+    return reconcile_smart_collect_account(db, virtual_account)
+
+
+def run_smart_collect_reconciliation() -> None:
+    """Scheduled sweep (see main.py) -- checks every active virtual account against Razorpay's own
+    payment records, catching anything a missed/failed webhook delivery left uncredited. Each
+    account gets its own DB session/commit so one account's failure (a bad Razorpay call, a stale
+    account) can't roll back or block reconciliation for every other account in the same run."""
+    db = SessionLocal()
+    try:
+        accounts = db.scalars(select(RazorpayVirtualAccount).where(RazorpayVirtualAccount.status == "active")).all()
+        for virtual_account in accounts:
+            try:
+                result = reconcile_smart_collect_account(db, virtual_account)
+                if result["credited"]:
+                    logger.info("smart collect reconcile: credited %s missed payment(s) for entity_id=%s", result["credited"], virtual_account.entity_id)
+            except Exception:
+                db.rollback()
+                logger.exception("smart collect reconcile: failed for entity_id=%s", virtual_account.entity_id)
+    finally:
+        db.close()
+
+
 def _handle_smart_collect_refund(db: Session, payload: dict) -> dict:
     """A Smart Collect transfer refunded from Razorpay's dashboard (bank transfers can be refunded
     back to the sender same as any other Razorpay payment) -- reverses the TextziWallet credit that
@@ -230,28 +266,38 @@ async def receive_smart_collect_webhook(request: Request, db: Session = Depends(
         logger.warning("smart collect webhook: missing required fields in payload")
         return {"status": "ignored", "reason": "missing_fields"}
 
+    return _process_smart_collect_credit(db, razorpay_payment_id, razorpay_account_id, gross_paise, source="webhook")
+
+
+def _process_smart_collect_credit(db: Session, razorpay_payment_id: str, razorpay_account_id: str, gross_paise: int, source: str) -> dict:
+    """The actual crediting logic, shared by the live webhook above and reconcile_smart_collect_account
+    below (the polling fallback for a webhook that never arrived) -- both need the exact same
+    idempotency/fee/credit handling, so this is the one place it's implemented rather than two
+    copies that could drift apart."""
     # Idempotency: Razorpay retries on non-2xx, and can deliver near-simultaneous duplicates for
     # the same payment_id -- this SELECT is a fast-path only (avoids redundant work on the common
     # case), NOT the actual correctness guarantee, since a plain check-then-act here has a real
     # race window under concurrent delivery. The real guarantee is PaymentOrder.provider_order_id's
     # DB-level unique constraint below: two concurrent credits for the same payment_id will have
-    # one succeed and one hit IntegrityError, which is what actually prevents a double-credit.
+    # one succeed and one hit IntegrityError, which is what actually prevents a double-credit. This
+    # also naturally covers reconcile re-processing a payment the webhook already handled (or vice
+    # versa) -- whichever path got there first wins, the other sees "already_processed".
     if db.scalar(select(TextziWalletTransaction).where(TextziWalletTransaction.reference == razorpay_payment_id)):
         return {"status": "ok", "reason": "already_processed"}
 
     virtual_account = db.scalar(select(RazorpayVirtualAccount).where(RazorpayVirtualAccount.razorpay_account_id == razorpay_account_id))
     if not virtual_account:
-        logger.warning("smart collect webhook: no RazorpayVirtualAccount for razorpay_account_id=%s", razorpay_account_id)
+        logger.warning("smart collect %s: no RazorpayVirtualAccount for razorpay_account_id=%s", source, razorpay_account_id)
         return {"status": "ignored", "reason": "unknown_virtual_account"}
 
     fee_paise = payment_method_config(db, "razorpay_smart_collect").flat_fee_paise
     net_paise = max(0, gross_paise - fee_paise)
     if net_paise == 0:
-        logger.info("smart collect webhook: transfer of %s paise did not exceed the %s paise flat fee for entity_id=%s", gross_paise, fee_paise, virtual_account.entity_id)
+        logger.info("smart collect %s: transfer of %s paise did not exceed the %s paise flat fee for entity_id=%s", source, gross_paise, fee_paise, virtual_account.entity_id)
         return {"status": "ok", "reason": "below_fee_threshold"}
 
     net_rupees = net_paise / 100
-    wallet = credit_textzi_wallet(db, virtual_account.entity_id, net_rupees, transaction_type="smart_collect_topup", reference=razorpay_payment_id)
+    credit_textzi_wallet(db, virtual_account.entity_id, net_rupees, transaction_type="smart_collect_topup", reference=razorpay_payment_id)
     db.add(PaymentOrder(entity_id=virtual_account.entity_id, provider="razorpay_smart_collect", provider_order_id=razorpay_payment_id, amount=net_rupees, purpose="textzi_wallet_topup", status="paid"))
     try:
         db.commit()
@@ -261,10 +307,37 @@ async def receive_smart_collect_webhook(request: Request, db: Session = Depends(
         # request's commit is the one that actually counts -- and report success either way,
         # since from Razorpay's perspective the payment IS processed.
         db.rollback()
-        logger.info("smart collect webhook: concurrent duplicate delivery for payment_id=%s, discarding this attempt's credit", razorpay_payment_id)
+        logger.info("smart collect %s: concurrent duplicate delivery for payment_id=%s, discarding this attempt's credit", source, razorpay_payment_id)
         return {"status": "ok", "reason": "already_processed"}
-    logger.info("smart collect: credited %.2f to TextziWallet for entity_id=%s (gross=%s paise, fee=%s paise)", net_rupees, virtual_account.entity_id, gross_paise, fee_paise)
+    logger.info("smart collect %s: credited %.2f to TextziWallet for entity_id=%s (gross=%s paise, fee=%s paise)", source, net_rupees, virtual_account.entity_id, gross_paise, fee_paise)
     return {"status": "ok"}
+
+
+def reconcile_smart_collect_account(db: Session, virtual_account: "RazorpayVirtualAccount") -> dict:
+    """Catches a payment whose webhook never arrived (delivery failure, misconfigured secret,
+    server downtime) -- asks Razorpay directly for every payment ever made into this specific
+    virtual account and runs each one through the same crediting logic the webhook uses. Safe to
+    call repeatedly/on a schedule: _process_smart_collect_credit's idempotency check means anything
+    already credited (via webhook or a prior reconcile run) is a cheap no-op here."""
+    client = _razorpay_client(db)
+    try:
+        payments = client.virtual_account.payments(virtual_account.razorpay_account_id)
+    except razorpay.errors.BadRequestError as exc:
+        raise HTTPException(status_code=422, detail=f"Razorpay lookup failed: {exc}") from exc
+
+    results = {"checked": 0, "credited": 0, "already_processed": 0, "ignored": 0}
+    for payment in payments.get("items", []):
+        if payment.get("status") != "captured":
+            continue
+        results["checked"] += 1
+        outcome = _process_smart_collect_credit(db, payment["id"], virtual_account.razorpay_account_id, payment["amount"], source="reconcile")
+        if outcome.get("status") == "ok" and outcome.get("reason") is None:
+            results["credited"] += 1
+        elif outcome.get("reason") == "already_processed":
+            results["already_processed"] += 1
+        else:
+            results["ignored"] += 1
+    return results
 
 
 # --- Spending the Textzi Wallet (OTP-gated) --------------------------------------------------
