@@ -704,14 +704,26 @@ def flag_refunded_payment(db: Session, order: PaymentOrder, entity: Entity, paym
     that tells us about it automatically; this only runs when an admin re-checks via reconcile.
     Best-effort reverses the wallet credit (skipped, not blocked, if the balance has since been
     spent) and always flags for manual review either way, mirroring flag_suspicious_payment's
-    "never silently trust a mismatch" posture."""
+    "never silently trust a mismatch" posture.
+
+    Wallet.prepaid_balance is denominated in SMS credits, not rupees -- order.amount is rupees, so
+    reversing by order.amount directly would either under- or over-debit depending on price_per_sms
+    (confirmed live: a Rs.100 order at Rs.2/credit credits 50 credits, but debit_wallet(..., 100)
+    tries to reverse 100 "credits"). Reverse order.credits_applied (the actual amount credited,
+    set at the moment the credit was given -- see payments.py's verify_payment and this reconcile
+    path's own credit branch above), falling back to amount/price_per_sms only for a legacy order
+    from before credits_applied existed."""
+    credits_to_reverse = float(order.credits_applied) if order.credits_applied is not None else None
+    if credits_to_reverse is None and order.price_per_sms:
+        credits_to_reverse = float(order.amount) / float(order.price_per_sms)
     order.status = "refunded"
     reversed_credit = False
-    try:
-        debit_wallet(db, entity.id, float(order.amount), reference=f"refund:{payment_id}")
-        reversed_credit = True
-    except DomainError:
-        pass
+    if credits_to_reverse:
+        try:
+            debit_wallet(db, entity.id, credits_to_reverse, reference=f"refund:{payment_id}")
+            reversed_credit = True
+        except DomainError:
+            pass
     log_activity(
         db, entity.organization_id, "payment_flagged_refunded",
         f"Payment order {order.id} refunded on Razorpay: {reason} (wallet reversal {'applied' if reversed_credit else 'skipped -- insufficient balance, needs manual review'})",

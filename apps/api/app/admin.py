@@ -1583,6 +1583,7 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
                             credits, _slab = quote_credits(db, rate_card, float(order.amount))
                     if credits:
                         credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay_reconciled", reference=payment_id)
+                        order.credits_applied = credits
                         gst_amount = round(float(order.amount) * GST_RATE, 2)
                         invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id)
                         issue_invoice(db, invoice)
