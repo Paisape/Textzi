@@ -46,7 +46,11 @@ WIDGET_JS = r"""
         try {
           var data = JSON.parse(event.data);
           if (data.type === 'message' && data.message && data.message.direction === 'outbound') {
-            appendMessage(data.message.body, 'agent');
+            if (data.message.message_type && data.message.message_type !== 'text' && data.message.media_url) {
+              appendMedia(data.message.id, data.message.message_type, 'agent');
+            } else {
+              appendMessage(data.message.body, 'agent');
+            }
           } else if (data.type === 'csat_request') {
             appendCsatPrompt();
           }
@@ -84,6 +88,15 @@ WIDGET_JS = r"""
   // Live composer (online) -----------------------------------------------------------------
   var composer = document.createElement('div');
   composer.style.cssText = 'display:flex;border-top:1px solid #eee;padding:8px;';
+  var attachBtn = document.createElement('button');
+  attachBtn.type = 'button';
+  attachBtn.textContent = '📎';
+  attachBtn.title = 'Attach a file';
+  attachBtn.style.cssText = 'border:1px solid #ddd;background:#fff;border-radius:6px;width:34px;cursor:pointer;font-size:15px;margin-right:6px;';
+  var fileInput = document.createElement('input');
+  fileInput.type = 'file';
+  fileInput.style.display = 'none';
+  fileInput.accept = 'image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx,.txt';
   var input = document.createElement('input');
   input.type = 'text';
   input.placeholder = 'Type a message...';
@@ -91,6 +104,8 @@ WIDGET_JS = r"""
   var sendBtn = document.createElement('button');
   sendBtn.textContent = 'Send';
   sendBtn.style.cssText = 'margin-left:8px;border:0;border-radius:6px;padding:8px 14px;color:#fff;cursor:pointer;';
+  composer.appendChild(attachBtn);
+  composer.appendChild(fileInput);
   composer.appendChild(input);
   composer.appendChild(sendBtn);
   panel.appendChild(composer);
@@ -130,6 +145,32 @@ WIDGET_JS = r"""
     bubbleEl.style.cssText = 'max-width:75%;padding:8px 12px;border-radius:10px;font-size:14px;' +
       (who === 'visitor' ? 'background:' + state.color + ';color:#fff;' : 'background:#f1f1f1;color:#222;');
     row.appendChild(bubbleEl);
+    thread.appendChild(row);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  function appendMedia(messageId, messageType, who) {
+    var mediaUrl = apiOrigin + '/v1/public/webchat/' + widgetKey + '/media/' + messageId;
+    var row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:8px;display:flex;' + (who === 'visitor' ? 'justify-content:flex-end;' : '');
+    var wrap = document.createElement('div');
+    wrap.style.cssText = 'max-width:75%;border-radius:10px;overflow:hidden;' +
+      (who === 'visitor' ? 'border:2px solid ' + state.color + ';' : 'border:1px solid #eee;');
+    if (messageType === 'image') {
+      var img = document.createElement('img');
+      img.src = mediaUrl;
+      img.style.cssText = 'display:block;max-width:100%;cursor:pointer;';
+      img.addEventListener('click', function () { window.open(mediaUrl, '_blank'); });
+      wrap.appendChild(img);
+    } else {
+      var link = document.createElement('a');
+      link.href = mediaUrl;
+      link.target = '_blank';
+      link.textContent = 'Download file';
+      link.style.cssText = 'display:block;padding:10px 14px;font-size:13px;background:#fff;color:#222;text-decoration:none;';
+      wrap.appendChild(link);
+    }
+    row.appendChild(wrap);
     thread.appendChild(row);
     thread.scrollTop = thread.scrollHeight;
   }
@@ -193,6 +234,22 @@ WIDGET_JS = r"""
     });
   }
 
+  function sendFile(file) {
+    var formData = new FormData();
+    formData.append('visitor_id', visitorId);
+    formData.append('file', file);
+    attachBtn.disabled = true;
+    fetch(apiOrigin + '/v1/public/webchat/' + widgetKey + '/media', { method: 'POST', body: formData })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        if (data && data.message_id) {
+          appendMedia(data.message_id, file.type && file.type.indexOf('image/') === 0 ? 'image' : 'document', 'visitor');
+          if (!ws) { connectSocket(); }
+        }
+      })
+      .finally(function () { attachBtn.disabled = false; fileInput.value = ''; });
+  }
+
   function sendOffline() {
     var body = offlineMessageInput.value.trim();
     var name = offlineNameInput.value.trim();
@@ -210,6 +267,10 @@ WIDGET_JS = r"""
 
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { send(); } });
+  attachBtn.addEventListener('click', function () { fileInput.click(); });
+  fileInput.addEventListener('change', function () {
+    if (fileInput.files && fileInput.files[0]) { sendFile(fileInput.files[0]); }
+  });
   offlineSendBtn.addEventListener('click', sendOffline);
   bubble.addEventListener('click', function () {
     state.open = !state.open;

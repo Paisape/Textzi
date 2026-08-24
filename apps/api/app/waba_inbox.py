@@ -537,14 +537,25 @@ async def send_conversation_media(conversation_id: str, file: UploadFile = File(
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
-    if not contact.wa_id:
-        raise HTTPException(status_code=422, detail="This contact has no WhatsApp number to send to")
 
     mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0]
     message_type = waba_media.message_type_for_mime(mime_type or "")
     if not message_type:
-        raise HTTPException(status_code=422, detail=f"Unsupported file type '{mime_type}' for WhatsApp media")
+        raise HTTPException(status_code=422, detail=f"Unsupported file type '{mime_type}'")
     content = await file.read()
+
+    if conversation.channel == "webchat":
+        from .webchat import send_webchat_media  # local import, same rationale as the text-send branch above
+        try:
+            message = send_webchat_media(db, entity.id, conversation, contact, content, mime_type, message_type, caption, sent_by_user_id=user.id)
+        except DomainError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _message_out(message)
+
+    if not contact.wa_id:
+        raise HTTPException(status_code=422, detail="This contact has no WhatsApp number to send to")
     try:
         message = send_whatsapp_media(db, entity.id, contact.wa_id, content, file.filename or "upload", mime_type, message_type, caption, sent_by_user_id=user.id)
     except DomainError as exc:

@@ -10,7 +10,9 @@ type Contact = { id: string, name: string | null, email: string | null }
 type Message = {
   id: string
   direction: 'inbound' | 'outbound'
+  message_type: string
   body: string | null
+  media_url: string | null
   created_at: string
 }
 type Thread = {
@@ -143,6 +145,45 @@ async function sendReply() {
   finally {
     sending.value = false
   }
+}
+
+// --- Attachments -----------------------------------------------------------------------------
+
+const fileInput = ref<HTMLInputElement | null>(null)
+const uploadingFile = ref(false)
+
+function triggerFilePicker() {
+  fileInput.value?.click()
+}
+
+async function onFileSelected(event: Event) {
+  const file = (event.target as HTMLInputElement).files?.[0]
+  if (!file || !selected.value)
+    return
+  sendError.value = ''
+  uploadingFile.value = true
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    const message = await $api<Message>(`/v1/waba/conversations/${selected.value.id}/media`, { method: 'POST', body: formData })
+    if (!selected.value.messages.some(m => m.id === message.id))
+      selected.value.messages.push(message)
+    loadThreads()
+  }
+  catch (error: any) {
+    sendError.value = extractErrorMessage(error, 'Could not send this file.')
+  }
+  finally {
+    uploadingFile.value = false
+    if (fileInput.value)
+      fileInput.value.value = ''
+  }
+}
+
+function mediaUrl(messageId: string): string {
+  const base = import.meta.env.VITE_API_BASE_URL || window.location.origin
+  const token = useCookie('accessToken').value
+  return `${base}/v1/waba/media/${messageId}?token=${encodeURIComponent(token || '')}`
 }
 
 function formatDate(iso: string | null) {
@@ -348,11 +389,25 @@ onBeforeUnmount(() => {
               class="pa-3 rounded-lg"
               :style="{
                 maxWidth: '75%',
+                padding: m.message_type === 'image' && m.media_url ? '4px' : undefined,
                 background: m.direction === 'outbound' ? 'rgb(var(--v-theme-primary))' : 'rgba(var(--v-theme-on-surface), 0.06)',
                 color: m.direction === 'outbound' ? '#fff' : 'inherit',
               }"
             >
-              <p class="mb-1" style="white-space: pre-wrap;">
+              <a v-if="m.message_type === 'image' && m.media_url" :href="mediaUrl(m.id)" target="_blank">
+                <img :src="mediaUrl(m.id)" style="max-width: 100%; border-radius: 6px; display: block;">
+              </a>
+              <a
+                v-else-if="m.media_url"
+                :href="mediaUrl(m.id)"
+                target="_blank"
+                class="d-flex align-center ga-2 mb-1"
+                :class="m.direction === 'outbound' ? 'text-white' : ''"
+              >
+                <VIcon icon="tabler-file" size="18" />
+                Download file
+              </a>
+              <p v-if="m.body" class="mb-1" style="white-space: pre-wrap;">
                 {{ m.body }}
               </p>
               <p class="text-caption mb-0" :class="m.direction === 'outbound' ? 'text-white' : 'text-medium-emphasis'" style="opacity: 0.75;">
@@ -369,7 +424,9 @@ onBeforeUnmount(() => {
           <VAlert v-if="sendError" type="error" variant="tonal" density="compact" class="mb-3">
             {{ sendError }}
           </VAlert>
+          <input ref="fileInput" type="file" hidden @change="onFileSelected">
           <div class="d-flex ga-2">
+            <VBtn icon="tabler-paperclip" variant="outlined" :loading="uploadingFile" @click="triggerFilePicker" />
             <VTextField
               v-model="replyBody"
               placeholder="Type a reply..."

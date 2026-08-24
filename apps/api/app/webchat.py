@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import waba_media
 from .auth import require_user
 from .database import get_db
 from .models import Contact, Conversation, ConversationMessage, TicketGroup, User, WebchatVisit, WebchatWidgetSettings
@@ -72,6 +73,30 @@ def send_webchat_text(db: Session, entity_id: str, conversation: Conversation, c
     db.refresh(message)
     publish_event(entity_id, {"type": "message", "message": message_payload(message)})
     publish_to_visitor(contact.visitor_id, {"type": "message", "message": message_payload(message)})
+    return message
+
+
+def send_webchat_media(db: Session, entity_id: str, conversation: Conversation, contact: Contact, content: bytes, mime_type: str, message_type: str, caption: str | None = None, sent_by_user_id: str | None = None) -> ConversationMessage:
+    """The webchat equivalent of waba_dispatch.send_whatsapp_media -- reuses waba_media.save_media
+    as-is (it already doesn't care whether the bytes came from Meta or an agent/visitor upload,
+    only that they're stored safely under a UUID filename), just skips the Meta upload/send call
+    entirely since delivery here is only ever the visitor's own live WebSocket."""
+    if not contact.visitor_id:
+        raise DomainError("This contact has no active webchat session to send to")
+    stored_path = waba_media.save_media(entity_id, content, mime_type, message_type)
+    message = ConversationMessage(
+        conversation_id=conversation.id, direction="outbound", message_type=message_type, body=caption,
+        media_url=stored_path, status="sent", sent_by_user_id=sent_by_user_id,
+    )
+    db.add(message)
+    conversation.status = "open"
+    conversation.last_message_at = datetime.now(timezone.utc)
+    conversation.first_response_due_at = None
+    db.commit()
+    db.refresh(message)
+    payload = message_payload(message)
+    publish_event(entity_id, {"type": "message", "message": payload})
+    publish_to_visitor(contact.visitor_id, {"type": "message", "message": payload})
     return message
 
 

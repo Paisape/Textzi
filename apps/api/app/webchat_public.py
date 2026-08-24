@@ -9,13 +9,15 @@ standard CORSMiddleware DOES apply, but the Origin check is done manually anyway
 allowed_origins list is the single source of truth for both the HTTP and WebSocket paths, not two
 separate mechanisms to keep in sync."""
 import logging
+import mimetypes
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from . import waba_media
 from .database import get_db
 from .geoip import lookup_geo
 from .models import Contact, Conversation, ConversationMessage, CsatResponse, WebchatVisit, WebchatWidgetSettings
@@ -162,6 +164,70 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     db.refresh(message)
     publish_event(settings_row.entity_id, {"type": "message", "message": message_payload(message)})
     return WebchatMessageResponse(conversation_id=conversation.id, message_id=message.id)
+
+
+@router.post("/{widget_key}/media", response_model=WebchatMessageResponse)
+async def send_visitor_media(
+    widget_key: str, request: Request, visitor_id: str = Form(...), file: UploadFile = File(...),
+    name: str | None = Form(default=None), email: str | None = Form(default=None), db: Session = Depends(get_db),
+):
+    """Visitor-side file/image upload -- same find-or-create Contact/Conversation shape as
+    send_visitor_message, reusing waba_media's own type allowlist/size caps and storage (it
+    already doesn't care whether the bytes came from Meta, an agent, or here)."""
+    settings_row = _widget_settings(db, widget_key)
+    _check_origin(request, settings_row)
+
+    mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0]
+    message_type = waba_media.message_type_for_mime(mime_type or "")
+    if not message_type:
+        raise HTTPException(status_code=422, detail=f"Unsupported file type '{mime_type}'")
+    content = await file.read()
+    try:
+        stored_path = waba_media.save_media(settings_row.entity_id, content, mime_type, message_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    contact = _find_or_create_webchat_contact(db, settings_row.entity_id, visitor_id, name, email)
+    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id)
+
+    now = datetime.now(timezone.utc)
+    message = ConversationMessage(conversation_id=conversation.id, direction="inbound", message_type=message_type, media_url=stored_path, status="received")
+    db.add(message)
+    conversation.status = "open"
+    conversation.last_message_at = now
+
+    visit = db.scalar(select(WebchatVisit).where(WebchatVisit.entity_id == settings_row.entity_id, WebchatVisit.visitor_id == visitor_id))
+    if visit:
+        visit.contact_id = contact.id
+        visit.conversation_id = conversation.id
+
+    db.commit()
+    db.refresh(message)
+    publish_event(settings_row.entity_id, {"type": "message", "message": message_payload(message)})
+    return WebchatMessageResponse(conversation_id=conversation.id, message_id=message.id)
+
+
+@router.get("/{widget_key}/media/{message_id}")
+def get_visitor_media(widget_key: str, message_id: str, request: Request, db: Session = Depends(get_db)):
+    """Serves a webchat attachment back to the visitor's browser (their own upload, or an agent's
+    reply) -- no Textzi auth exists for a visitor, so this is gated by widget_key + Origin instead
+    of the token-query-param scheme /v1/waba/media/{message_id} uses for the agent side. An <img>
+    tag can't attach the Origin header itself, but the browser sends it anyway on any cross-origin
+    request including a plain <img src>, so the same manual check still applies here."""
+    settings_row = _widget_settings(db, widget_key)
+    _check_origin(request, settings_row)
+    message = db.get(ConversationMessage, message_id)
+    if not message or not message.media_url:
+        raise HTTPException(status_code=404, detail="Media not found")
+    conversation = db.get(Conversation, message.conversation_id)
+    if not conversation or conversation.entity_id != settings_row.entity_id or conversation.channel != "webchat":
+        raise HTTPException(status_code=404, detail="Media not found")
+    try:
+        content = waba_media.read_media(message.media_url)
+    except OSError:
+        raise HTTPException(status_code=404, detail="Media file is no longer available")
+    mime_type = mimetypes.guess_type(message.media_url)[0] or "application/octet-stream"
+    return Response(content=content, media_type=mime_type)
 
 
 @router.post("/{widget_key}/csat")
