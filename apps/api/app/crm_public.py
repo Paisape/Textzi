@@ -10,6 +10,7 @@ from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .crm import rescore_lead
@@ -69,7 +70,21 @@ def submit_public_lead_form(entity_id: str, payload: WebFormSubmitRequest, reque
             custom_fields=extra_fields,
         )
         db.add(contact)
-        db.flush()
+        # This form is public/unauthenticated -- a retried submit or two form-fills arriving at
+        # the same instant for the same never-before-seen email/phone can both pass the SELECT
+        # above before either commits. uq_crm_contacts_entity_email/_phone are the real guarantee.
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = None
+            if email:
+                existing = db.query(CrmContact).filter(CrmContact.entity_id == entity_id, CrmContact.email == email).first()
+            if not existing and phone:
+                existing = db.query(CrmContact).filter(CrmContact.entity_id == entity_id, CrmContact.phone == phone).first()
+            if not existing:
+                raise
+            contact = existing
 
     lead = Lead(
         entity_id=entity_id, contact_id=contact.id, company_name=values.get("company"),

@@ -23,6 +23,7 @@ from email.utils import parseaddr
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import ValidationError
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import require_user
@@ -163,7 +164,16 @@ def _find_or_create_contact(db: Session, entity_id: str, email_address: str, dis
         return contact
     contact = Contact(entity_id=entity_id, email=email_address, name=display_name)
     db.add(contact)
-    db.flush()
+    # A manual send racing the scheduled inbound poll (or two overlapping polls) for the same
+    # brand-new email address can both pass the SELECT above before either commits --
+    # uq_contacts_entity_email is the real guarantee; re-fetch on the loser instead of crashing.
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.email == email_address))
+        if not contact:
+            raise
     return contact
 
 
@@ -175,7 +185,15 @@ def _find_or_create_conversation(db: Session, entity_id: str, contact_id: str) -
         return conversation
     conversation = Conversation(entity_id=entity_id, contact_id=contact_id, channel="email")
     db.add(conversation)
-    db.flush()
+    try:
+        db.flush()
+    except IntegrityError:
+        db.rollback()
+        conversation = db.scalar(
+            select(Conversation).where(Conversation.entity_id == entity_id, Conversation.contact_id == contact_id, Conversation.channel == "email"),
+        )
+        if not conversation:
+            raise
     return conversation
 
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
@@ -584,7 +585,20 @@ def credit_textzi_wallet(db: Session, entity_id: str, amount: float, transaction
     if not wallet:
         wallet = TextziWallet(entity_id=entity_id, balance=0)
         db.add(wallet)
-        db.flush()
+        try:
+            db.flush()
+        except IntegrityError:
+            # Two concurrent first-ever credits for this entity (e.g. the live webhook racing a
+            # reconcile sweep) can both find no wallet row and both try to insert one --
+            # entity_id is the PK, so the loser hits IntegrityError here, not on whatever
+            # constraint the caller's own commit expects (a prior bug: this used to propagate
+            # uncaught, since the caller's try/except only wrapped its own later commit). Roll
+            # back and re-fetch -- nothing else has been added to the session yet at this point in
+            # every current call site, so this rollback can't discard other pending work.
+            db.rollback()
+            wallet = db.get(TextziWallet, entity_id, with_for_update=True)
+            if not wallet:
+                raise
     amount_dec = Decimal(str(amount))
     wallet.balance = wallet.balance + amount_dec
     db.add(TextziWalletTransaction(entity_id=entity_id, type=transaction_type, amount=amount_dec, balance_after=Decimal(str(wallet.balance)), reference=reference))

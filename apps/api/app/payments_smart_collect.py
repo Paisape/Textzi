@@ -27,14 +27,15 @@ from .channels import _consume_api_key_otp, _issue_api_key_otp
 from .channel_billing import PERIOD_DAYS
 from .database import SessionLocal, get_db
 from .invoicing import create_draft_invoice, issue_invoice
-from .models import BillingPlan, ChannelSubscription, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
+from .email_service import render_email, send_email
+from .models import BillingPlan, ChannelSubscription, Entity, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
 from .schemas import (
     ApiKeyOtpResponse, BillingPlanOut, ChannelSubscriptionStatusOut, RazorpayVirtualAccountOut, RechargeResponse,
     TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
 )
 from .services import (
-    GST_RATE, DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_platform_razorpay_keys,
-    get_platform_razorpay_webhook_secret, payment_method_config, quote_credits, resolve_rate_card, resolve_user_entity,
+    GST_RATE, DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_platform_company_info, get_platform_razorpay_keys,
+    get_platform_razorpay_webhook_secret, log_activity, payment_method_config, quote_credits, resolve_rate_card, resolve_user_entity,
 )
 
 logger = logging.getLogger("textzi.payments")
@@ -170,7 +171,15 @@ def admin_reconcile_smart_collect_entity(entity_id: str, db: Session = Depends(g
     virtual_account = db.get(RazorpayVirtualAccount, entity_id)
     if not virtual_account:
         raise HTTPException(status_code=404, detail="This entity has no Smart Collect virtual account")
-    return reconcile_smart_collect_account(db, virtual_account)
+    result = reconcile_smart_collect_account(db, virtual_account)
+    # This account may have since been closed (customer generated a new one) -- still worth
+    # reconciling since a real transfer into it is still this entity's money either way, but flag
+    # it so an admin isn't confused seeing credits land against an account no longer shown in the
+    # customer's own wallet page. The scheduled sweep (run_smart_collect_reconciliation) already
+    # only ever looks at active accounts, so this note is specific to this on-demand admin path.
+    if virtual_account.status != "active":
+        result["virtual_account_status"] = virtual_account.status
+    return result
 
 
 def run_smart_collect_reconciliation() -> None:
@@ -224,6 +233,28 @@ def _handle_smart_collect_refund(db: Session, payload: dict) -> dict:
         logger.warning("smart collect refund webhook: could not reverse credit for payment_id=%s -- balance already spent, needs manual review", razorpay_payment_id)
     if order:
         order.status = "refunded"
+    if not reversed_credit:
+        # Mirrors flag_refunded_payment's alerting for the Checkout flow -- without this, an
+        # admin looking only at PaymentOrder.status="refunded" can't tell "fully reconciled"
+        # apart from "refunded on Razorpay but the wallet was never clawed back" (this used to
+        # be a log line only, easy to miss, with no record in the admin-visible activity log).
+        entity = db.get(Entity, credit_txn.entity_id)
+        if entity:
+            log_activity(
+                db, entity.organization_id, "smart_collect_refund_not_reversed",
+                f"Smart Collect payment {razorpay_payment_id} was refunded on Razorpay but the Textzi Wallet credit could not be automatically reversed (balance already spent) -- entity {entity.id}",
+            )
+        info = get_platform_company_info(db)
+        send_email(
+            db, to=info.support_email,
+            subject=f"[Review] Smart Collect refund could not be reversed (payment {razorpay_payment_id})",
+            html_body=render_email(
+                "A Smart Collect refund could not be fully reconciled",
+                f"<p>Payment <strong>{razorpay_payment_id}</strong> (entity {credit_txn.entity_id}) was refunded on Razorpay, "
+                f"but the Textzi Wallet credit it originally gave could NOT be automatically reversed -- the balance was "
+                f"already spent. Review and adjust the wallet manually.</p>",
+            ),
+        )
     db.commit()
     return {"status": "ok", "reversed": reversed_credit}
 
@@ -329,8 +360,16 @@ def reconcile_smart_collect_account(db: Session, virtual_account: "RazorpayVirtu
     for payment in payments.get("items", []):
         if payment.get("status") != "captured":
             continue
+        payment_id, amount = payment.get("id"), payment.get("amount")
+        if not payment_id or amount is None:
+            # Malformed/unexpected item shape from Razorpay -- skip this one, not the whole batch.
+            # Previously used payment["id"]/payment["amount"] directly, which KeyError'd and
+            # aborted every remaining payment in this account's batch on a bad item.
+            logger.warning("smart collect reconcile: skipping malformed payment item for entity_id=%s: %r", virtual_account.entity_id, payment)
+            results["ignored"] += 1
+            continue
         results["checked"] += 1
-        outcome = _process_smart_collect_credit(db, payment["id"], virtual_account.razorpay_account_id, payment["amount"], source="reconcile")
+        outcome = _process_smart_collect_credit(db, payment_id, virtual_account.razorpay_account_id, amount, source="reconcile")
         if outcome.get("status") == "ok" and outcome.get("reason") is None:
             results["credited"] += 1
         elif outcome.get("reason") == "already_processed":

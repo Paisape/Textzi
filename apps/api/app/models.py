@@ -1323,6 +1323,10 @@ class Contact(Base):
         # One Contact row per (entity, WhatsApp number) -- prevents the same inbound number from
         # ever silently fragmenting into two separate contact records for one entity.
         UniqueConstraint("entity_id", "wa_id", name="uq_contacts_entity_wa_id"),
+        # Same guarantee for email-identified contacts (crm_email.py's inbound poll/send find-or-
+        # create) -- NULL values don't collide with each other under Postgres unique-constraint
+        # semantics, same as wa_id above, so a WhatsApp-only contact with no email is unaffected.
+        UniqueConstraint("entity_id", "email", name="uq_contacts_entity_email"),
     )
 
 
@@ -1380,6 +1384,14 @@ class Conversation(Base):
     # "no join table needed at this scale" reasoning as TicketGroup.member_user_ids.
     cc_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        # Every find-or-create site (waba_dispatch.py, waba_webhooks.py, crm_email.py) already
+        # treats (entity, contact, channel) as unique -- this is what actually enforces it, closing
+        # a race where two concurrent first-contact events (e.g. an inbound email poll racing an
+        # outbound send to the same brand-new contact) could otherwise create two Conversation rows.
+        UniqueConstraint("entity_id", "contact_id", "channel", name="uq_conversations_entity_contact_channel"),
+    )
 
 
 class TicketGroup(Base):
@@ -1531,10 +1543,14 @@ class CrmContact(Base):
     # Real dedup guard for _resolve_or_create_contact's find-or-create -- a plain SELECT-then-INSERT
     # has a race window under concurrent requests for the same never-before-seen phone number.
     # Partial (phone IS NOT NULL) since phone is optional and many contacts share NULL.
-    # sync_schema only emits plain (non-unique, non-partial) CREATE INDEX, so this one is created
+    # sync_schema only emits plain (non-unique, non-partial) CREATE INDEX, so these are created
     # manually -- see the manual ALTER note in services.py's _resolve_or_create_contact usage.
+    # Same guarantee for email, closing the identical race in crm_public.py's unauthenticated
+    # web-form submission endpoint (confirmed exploitable: concurrent/retried form submits for a
+    # brand-new email created multiple CrmContact rows before this index existed).
     __table_args__ = (
         Index("uq_crm_contacts_entity_phone", "entity_id", "phone", unique=True, postgresql_where=text("phone IS NOT NULL")),
+        Index("uq_crm_contacts_entity_email", "entity_id", "email", unique=True, postgresql_where=text("email IS NOT NULL")),
     )
 
 

@@ -274,7 +274,21 @@ def _get_or_create_crm_contact_from_waba(db: Session, entity_id: str, waba_conta
             consent_given_at=waba_contact.consent_given_at, consent_source=waba_contact.consent_source,
         )
         db.add(crm_contact)
-        db.flush()
+        # Same fast-path-select-then-insert race as _resolve_or_create_contact above -- two
+        # concurrent conversions of the same never-before-seen WhatsApp number can both pass the
+        # SELECT before either commits. uq_crm_contacts_entity_phone is the real guarantee.
+        try:
+            db.flush()
+        except IntegrityError:
+            db.rollback()
+            existing = None
+            if waba_contact.wa_id:
+                existing = db.scalar(select(CrmContact).where(CrmContact.entity_id == entity_id, CrmContact.phone == waba_contact.wa_id))
+            if not existing and waba_contact.email:
+                existing = db.scalar(select(CrmContact).where(CrmContact.entity_id == entity_id, CrmContact.email == waba_contact.email))
+            if not existing:
+                raise
+            crm_contact = existing
     waba_contact.crm_contact_id = crm_contact.id
     return crm_contact
 
@@ -500,7 +514,17 @@ def import_contacts(file: UploadFile = File(...), user: User = Depends(require_u
             if not company:
                 company = Company(entity_id=entity.id, name=company_name)
                 db.add(company)
-                db.flush()
+                try:
+                    db.flush()
+                except IntegrityError:
+                    # Two concurrent imports/creates for the same company name -- re-fetch rather
+                    # than crash. No DB-level unique constraint backs this (unlike phone/email,
+                    # two real companies can legitimately share a name), so this only closes the
+                    # race within this same flush, not a hard guarantee across all writers.
+                    db.rollback()
+                    company = db.scalar(select(Company).where(Company.entity_id == entity.id, Company.name == company_name))
+                    if not company:
+                        raise
             company_id = company.id
         db.add(CrmContact(entity_id=entity.id, name=name, phone=phone, email=email, title=title, company_id=company_id, source="csv_import"))
         created += 1
