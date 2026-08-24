@@ -151,6 +151,57 @@ function formatDate(iso: string | null) {
   return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
+// --- Macros + resolve ------------------------------------------------------------------------
+
+type Macro = { id: string, name: string }
+
+const macros = ref<Macro[]>([])
+const runningMacro = ref(false)
+const resolving = ref(false)
+
+async function loadMacros() {
+  try {
+    macros.value = await $api<Macro[]>('/v1/waba/macros')
+  }
+  catch {
+    // Non-critical -- the macro menu just shows empty if this fails.
+  }
+}
+
+async function runMacro(macroId: string) {
+  if (!selected.value)
+    return
+  runningMacro.value = true
+  try {
+    await $api(`/v1/waba/conversations/${selected.value.id}/run-macro/${macroId}`, { method: 'POST' })
+    await selectThread(selected.value.id)
+    await loadThreads()
+  }
+  catch (error: any) {
+    threadError.value = extractErrorMessage(error, 'Could not run this macro.')
+  }
+  finally {
+    runningMacro.value = false
+  }
+}
+
+async function markResolved() {
+  if (!selected.value)
+    return
+  resolving.value = true
+  try {
+    await $api(`/v1/waba/conversations/${selected.value.id}`, { method: 'PUT', body: { status: 'resolved' } })
+    selected.value.status = 'resolved'
+    await loadThreads()
+  }
+  catch (error: any) {
+    threadError.value = extractErrorMessage(error, 'Could not resolve this conversation.')
+  }
+  finally {
+    resolving.value = false
+  }
+}
+
 // --- Realtime: same WebSocket + Redis pub/sub feed inbox.vue uses -- a webchat conversation's
 // messages are published onto the same per-entity channel, so this reuses the exact connection
 // shape, just its own tab/socket instance.
@@ -187,6 +238,7 @@ function connectSocket() {
 
 onMounted(() => {
   loadThreads()
+  loadMacros()
   connectSocket()
 })
 
@@ -247,13 +299,42 @@ onBeforeUnmount(() => {
     </VCard>
     <template v-else>
       <VCard class="flex-grow-1 d-flex flex-column overflow-hidden">
-        <VCardText class="flex-grow-0">
-          <h2 class="text-h6 mb-0">
-            {{ contactLabel(selected.contact) }}
-          </h2>
-          <p v-if="selected.contact.email" class="text-body-2 text-medium-emphasis mb-0">
-            {{ selected.contact.email }}
-          </p>
+        <VCardText class="flex-grow-0 d-flex align-start justify-space-between ga-2">
+          <div>
+            <h2 class="text-h6 mb-0">
+              {{ contactLabel(selected.contact) }}
+            </h2>
+            <p v-if="selected.contact.email" class="text-body-2 text-medium-emphasis mb-0">
+              {{ selected.contact.email }}
+            </p>
+          </div>
+          <div class="d-flex align-center ga-2">
+            <VMenu v-if="macros.length">
+              <template #activator="{ props: menuProps }">
+                <VBtn v-bind="menuProps" size="small" variant="outlined" :loading="runningMacro">
+                  Macros
+                </VBtn>
+              </template>
+              <VList density="compact">
+                <VListItem v-for="macro in macros" :key="macro.id" @click="runMacro(macro.id)">
+                  {{ macro.name }}
+                </VListItem>
+              </VList>
+            </VMenu>
+            <VBtn
+              v-if="selected.status !== 'resolved'"
+              size="small"
+              variant="outlined"
+              color="success"
+              :loading="resolving"
+              @click="markResolved"
+            >
+              Mark resolved
+            </VBtn>
+            <VChip v-else color="success" size="small" variant="tonal">
+              Resolved
+            </VChip>
+          </div>
         </VCardText>
         <VDivider />
 
