@@ -46,6 +46,9 @@ from .waba_realtime import router as waba_realtime_router
 from .waba_reports import router as waba_reports_router
 from .waba_webhooks import router as waba_webhooks_router
 from .wallet import router as wallet_router
+from .webchat import router as webchat_router
+from .webchat_public import router as webchat_public_router
+from .webchat_realtime import router as webchat_realtime_router
 from .webhooks import router as webhooks_router
 from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
 from .security import encrypt_secret
@@ -142,6 +145,9 @@ app.include_router(waba_realtime_router)
 app.include_router(waba_reports_router)
 app.include_router(waba_webhooks_router)
 app.include_router(wallet_router)
+app.include_router(webchat_router)
+app.include_router(webchat_public_router)
+app.include_router(webchat_realtime_router)
 app.include_router(webhooks_router)
 
 

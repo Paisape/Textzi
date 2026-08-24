@@ -1317,6 +1317,11 @@ class Contact(Base):
     # own... if from whatsapp we convert in crm" decision. Same bridge shape as customer_id above,
     # one step earlier in the funnel.
     crm_contact_id: Mapped[str | None] = mapped_column(ForeignKey("crm_contacts.id"), nullable=True)
+    # Webchat identity: a browser-generated UUID the widget persists in localStorage, sent on
+    # every request -- the only identity a brand-new anonymous website visitor has (no phone/
+    # email until they choose to give one). Set the first time a visitor's widget session sends an
+    # actual message (see webchat_public.py) -- not created on every page view.
+    visitor_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
@@ -1327,6 +1332,8 @@ class Contact(Base):
         # create) -- NULL values don't collide with each other under Postgres unique-constraint
         # semantics, same as wa_id above, so a WhatsApp-only contact with no email is unaffected.
         UniqueConstraint("entity_id", "email", name="uq_contacts_entity_email"),
+        # Same guarantee for webchat visitors, identified by visitor_id instead of wa_id/email.
+        UniqueConstraint("entity_id", "visitor_id", name="uq_contacts_entity_visitor_id"),
     )
 
 
@@ -2130,6 +2137,58 @@ class BusinessHours(Base):
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     schedule: Mapped[dict] = mapped_column(JSON, default=dict)
     outside_hours_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
+class WebchatWidgetSettings(Base):
+    """One row per entity -- the embeddable website chat widget's configuration. Gated on WABA OR
+    CRM being active (either one, not both required -- confirmed with the user), so this lives in
+    its own webchat.py module rather than under crm.py's _require_crm gate. widget_key is public
+    (embedded directly in the customer's page source, not a secret) -- it identifies which
+    entity's widget a given page load belongs to; allowed_origins is the real security boundary
+    (see webchat_realtime.py's Origin-header check), since a WebSocket handshake isn't covered by
+    the app's regular CORSMiddleware the way a normal HTTP request is."""
+    __tablename__ = "webchat_widget_settings"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    widget_key: Mapped[str] = mapped_column(String(36), unique=True, default=uid)
+    allowed_origins: Mapped[list] = mapped_column(JSON, default=list)
+    bubble_color: Mapped[str] = mapped_column(String(20), default="#F1600D")
+    greeting_message: Mapped[str] = mapped_column(String(300), default="Hi! How can we help?")
+    offline_message: Mapped[str] = mapped_column(String(300), default="We're offline right now -- leave your email and we'll get back to you.")
+    proactive_trigger_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    proactive_trigger_delay_seconds: Mapped[int] = mapped_column(Integer, default=30)
+    proactive_trigger_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+
+
+class WebchatVisit(Base):
+    """One row per anonymous website visitor session -- created on the widget's first /visit call
+    on a page load, updated on subsequent page views within the same session. Telemetry is kept
+    here rather than on Contact.custom_attributes because it's inherently per-visit (current page/
+    referrer change every session), not a stable per-identity attribute -- cramming it into
+    Contact would mean each new visit silently overwrites the last one's data. contact_id/
+    conversation_id are set only once the visitor actually sends a message (see webchat_public.py)
+    -- a visitor who loads the widget but never chats has a WebchatVisit row with no Contact at
+    all, avoiding a flood of throwaway Contact rows from every page view."""
+    __tablename__ = "webchat_visits"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    visitor_id: Mapped[str] = mapped_column(String(64), index=True)
+    contact_id: Mapped[str | None] = mapped_column(ForeignKey("contacts.id"), nullable=True)
+    conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
+    current_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    referrer: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    user_agent: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(String(45), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    city: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # [{"url": "...", "viewed_at": "..."}] -- appended to, not overwritten, across the same session.
+    pages_viewed: Mapped[list] = mapped_column(JSON, default=list)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("entity_id", "visitor_id", name="uq_webchat_visits_entity_visitor_id"),
+    )
 
 
 class BookingLink(Base):

@@ -500,6 +500,14 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
         publish_event(entity.id, {"type": "message", "message": message_payload(message)})
         return _message_out(message)
 
+    if conversation.channel == "webchat":
+        from .webchat import send_webchat_text  # local import, same rationale as waba_automation.py's own reply action
+        try:
+            message = send_webchat_text(db, entity.id, conversation, contact, payload.body, sent_by_user_id=user.id)
+        except DomainError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return _message_out(message)
+
     if not contact.wa_id:
         raise HTTPException(status_code=422, detail="This contact has no WhatsApp number to send to")
     try:

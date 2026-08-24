@@ -2,15 +2,16 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, time, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -926,6 +927,32 @@ def payment_method_config(db: Session, payment_method: str) -> PlatformPaymentMe
     if config:
         return config
     return PlatformPaymentMethodConfig(payment_method=payment_method, enabled=(payment_method == "razorpay_checkout"), flat_fee_paise=0)
+
+
+def is_outside_business_hours(db: Session, entity_id: str, now: datetime) -> bool:
+    """Same day/time check waba_webhooks.py's own auto-reply uses to decide whether to send it --
+    lives here (not waba_webhooks.py) so channel-agnostic callers (webchat_public.py, this
+    codebase's "never import the WABA send/receive pipeline from another channel" isolation rule)
+    can reuse the exact same logic without reaching into that module. Returns False (not outside
+    hours) whenever hours aren't configured at all, matching the existing auto-reply's own
+    "nothing to do" default."""
+    hours = db.get(BusinessHours, entity_id)
+    if not hours or not hours.enabled:
+        return False
+    try:
+        local_now = now.astimezone(ZoneInfo(hours.timezone))
+    except Exception:
+        return False
+    day_key = local_now.strftime("%a").lower()[:3]
+    day_hours = hours.schedule.get(day_key)
+    if not day_hours:
+        return True
+    try:
+        open_t = time.fromisoformat(day_hours["open"])
+        close_t = time.fromisoformat(day_hours["close"])
+        return not (open_t <= local_now.time() <= close_t)
+    except (KeyError, ValueError):
+        return False
 
 
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:

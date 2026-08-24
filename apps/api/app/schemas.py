@@ -2631,6 +2631,59 @@ class WebFormSubmitRequest(BaseModel):
     turnstile_token: str | None = None
 
 
+class WebchatWidgetSettingsOut(BaseModel):
+    enabled: bool
+    widget_key: str
+    allowed_origins: list[str]
+    bubble_color: str
+    greeting_message: str
+    offline_message: str
+    proactive_trigger_enabled: bool
+    proactive_trigger_delay_seconds: int
+    proactive_trigger_message: str | None
+    embed_snippet: str
+
+
+class WebchatWidgetSettingsUpdateRequest(BaseModel):
+    enabled: bool | None = None
+    allowed_origins: list[str] | None = None
+    bubble_color: str | None = Field(default=None, max_length=20)
+    greeting_message: str | None = Field(default=None, min_length=1, max_length=300)
+    offline_message: str | None = Field(default=None, min_length=1, max_length=300)
+    proactive_trigger_enabled: bool | None = None
+    proactive_trigger_delay_seconds: int | None = Field(default=None, ge=1, le=600)
+    proactive_trigger_message: str | None = Field(default=None, max_length=300)
+
+
+class WebchatVisitRequest(BaseModel):
+    visitor_id: str = Field(min_length=1, max_length=64)
+    current_url: str = Field(min_length=1, max_length=500)
+    referrer: str | None = Field(default=None, max_length=500)
+
+
+class WebchatVisitResponse(BaseModel):
+    greeting_message: str
+    bubble_color: str
+    is_online: bool
+    offline_message: str
+    proactive_trigger_enabled: bool
+    proactive_trigger_delay_seconds: int
+    proactive_trigger_message: str | None
+
+
+class WebchatMessageRequest(BaseModel):
+    visitor_id: str = Field(min_length=1, max_length=64)
+    body: str = Field(min_length=1, max_length=4000)
+    name: str | None = Field(default=None, max_length=160)
+    email: str | None = Field(default=None, max_length=255)
+    turnstile_token: str | None = None
+
+
+class WebchatMessageResponse(BaseModel):
+    conversation_id: str
+    message_id: str
+
+
 class EmailAccountOut(BaseModel):
     connected: bool
     from_name: str | None = None
