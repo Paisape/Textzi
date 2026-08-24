@@ -43,6 +43,7 @@ from .waba_dispatch import (
 )
 from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates, upload_template_header_media
 from .waba_realtime import authenticate_query_token, message_payload, publish_event
+from .webchat_realtime import publish_to_visitor
 
 # Shared inbox module -- owns the Conversation/Task/ticket tables both the plain WhatsApp inbox
 # AND CRM's Tickets/Email/Helpdesk pages call directly, so this is gated to either channel
@@ -254,11 +255,21 @@ def get_conversation(conversation_id: str, user: User = Depends(require_user), d
 
 
 def _maybe_send_csat_request(db: Session, entity_id: str, conversation: Conversation, contact: Contact, user_id: str) -> None:
-    """Sent as a 1-10-row interactive list (not a 1-3 button message -- Meta caps those at 3
-    buttons, too few for a 1-5 scale) with rows titled "1".."5" so the inbound list_reply's own
-    title doubles as the rating; waba_webhooks._match_csat_response reads it back that way."""
+    """WhatsApp: sent as a 1-10-row interactive list (not a 1-3 button message -- Meta caps those
+    at 3 buttons, too few for a 1-5 scale) with rows titled "1".."5" so the inbound list_reply's
+    own title doubles as the rating; waba_webhooks._match_csat_response reads it back that way.
+    Webchat: no server-sent message -- the widget itself renders an inline 1-5 rating UI once it
+    sees the conversation marked resolved (over the same live WebSocket connection already used
+    for messages), submitting straight to webchat_public.py's own /csat endpoint. Either way, the
+    CsatResponse row is the same shape and created the same way (rating null until answered)."""
     settings_row = db.get(CsatSettings, entity_id)
-    if not settings_row or not settings_row.enabled or not contact.wa_id:
+    if not settings_row or not settings_row.enabled:
+        return
+    if conversation.channel == "webchat" and contact.visitor_id:
+        db.add(CsatResponse(conversation_id=conversation.id, entity_id=entity_id))
+        publish_to_visitor(contact.visitor_id, {"type": "csat_request", "conversation_id": conversation.id})
+        return
+    if not contact.wa_id:
         return
     sections = [{"title": "Rating", "rows": [{"id": str(n), "title": str(n)} for n in range(1, 6)]}]
     try:
@@ -1471,7 +1482,13 @@ def run_macro(conversation_id: str, macro_id: str, user: User = Depends(require_
         action_type, value = action.get("type"), action.get("value")
         if action_type == "reply" and value:
             canned = db.get(CannedResponse, value)
-            if canned and contact.wa_id:
+            if canned and conversation.channel == "webchat":
+                from .webchat import send_webchat_text  # local import, same rationale as _maybe_send_business_hours_reply's own reply action
+                try:
+                    send_webchat_text(db, entity.id, conversation, contact, canned.body, sent_by_user_id=user.id)
+                except DomainError:
+                    pass
+            elif canned and contact.wa_id:
                 try:
                     send_whatsapp_text(db, entity.id, contact.wa_id, canned.body, sent_by_user_id=user.id)
                 except (DomainError, MetaApiError):

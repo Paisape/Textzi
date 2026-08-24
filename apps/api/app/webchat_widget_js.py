@@ -47,6 +47,8 @@ WIDGET_JS = r"""
           var data = JSON.parse(event.data);
           if (data.type === 'message' && data.message && data.message.direction === 'outbound') {
             appendMessage(data.message.body, 'agent');
+          } else if (data.type === 'csat_request') {
+            appendCsatPrompt();
           }
         } catch (e) {}
       };
@@ -137,6 +139,37 @@ WIDGET_JS = r"""
     header.style.background = state.color;
     sendBtn.style.background = state.color;
     offlineSendBtn.style.background = state.color;
+  }
+
+  function appendCsatPrompt() {
+    var row = document.createElement('div');
+    row.style.cssText = 'margin:10px 0;padding:10px;border:1px solid #eee;border-radius:8px;text-align:center;';
+    var label = document.createElement('p');
+    label.textContent = 'How was this conversation?';
+    label.style.cssText = 'margin:0 0 8px;font-size:13px;color:#555;';
+    row.appendChild(label);
+    var starsRow = document.createElement('div');
+    starsRow.style.cssText = 'display:flex;justify-content:center;gap:4px;';
+    for (var n = 1; n <= 5; n++) {
+      (function (rating) {
+        var starBtn = document.createElement('button');
+        starBtn.textContent = String(rating);
+        starBtn.style.cssText = 'border:1px solid #ddd;background:#fff;border-radius:6px;width:32px;height:32px;cursor:pointer;font-size:14px;';
+        starBtn.addEventListener('click', function () {
+          post('/v1/public/webchat/' + widgetKey + '/csat', { visitor_id: visitorId, rating: rating }).then(function () {
+            row.innerHTML = '';
+            var thanks = document.createElement('p');
+            thanks.textContent = 'Thanks for the feedback!';
+            thanks.style.cssText = 'margin:0;font-size:13px;color:#555;';
+            row.appendChild(thanks);
+          });
+        });
+        starsRow.appendChild(starBtn);
+      })(n);
+    }
+    row.appendChild(starsRow);
+    thread.appendChild(row);
+    thread.scrollTop = thread.scrollHeight;
   }
 
   function renderMode() {

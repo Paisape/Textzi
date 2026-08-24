@@ -2684,6 +2684,11 @@ class WebchatMessageResponse(BaseModel):
     message_id: str
 
 
+class WebchatCsatRequest(BaseModel):
+    visitor_id: str = Field(min_length=1, max_length=64)
+    rating: int = Field(ge=1, le=5)
+
+
 class WebchatVisitTelemetryOut(BaseModel):
     current_url: str | None
     referrer: str | None

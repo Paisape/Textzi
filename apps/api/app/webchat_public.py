@@ -18,8 +18,8 @@ from sqlalchemy.orm import Session
 
 from .database import get_db
 from .geoip import lookup_geo
-from .models import Contact, Conversation, ConversationMessage, WebchatVisit, WebchatWidgetSettings
-from .schemas import WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
+from .models import Contact, Conversation, ConversationMessage, CsatResponse, WebchatVisit, WebchatWidgetSettings
+from .schemas import WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
 from .services import client_ip, is_outside_business_hours
 from .turnstile import require_turnstile
 from .waba_realtime import message_payload, publish_event
@@ -160,3 +160,30 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     db.refresh(message)
     publish_event(settings_row.entity_id, {"type": "message", "message": message_payload(message)})
     return WebchatMessageResponse(conversation_id=conversation.id, message_id=message.id)
+
+
+@router.post("/{widget_key}/csat")
+def submit_csat(widget_key: str, payload: WebchatCsatRequest, request: Request, db: Session = Depends(get_db)):
+    """The widget's own inline 1-5 rating UI submits here once the visitor answers -- fills in
+    the newest unanswered CsatResponse row for this visitor's conversation, same "newest
+    unanswered row wins" matching logic waba_webhooks._match_csat_response already uses for the
+    WhatsApp side, just reached over HTTP instead of an inbound Meta webhook."""
+    settings_row = _widget_settings(db, widget_key)
+    _check_origin(request, settings_row)
+
+    contact = db.scalar(select(Contact).where(Contact.entity_id == settings_row.entity_id, Contact.visitor_id == payload.visitor_id))
+    if not contact:
+        raise HTTPException(status_code=404, detail="Unknown visitor")
+    conversation = db.scalar(select(Conversation).where(Conversation.entity_id == settings_row.entity_id, Conversation.contact_id == contact.id, Conversation.channel == "webchat"))
+    if not conversation:
+        raise HTTPException(status_code=404, detail="No conversation for this visitor")
+    response_row = db.scalar(
+        select(CsatResponse).where(CsatResponse.conversation_id == conversation.id, CsatResponse.rating.is_(None))
+        .order_by(CsatResponse.requested_at.desc()).limit(1),
+    )
+    if not response_row:
+        raise HTTPException(status_code=404, detail="No pending rating request for this conversation")
+    response_row.rating = payload.rating
+    response_row.responded_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"status": "ok"}
