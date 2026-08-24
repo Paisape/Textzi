@@ -1553,6 +1553,7 @@ class ConversationOut(BaseModel):
     sla_breached: bool = False
     resolution_due_at: str | None = None
     resolution_breached: bool = False
+    resolved_at: str | None = None
     priority: str = "medium"
     category: str = "question"
     group_id: str | None = None
@@ -2639,9 +2640,12 @@ class WebchatWidgetSettingsOut(BaseModel):
     greeting_message: str
     offline_message: str
     proactive_trigger_enabled: bool
+    proactive_trigger_type: str
     proactive_trigger_delay_seconds: int
     proactive_trigger_message: str | None
+    proactive_url_pattern: str | None
     default_group_id: str | None
+    auto_assign_enabled: bool
     embed_snippet: str
 
 
@@ -2652,8 +2656,11 @@ class WebchatWidgetSettingsUpdateRequest(BaseModel):
     greeting_message: str | None = Field(default=None, min_length=1, max_length=300)
     offline_message: str | None = Field(default=None, min_length=1, max_length=300)
     proactive_trigger_enabled: bool | None = None
+    proactive_trigger_type: str | None = Field(default=None, pattern="^(time|exit_intent)$")
     proactive_trigger_delay_seconds: int | None = Field(default=None, ge=1, le=600)
     proactive_trigger_message: str | None = Field(default=None, max_length=300)
+    proactive_url_pattern: str | None = Field(default=None, max_length=300)
+    auto_assign_enabled: bool | None = None
 
 
 class WebchatDefaultGroupUpdateRequest(BaseModel):
@@ -2674,8 +2681,10 @@ class WebchatVisitResponse(BaseModel):
     is_online: bool
     offline_message: str
     proactive_trigger_enabled: bool
+    proactive_trigger_type: str
     proactive_trigger_delay_seconds: int
     proactive_trigger_message: str | None
+    proactive_url_pattern: str | None
 
 
 class WebchatMessageRequest(BaseModel):
@@ -3341,6 +3350,20 @@ class WabaReportsOut(BaseModel):
     open_conversations: int
     resolved_conversations: int
     sla_breached_count: int
+    avg_csat: float | None
+    csat_response_count: int
+
+
+class WebchatReportsOut(BaseModel):
+    volume: list[ReportVolumePoint]
+    agents: list[ReportAgentRow]
+    total_conversations: int
+    open_conversations: int
+    resolved_conversations: int
+    sla_breached_count: int
+    resolution_breached_count: int
+    avg_first_response_minutes: float | None
+    avg_resolution_minutes: float | None
     avg_csat: float | None
     csat_response_count: int
 

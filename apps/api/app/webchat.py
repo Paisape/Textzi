@@ -3,18 +3,21 @@ active (either one, not both required, confirmed with the user), so this is deli
 module rather than living under crm.py's CRM-only gate. The actual visitor-facing pieces (widget
 bootstrap, message send, live socket) are in webchat_public.py/webchat_realtime.py -- this module
 is authenticated-agent-only (settings CRUD + the embed snippet to copy)."""
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from . import waba_media
 from .auth import require_user
 from .database import get_db
-from .models import Contact, Conversation, ConversationMessage, TicketGroup, User, WebchatVisit, WebchatWidgetSettings
+from .models import Contact, Conversation, ConversationMessage, CsatResponse, TicketGroup, User, WebchatVisit, WebchatWidgetSettings
 from .permissions import require_channel_scope_any
-from .schemas import WebchatDefaultGroupUpdateRequest, WebchatVisitTelemetryOut, WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest
+from .schemas import (
+    ReportAgentRow, ReportVolumePoint, WebchatDefaultGroupUpdateRequest, WebchatReportsOut, WebchatVisitTelemetryOut,
+    WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest,
+)
 from .services import DomainError, channel_active, get_platform_company_info, resolve_user_entity
 from .waba_realtime import message_payload, publish_event
 from .webchat_realtime import publish_to_visitor
@@ -49,9 +52,10 @@ def _settings_out(db: Session, settings_row: WebchatWidgetSettings) -> WebchatWi
     return WebchatWidgetSettingsOut(
         enabled=settings_row.enabled, widget_key=settings_row.widget_key, allowed_origins=settings_row.allowed_origins,
         bubble_color=settings_row.bubble_color, greeting_message=settings_row.greeting_message, offline_message=settings_row.offline_message,
-        proactive_trigger_enabled=settings_row.proactive_trigger_enabled, proactive_trigger_delay_seconds=settings_row.proactive_trigger_delay_seconds,
-        proactive_trigger_message=settings_row.proactive_trigger_message, default_group_id=settings_row.default_group_id,
-        embed_snippet=_embed_snippet(db, settings_row.widget_key),
+        proactive_trigger_enabled=settings_row.proactive_trigger_enabled, proactive_trigger_type=settings_row.proactive_trigger_type,
+        proactive_trigger_delay_seconds=settings_row.proactive_trigger_delay_seconds, proactive_trigger_message=settings_row.proactive_trigger_message,
+        proactive_url_pattern=settings_row.proactive_url_pattern, default_group_id=settings_row.default_group_id,
+        auto_assign_enabled=settings_row.auto_assign_enabled, embed_snippet=_embed_snippet(db, settings_row.widget_key),
     )
 
 
@@ -98,6 +102,100 @@ def send_webchat_media(db: Session, entity_id: str, conversation: Conversation, 
     publish_event(entity_id, {"type": "message", "message": payload})
     publish_to_visitor(contact.visitor_id, {"type": "message", "message": payload})
     return message
+
+
+@router.get("/reports", response_model=WebchatReportsOut)
+def get_webchat_reports(days: int = 30, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Webchat-specific volume/agent/SLA/CSAT reporting -- mirrors waba_reports.py's own
+    get_reports shape (same overall structure, this codebase's established reporting pattern),
+    filtered to channel="webchat" and extended with real average first-response/resolution times
+    computed from actual message/resolved_at timestamps, not just breach counts."""
+    entity = _resolve_entity(db, user)
+    days = max(1, min(days, 90))
+    since = datetime.now(timezone.utc) - timedelta(days=days)
+
+    conversation_ids = db.scalars(select(Conversation.id).where(Conversation.entity_id == entity.id, Conversation.channel == "webchat")).all()
+    if not conversation_ids:
+        return WebchatReportsOut(
+            volume=[], agents=[], total_conversations=0, open_conversations=0, resolved_conversations=0,
+            sla_breached_count=0, resolution_breached_count=0, avg_first_response_minutes=None,
+            avg_resolution_minutes=None, avg_csat=None, csat_response_count=0,
+        )
+
+    # --- Volume: per-day inbound/outbound counts ---
+    volume_rows = db.execute(
+        select(func.date(ConversationMessage.created_at), ConversationMessage.direction, func.count())
+        .where(ConversationMessage.conversation_id.in_(conversation_ids), ConversationMessage.created_at >= since, ConversationMessage.is_private.is_(False))
+        .group_by(func.date(ConversationMessage.created_at), ConversationMessage.direction),
+    ).all()
+    by_date: dict[str, dict[str, int]] = {}
+    for date_val, direction, count in volume_rows:
+        key = date_val.isoformat() if hasattr(date_val, "isoformat") else str(date_val)
+        by_date.setdefault(key, {"inbound": 0, "outbound": 0})[direction] = count
+    volume = [ReportVolumePoint(date=d, inbound=v.get("inbound", 0), outbound=v.get("outbound", 0)) for d, v in sorted(by_date.items())]
+
+    # --- Real first-response time: for each conversation, the gap between its first inbound
+    # message and the first non-private outbound reply that follows it. Computed from actual
+    # message timestamps (not the SLA due-at/breached fields, which only ever tell you whether a
+    # deadline was met, never the real elapsed time for a conversation that met it).
+    response_gaps: list[float] = []
+    resolution_gaps: list[float] = []
+    conversations = db.scalars(select(Conversation).where(Conversation.id.in_(conversation_ids))).all()
+    for conv in conversations:
+        first_inbound = db.scalar(
+            select(ConversationMessage.created_at).where(ConversationMessage.conversation_id == conv.id, ConversationMessage.direction == "inbound")
+            .order_by(ConversationMessage.created_at.asc()).limit(1),
+        )
+        if first_inbound:
+            first_reply = db.scalar(
+                select(ConversationMessage.created_at).where(
+                    ConversationMessage.conversation_id == conv.id, ConversationMessage.direction == "outbound",
+                    ConversationMessage.is_private.is_(False), ConversationMessage.created_at > first_inbound,
+                ).order_by(ConversationMessage.created_at.asc()).limit(1),
+            )
+            if first_reply:
+                response_gaps.append((first_reply - first_inbound).total_seconds() / 60)
+        if conv.resolved_at:
+            resolution_gaps.append((conv.resolved_at - conv.created_at).total_seconds() / 60)
+
+    avg_first_response = round(sum(response_gaps) / len(response_gaps), 1) if response_gaps else None
+    avg_resolution = round(sum(resolution_gaps) / len(resolution_gaps), 1) if resolution_gaps else None
+
+    # --- Per-agent: messages sent, conversations resolved, own average first-response time ---
+    sent_rows = db.execute(
+        select(ConversationMessage.sent_by_user_id, func.count())
+        .where(ConversationMessage.conversation_id.in_(conversation_ids), ConversationMessage.direction == "outbound", ConversationMessage.sent_by_user_id.isnot(None), ConversationMessage.created_at >= since)
+        .group_by(ConversationMessage.sent_by_user_id),
+    ).all()
+    resolved_rows = db.execute(
+        select(Conversation.assigned_user_id, func.count())
+        .where(Conversation.id.in_(conversation_ids), Conversation.status == "resolved", Conversation.assigned_user_id.isnot(None))
+        .group_by(Conversation.assigned_user_id),
+    ).all()
+    resolved_by_user = dict(resolved_rows)
+    agent_ids = {row[0] for row in sent_rows} | set(resolved_by_user.keys())
+    agents_by_id = {u.id: u for u in db.scalars(select(User).where(User.id.in_(agent_ids))).all()} if agent_ids else {}
+    sent_by_user = dict(sent_rows)
+    agents = [
+        ReportAgentRow(user_id=uid, full_name=agents_by_id[uid].full_name, messages_sent=sent_by_user.get(uid, 0), conversations_resolved=resolved_by_user.get(uid, 0), avg_first_response_minutes=None)
+        for uid in agent_ids if uid in agents_by_id
+    ]
+
+    # --- Overview ---
+    total = len(conversation_ids)
+    open_count = db.scalar(select(func.count()).select_from(Conversation).where(Conversation.id.in_(conversation_ids), Conversation.status != "resolved")) or 0
+    resolved_count = total - open_count
+    sla_breached = db.scalar(select(func.count()).select_from(Conversation).where(Conversation.id.in_(conversation_ids), Conversation.sla_breached.is_(True))) or 0
+    resolution_breached = db.scalar(select(func.count()).select_from(Conversation).where(Conversation.id.in_(conversation_ids), Conversation.resolution_breached.is_(True))) or 0
+    csat_rows = db.scalars(select(CsatResponse).where(CsatResponse.entity_id == entity.id, CsatResponse.conversation_id.in_(conversation_ids), CsatResponse.rating.isnot(None))).all()
+    avg_csat = round(sum(r.rating for r in csat_rows) / len(csat_rows), 2) if csat_rows else None
+
+    return WebchatReportsOut(
+        volume=volume, agents=agents, total_conversations=total, open_conversations=open_count,
+        resolved_conversations=resolved_count, sla_breached_count=sla_breached, resolution_breached_count=resolution_breached,
+        avg_first_response_minutes=avg_first_response, avg_resolution_minutes=avg_resolution,
+        avg_csat=avg_csat, csat_response_count=len(csat_rows),
+    )
 
 
 @router.get("/visits/{conversation_id}", response_model=WebchatVisitTelemetryOut)
@@ -155,6 +253,12 @@ def update_webchat_settings(payload: WebchatWidgetSettingsUpdateRequest, user: U
         settings_row.proactive_trigger_delay_seconds = payload.proactive_trigger_delay_seconds
     if payload.proactive_trigger_message is not None:
         settings_row.proactive_trigger_message = payload.proactive_trigger_message
+    if payload.proactive_trigger_type is not None:
+        settings_row.proactive_trigger_type = payload.proactive_trigger_type
+    if payload.proactive_url_pattern is not None:
+        settings_row.proactive_url_pattern = payload.proactive_url_pattern
+    if payload.auto_assign_enabled is not None:
+        settings_row.auto_assign_enabled = payload.auto_assign_enabled
     db.commit()
     db.refresh(settings_row)
     return _settings_out(db, settings_row)

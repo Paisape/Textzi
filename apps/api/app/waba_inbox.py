@@ -108,6 +108,7 @@ def _conversation_out(db: Session, conversation: Conversation, contact: Contact,
         sla_breached=conversation.sla_breached,
         resolution_due_at=conversation.resolution_due_at.isoformat() if conversation.resolution_due_at else None,
         resolution_breached=conversation.resolution_breached,
+        resolved_at=conversation.resolved_at.isoformat() if conversation.resolved_at else None,
         priority=conversation.priority,
         category=conversation.category,
         group_id=conversation.group_id,
@@ -290,7 +291,12 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
         just_resolved = payload.status == "resolved" and conversation.status != "resolved"
         conversation.status = payload.status
         if just_resolved:
+            conversation.resolved_at = datetime.now(timezone.utc)
             _maybe_send_csat_request(db, entity.id, conversation, contact, user.id)
+        elif payload.status != "resolved":
+            # Reopened -- resolved_at should reflect the conversation's CURRENT resolved state,
+            # not a stale timestamp from a previous resolve/reopen cycle.
+            conversation.resolved_at = None
     # "assigned_user_id": null is a real, meaningful request (unassign) -- checking `is not None`
     # like `status` above would make that indistinguishable from the field being omitted
     # entirely, so this checks whether the client actually sent the field at all instead.

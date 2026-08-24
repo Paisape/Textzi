@@ -1391,6 +1391,10 @@ class Conversation(Base):
     # "no join table needed at this scale" reasoning as TicketGroup.member_user_ids.
     cc_emails: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # Stamped the moment status first becomes "resolved" (cleared back to null if reopened) --
+    # without this, actual resolution time can't be computed after the fact at all (only whether
+    # resolution_due_at was breached, never how long it really took), which reporting needs.
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         # Every find-or-create site (waba_dispatch.py, waba_webhooks.py, crm_email.py) already
@@ -2156,12 +2160,30 @@ class WebchatWidgetSettings(Base):
     greeting_message: Mapped[str] = mapped_column(String(300), default="Hi! How can we help?")
     offline_message: Mapped[str] = mapped_column(String(300), default="We're offline right now -- leave your email and we'll get back to you.")
     proactive_trigger_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # "time" (today's only behavior -- show after proactive_trigger_delay_seconds) or
+    # "exit_intent" (show the moment the visitor's cursor leaves the top of the viewport, the
+    # standard "about to close the tab" signal every proactive-chat product uses -- delay_seconds
+    # is ignored for this type). Kept as one settings row with a type discriminator rather than
+    # two separate trigger configs, since only one trigger fires per page load either way.
+    proactive_trigger_type: Mapped[str] = mapped_column(String(20), default="time")
     proactive_trigger_delay_seconds: Mapped[int] = mapped_column(Integer, default=30)
     proactive_trigger_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Optional substring match against the visitor's current URL -- e.g. "/pricing" -- so a
+    # proactive trigger only fires on pages it's actually relevant to (Freshchat's own "URL
+    # targeting"). Empty/null means "every page", today's only behavior.
+    proactive_url_pattern: Mapped[str | None] = mapped_column(String(300), nullable=True)
     # Freshdesk-style routing -- every new webchat conversation is auto-assigned to this group the
     # moment it's created (see webchat_public._find_or_create_webchat_conversation), reusing
     # TicketGroup as-is (already built for WhatsApp/email tickets, zero schema change needed there).
     default_group_id: Mapped[str | None] = mapped_column(ForeignKey("ticket_groups.id"), nullable=True)
+    # Load-balanced assignment across the default group's own members -- off by default (group
+    # routing alone, today's behavior, is enough for a lot of accounts). When on, a new
+    # conversation is additionally auto-assigned (Conversation.assigned_user_id) to whichever group
+    # member currently has the fewest open webchat conversations, rather than a round-robin
+    # counter -- self-corrects for uneven agent workload instead of just cycling blindly, and
+    # needs no extra state to track (a plain counter would drift after an agent goes offline/is
+    # removed from the group, load-based doesn't have that failure mode).
+    auto_assign_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
 
 
 class WebchatVisit(Base):

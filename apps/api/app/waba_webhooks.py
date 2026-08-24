@@ -21,7 +21,7 @@ from . import waba_media
 from .database import get_db
 from .models import BusinessHours, Contact, Conversation, ConversationMessage, CsatResponse, SlaPolicy, WabaConnection, WabaWebhookLog, WabaWebhookSubscription
 from .security import decrypt_secret, sign_webhook_payload
-from .services import client_ip, get_platform_waba_settings, get_platform_waba_webhook_verify_token, is_outside_business_hours
+from .services import client_ip, get_platform_waba_settings, get_platform_waba_webhook_verify_token, is_outside_business_hours, stamp_sla_due_at
 from .waba_automation import apply_rules
 from .waba_meta import MetaApiError, download_media_bytes, fetch_media_url
 from .waba_realtime import message_payload, publish_event
@@ -231,19 +231,6 @@ def _parse_inbound_content(msg: dict, message_type: str) -> tuple[str | None, di
     return None, None
 
 
-def _stamp_sla_due_at(db: Session, entity_id: str, conversation: Conversation, now: datetime) -> None:
-    """Starts (or restarts) the first-response clock -- only when there's no pending clock
-    already running, so a burst of several inbound messages before any reply doesn't keep pushing
-    the deadline out."""
-    if conversation.first_response_due_at is not None:
-        return
-    policy = db.get(SlaPolicy, entity_id)
-    if not policy or not policy.enabled:
-        return
-    conversation.first_response_due_at = now + timedelta(minutes=policy.first_response_minutes)
-    conversation.sla_breached = False
-
-
 def _maybe_send_business_hours_reply(db: Session, connection: WabaConnection, contact: Contact, conversation: Conversation, now: datetime) -> None:
     """Best-effort outside-hours auto-reply -- at most once every 12 hours per conversation, so a
     fast back-and-forth outside hours doesn't repeat the same message on every inbound. A failure
@@ -311,7 +298,7 @@ def _handle_inbound_messages(db: Session, connection: WabaConnection, value: dic
         _stamp_ad_referral(contact, msg.get("referral"))
         conversation.status = "open"
         conversation.last_message_at = created_at
-        _stamp_sla_due_at(db, connection.entity_id, conversation, created_at)
+        stamp_sla_due_at(db, connection.entity_id, conversation, created_at)
         _match_csat_response(db, conversation, message_type, payload)
         db.flush()
         _maybe_send_business_hours_reply(db, connection, contact, conversation, created_at)

@@ -13,15 +13,20 @@ type WebchatSettings = {
   greeting_message: string
   offline_message: string
   proactive_trigger_enabled: boolean
+  proactive_trigger_type: 'time' | 'exit_intent'
   proactive_trigger_delay_seconds: number
   proactive_trigger_message: string | null
+  proactive_url_pattern: string | null
   default_group_id: string | null
+  auto_assign_enabled: boolean
   embed_snippet: string
 }
 type TicketGroup = { id: string, name: string }
+type SlaPolicy = { enabled: boolean, first_response_minutes: number, resolution_minutes: number }
 
 const settings = ref<WebchatSettings | null>(null)
 const ticketGroups = ref<TicketGroup[]>([])
+const slaPolicy = ref<SlaPolicy | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const saving = ref(false)
@@ -30,17 +35,20 @@ const saveSuccess = ref('')
 const newOrigin = ref('')
 const copied = ref(false)
 const savingGroup = ref(false)
+const savingSla = ref(false)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [settingsResult, groupsResult] = await Promise.all([
+    const [settingsResult, groupsResult, slaResult] = await Promise.all([
       $api<WebchatSettings>('/v1/webchat/settings'),
       $api<TicketGroup[]>('/v1/waba/ticket-groups').catch(() => []),
+      $api<SlaPolicy>('/v1/waba/sla-policy').catch(() => null),
     ])
     settings.value = settingsResult
     ticketGroups.value = groupsResult
+    slaPolicy.value = slaResult
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load website chat settings.')
@@ -63,6 +71,22 @@ async function saveDefaultGroup(groupId: string | null) {
   }
   finally {
     savingGroup.value = false
+  }
+}
+
+async function saveSlaPolicy() {
+  if (!slaPolicy.value)
+    return
+  savingSla.value = true
+  saveError.value = ''
+  try {
+    slaPolicy.value = await $api<SlaPolicy>('/v1/waba/sla-policy', { method: 'PUT', body: slaPolicy.value })
+  }
+  catch (error: any) {
+    saveError.value = extractErrorMessage(error, 'Could not save the SLA policy.')
+  }
+  finally {
+    savingSla.value = false
   }
 }
 
@@ -99,8 +123,11 @@ async function save() {
         greeting_message: settings.value.greeting_message,
         offline_message: settings.value.offline_message,
         proactive_trigger_enabled: settings.value.proactive_trigger_enabled,
+        proactive_trigger_type: settings.value.proactive_trigger_type,
         proactive_trigger_delay_seconds: settings.value.proactive_trigger_delay_seconds,
         proactive_trigger_message: settings.value.proactive_trigger_message,
+        proactive_url_pattern: settings.value.proactive_url_pattern,
+        auto_assign_enabled: settings.value.auto_assign_enabled,
       },
     })
     saveSuccess.value = 'Saved.'
@@ -129,9 +156,14 @@ onMounted(load)
     <h1 class="text-h4 mb-0">
       Website Chat
     </h1>
-    <RouterLink to="/webchat-inbox" class="font-weight-medium">
-      Open inbox
-    </RouterLink>
+    <div class="d-flex ga-4">
+      <RouterLink to="/webchat-inbox" class="font-weight-medium">
+        Open inbox
+      </RouterLink>
+      <RouterLink to="/webchat-reports" class="font-weight-medium">
+        Reports
+      </RouterLink>
+    </div>
   </div>
   <p class="text-medium-emphasis mb-6">
     A live chat widget your customers embed on their own website — visitor messages land in this same inbox, alongside WhatsApp and email.
@@ -202,7 +234,17 @@ onMounted(load)
             <VSwitch v-model="settings.proactive_trigger_enabled" hide-details />
           </div>
           <template v-if="settings.proactive_trigger_enabled">
+            <VSelect
+              v-model="settings.proactive_trigger_type"
+              label="Trigger on"
+              :items="[
+                { title: 'Time on page', value: 'time' },
+                { title: 'Exit intent (about to leave)', value: 'exit_intent' },
+              ]"
+              class="mb-4"
+            />
             <AppTextField
+              v-if="settings.proactive_trigger_type === 'time'"
               v-model.number="settings.proactive_trigger_delay_seconds"
               type="number"
               label="Show after (seconds)"
@@ -211,6 +253,12 @@ onMounted(load)
             <AppTextField
               v-model="settings.proactive_trigger_message"
               label="Proactive message"
+              class="mb-4"
+            />
+            <AppTextField
+              v-model="settings.proactive_url_pattern"
+              label="Only on pages containing (optional)"
+              placeholder="e.g. /pricing"
               class="mb-4"
             />
           </template>
@@ -230,6 +278,16 @@ onMounted(load)
             class="mb-4"
             @update:model-value="saveDefaultGroup"
           />
+
+          <div v-if="settings.default_group_id" class="d-flex align-center justify-space-between mb-4">
+            <div>
+              <span class="text-body-1">Auto-assign to least-busy agent</span>
+              <p class="text-caption text-medium-emphasis mb-0">
+                Routes each new conversation to whichever group member currently has the fewest open chats.
+              </p>
+            </div>
+            <VSwitch v-model="settings.auto_assign_enabled" hide-details />
+          </div>
 
           <VBtn :loading="saving" @click="save">
             Save
@@ -259,6 +317,37 @@ onMounted(load)
           <VAlert v-if="!settings.embed_snippet" type="warning" variant="tonal" density="compact" class="mt-4">
             Set Platform Settings &gt; Company &gt; Public API base URL before this snippet can be generated.
           </VAlert>
+        </VCardText>
+      </VCard>
+
+      <VCard v-if="slaPolicy" class="mt-6">
+        <VCardText>
+          <div class="d-flex align-center justify-space-between mb-2">
+            <h2 class="text-h6 mb-0">
+              SLA policy
+            </h2>
+            <VSwitch v-model="slaPolicy.enabled" hide-details />
+          </div>
+          <p class="text-body-2 text-medium-emphasis mb-4">
+            Shared with your WhatsApp conversations — how quickly a first reply and a full resolution are due.
+          </p>
+          <template v-if="slaPolicy.enabled">
+            <AppTextField
+              v-model.number="slaPolicy.first_response_minutes"
+              type="number"
+              label="First response due within (minutes)"
+              class="mb-4"
+            />
+            <AppTextField
+              v-model.number="slaPolicy.resolution_minutes"
+              type="number"
+              label="Resolution due within (minutes)"
+              class="mb-4"
+            />
+          </template>
+          <VBtn :loading="savingSla" @click="saveSlaPolicy">
+            Save
+          </VBtn>
         </VCardText>
       </VCard>
     </VCol>

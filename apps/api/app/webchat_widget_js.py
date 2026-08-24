@@ -371,15 +371,30 @@ WIDGET_JS = r"""
     applyColor();
     renderMode();
 
-    // Proactive trigger -- auto-opens the bubble after the configured delay if the visitor
-    // hasn't interacted yet (only makes sense while online -- an offline proactive nudge would
-    // just dump someone into the email-capture form unprompted, not a good first impression).
-    if (data.proactive_trigger_enabled && state.online && data.proactive_trigger_message) {
-      setTimeout(function () {
+    // Proactive trigger -- only makes sense while online (an offline proactive nudge would just
+    // dump someone into the email-capture form unprompted, not a good first impression), and only
+    // on pages matching proactive_url_pattern if one is configured (substring match against the
+    // current URL -- e.g. "/pricing" only fires on pricing pages, empty/null means every page).
+    var urlMatches = !data.proactive_url_pattern || window.location.href.indexOf(data.proactive_url_pattern) !== -1;
+    if (data.proactive_trigger_enabled && state.online && data.proactive_trigger_message && urlMatches) {
+      var fireProactive = function () {
         if (state.open) { return; }
         appendMessage(data.proactive_trigger_message, 'agent');
         openPanel();
-      }, Math.max(1, data.proactive_trigger_delay_seconds || 30) * 1000);
+      };
+      if (data.proactive_trigger_type === 'exit_intent') {
+        // Fires the first time the cursor crosses above the top of the viewport -- the standard
+        // "about to close the tab / switch away" signal every proactive-chat product uses.
+        var exitIntentHandler = function (e) {
+          if (e.clientY <= 0) {
+            fireProactive();
+            document.removeEventListener('mouseleave', exitIntentHandler);
+          }
+        };
+        document.addEventListener('mouseleave', exitIntentHandler);
+      } else {
+        setTimeout(fireProactive, Math.max(1, data.proactive_trigger_delay_seconds || 30) * 1000);
+      }
     }
   });
 

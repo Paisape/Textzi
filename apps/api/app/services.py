@@ -2,7 +2,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, time, timezone
+from datetime import datetime, time, timedelta, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 import nh3
@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -974,6 +974,21 @@ def is_outside_business_hours(db: Session, entity_id: str, now: datetime) -> boo
         return not (open_t <= local_now.time() <= close_t)
     except (KeyError, ValueError):
         return False
+
+
+def stamp_sla_due_at(db: Session, entity_id: str, conversation: Conversation, now: datetime) -> None:
+    """Starts (or restarts) the first-response clock -- only when there's no pending clock already
+    running, so a burst of several inbound messages before any reply doesn't keep pushing the
+    deadline out. Relocated here from waba_webhooks.py for the same reason
+    is_outside_business_hours was -- pure SlaPolicy/Conversation logic with zero WhatsApp
+    coupling, needed by webchat_public.py without reaching into the WABA receive pipeline."""
+    if conversation.first_response_due_at is not None:
+        return
+    policy = db.get(SlaPolicy, entity_id)
+    if not policy or not policy.enabled:
+        return
+    conversation.first_response_due_at = now + timedelta(minutes=policy.first_response_minutes)
+    conversation.sla_breached = False
 
 
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:

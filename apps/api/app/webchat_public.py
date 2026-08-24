@@ -13,16 +13,16 @@ import mimetypes
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Response, UploadFile
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from . import waba_media
 from .database import get_db
 from .geoip import lookup_geo
-from .models import Contact, Conversation, ConversationMessage, CsatResponse, WebchatVisit, WebchatWidgetSettings
+from .models import Contact, Conversation, ConversationMessage, CsatResponse, TicketGroup, WebchatVisit, WebchatWidgetSettings
 from .schemas import WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
-from .services import client_ip, is_outside_business_hours, sanitize_rich_text
+from .services import client_ip, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
 from .turnstile import require_turnstile
 from .waba_realtime import message_payload, publish_event
 from .webchat_widget_js import WIDGET_JS
@@ -89,8 +89,10 @@ def record_visit(widget_key: str, payload: WebchatVisitRequest, request: Request
         greeting_message=settings_row.greeting_message, bubble_color=settings_row.bubble_color,
         is_online=not offline, offline_message=settings_row.offline_message,
         proactive_trigger_enabled=settings_row.proactive_trigger_enabled,
+        proactive_trigger_type=settings_row.proactive_trigger_type,
         proactive_trigger_delay_seconds=settings_row.proactive_trigger_delay_seconds,
         proactive_trigger_message=settings_row.proactive_trigger_message,
+        proactive_url_pattern=settings_row.proactive_url_pattern,
     )
 
 
@@ -118,15 +120,38 @@ def _find_or_create_webchat_contact(db: Session, entity_id: str, visitor_id: str
     return contact
 
 
-def _find_or_create_webchat_conversation(db: Session, entity_id: str, contact_id: str, default_group_id: str | None = None) -> Conversation:
+def _pick_least_loaded_group_member(db: Session, entity_id: str, group_id: str) -> str | None:
+    """Load-balanced routing (WebchatWidgetSettings.auto_assign_enabled): whichever member of the
+    default group currently has the fewest OPEN webchat conversations gets the new one. Chosen
+    over a round-robin counter deliberately -- a counter has no way to account for an agent going
+    offline, being removed from the group, or one agent's conversations just taking longer to
+    close, so it drifts toward unfair load over time; counting current open conversations
+    self-corrects on every single assignment instead."""
+    group = db.get(TicketGroup, group_id)
+    if not group or not group.member_user_ids:
+        return None
+    counts = {
+        user_id: db.scalar(
+            select(func.count()).select_from(Conversation).where(
+                Conversation.entity_id == entity_id, Conversation.channel == "webchat",
+                Conversation.assigned_user_id == user_id, Conversation.status != "resolved",
+            ),
+        ) or 0
+        for user_id in group.member_user_ids
+    }
+    return min(counts, key=counts.get)
+
+
+def _find_or_create_webchat_conversation(db: Session, entity_id: str, contact_id: str, default_group_id: str | None = None, auto_assign_enabled: bool = False) -> Conversation:
     conversation = db.scalar(
         select(Conversation).where(Conversation.entity_id == entity_id, Conversation.contact_id == contact_id, Conversation.channel == "webchat"),
     )
     if conversation:
         return conversation
-    # Freshdesk-style routing -- only applied at creation time, never overwrites a group an agent
-    # has since reassigned on an existing conversation.
-    conversation = Conversation(entity_id=entity_id, contact_id=contact_id, channel="webchat", group_id=default_group_id)
+    # Freshdesk-style routing -- only applied at creation time, never overwrites a group/assignee
+    # an agent has since reassigned on an existing conversation.
+    assigned_user_id = _pick_least_loaded_group_member(db, entity_id, default_group_id) if auto_assign_enabled and default_group_id else None
+    conversation = Conversation(entity_id=entity_id, contact_id=contact_id, channel="webchat", group_id=default_group_id, assigned_user_id=assigned_user_id)
     db.add(conversation)
     try:
         db.flush()
@@ -147,7 +172,7 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     require_turnstile(payload.turnstile_token, request, db)
 
     contact = _find_or_create_webchat_contact(db, settings_row.entity_id, payload.visitor_id, payload.name, payload.email)
-    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id)
+    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id, settings_row.auto_assign_enabled)
 
     now = datetime.now(timezone.utc)
     # sanitize_rich_text -- this body came straight from an anonymous visitor's own browser, never
@@ -159,6 +184,7 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     db.add(message)
     conversation.status = "open"
     conversation.last_message_at = now
+    stamp_sla_due_at(db, settings_row.entity_id, conversation, now)
 
     visit = db.scalar(select(WebchatVisit).where(WebchatVisit.entity_id == settings_row.entity_id, WebchatVisit.visitor_id == payload.visitor_id))
     if visit:
@@ -193,13 +219,14 @@ async def send_visitor_media(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     contact = _find_or_create_webchat_contact(db, settings_row.entity_id, visitor_id, name, email)
-    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id)
+    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id, settings_row.auto_assign_enabled)
 
     now = datetime.now(timezone.utc)
     message = ConversationMessage(conversation_id=conversation.id, direction="inbound", message_type=message_type, media_url=stored_path, status="received")
     db.add(message)
     conversation.status = "open"
     conversation.last_message_at = now
+    stamp_sla_due_at(db, settings_row.entity_id, conversation, now)
 
     visit = db.scalar(select(WebchatVisit).where(WebchatVisit.entity_id == settings_row.entity_id, WebchatVisit.visitor_id == visitor_id))
     if visit:
