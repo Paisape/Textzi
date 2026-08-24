@@ -1,11 +1,13 @@
 """The embeddable widget script itself, as a plain Python string constant -- deliberately not a
 built asset (no Vite/webpack step) so there's nothing to build/deploy separately from the API
 container, and deliberately framework-free (no Vue/React) since it has to run inside an arbitrary
-third-party page and stay small. Phase 1 scope only: bubble + panel, visitor_id persistence, the
-/visit and /message calls, and a live WebSocket connection for the agent's replies. Typing-
-indicator sending and the offline/proactive-trigger UI states are Phase 1-adjacent stubs wired to
-already-built backend fields (is_online/offline_message/proactive_trigger_*) but kept minimal here
--- polish is expected to iterate once this is live, not a reason to hold back the working core."""
+third-party page and stay small. Phase 1: bubble + panel, visitor_id persistence, the /visit and
+/message calls, and a live WebSocket connection for the agent's replies. Phase 2: when /visit
+reports is_online=false (business-hours check, see services.is_outside_business_hours), the
+composer is replaced with a name/email capture form instead of a live text input -- the backend
+side of this (send_visitor_message accepting name/email, creating the same Contact/Conversation
+either way) was already built in Phase 1, this is the missing widget-side UI state. Proactive-
+trigger UI remains a stub wired to the already-built backend fields, not yet implemented here."""
 
 WIDGET_JS = r"""
 (function () {
@@ -26,7 +28,7 @@ WIDGET_JS = r"""
     visitorId = 'v-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
   }
 
-  var state = { open: false, online: true, greeting: 'Hi! How can we help?', color: '#F1600D', offlineMessage: '' };
+  var state = { open: false, online: true, greeting: 'Hi! How can we help?', color: '#F1600D', offlineMessage: '', offlineCaptured: false };
   var ws = null;
 
   function post(path, body) {
@@ -77,6 +79,7 @@ WIDGET_JS = r"""
   thread.style.cssText = 'flex:1;overflow-y:auto;padding:12px;font-size:14px;';
   panel.appendChild(thread);
 
+  // Live composer (online) -----------------------------------------------------------------
   var composer = document.createElement('div');
   composer.style.cssText = 'display:flex;border-top:1px solid #eee;padding:8px;';
   var input = document.createElement('input');
@@ -89,6 +92,33 @@ WIDGET_JS = r"""
   composer.appendChild(input);
   composer.appendChild(sendBtn);
   panel.appendChild(composer);
+
+  // Offline capture form (shown instead of the composer when is_online is false) -----------
+  var offlineForm = document.createElement('div');
+  offlineForm.style.cssText = 'display:none;border-top:1px solid #eee;padding:10px;';
+  var offlineNote = document.createElement('p');
+  offlineNote.style.cssText = 'margin:0 0 8px;font-size:13px;color:#555;';
+  var offlineNameInput = document.createElement('input');
+  offlineNameInput.type = 'text';
+  offlineNameInput.placeholder = 'Your name';
+  offlineNameInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;margin-bottom:6px;';
+  var offlineEmailInput = document.createElement('input');
+  offlineEmailInput.type = 'email';
+  offlineEmailInput.placeholder = 'Your email';
+  offlineEmailInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;margin-bottom:6px;';
+  var offlineMessageInput = document.createElement('textarea');
+  offlineMessageInput.placeholder = 'How can we help?';
+  offlineMessageInput.rows = 2;
+  offlineMessageInput.style.cssText = 'width:100%;box-sizing:border-box;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;margin-bottom:6px;resize:none;';
+  var offlineSendBtn = document.createElement('button');
+  offlineSendBtn.textContent = 'Leave a message';
+  offlineSendBtn.style.cssText = 'width:100%;border:0;border-radius:6px;padding:9px 14px;color:#fff;cursor:pointer;font-size:14px;';
+  offlineForm.appendChild(offlineNote);
+  offlineForm.appendChild(offlineNameInput);
+  offlineForm.appendChild(offlineEmailInput);
+  offlineForm.appendChild(offlineMessageInput);
+  offlineForm.appendChild(offlineSendBtn);
+  panel.appendChild(offlineForm);
 
   function appendMessage(body, who) {
     var row = document.createElement('div');
@@ -106,6 +136,18 @@ WIDGET_JS = r"""
     bubble.style.background = state.color;
     header.style.background = state.color;
     sendBtn.style.background = state.color;
+    offlineSendBtn.style.background = state.color;
+  }
+
+  function renderMode() {
+    if (state.online || state.offlineCaptured) {
+      composer.style.display = 'flex';
+      offlineForm.style.display = 'none';
+    } else {
+      composer.style.display = 'none';
+      offlineForm.style.display = 'block';
+      offlineNote.textContent = state.offlineMessage || "We're offline right now -- leave your details and we'll get back to you.";
+    }
   }
 
   function send() {
@@ -118,8 +160,24 @@ WIDGET_JS = r"""
     });
   }
 
+  function sendOffline() {
+    var body = offlineMessageInput.value.trim();
+    var name = offlineNameInput.value.trim();
+    var email = offlineEmailInput.value.trim();
+    if (!body || !email) { return; }
+    offlineSendBtn.disabled = true;
+    post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body, name: name || null, email: email }).then(function () {
+      state.offlineCaptured = true;
+      thread.innerHTML = '';
+      appendMessage(body, 'visitor');
+      appendMessage("Thanks -- we've got your message and will reply by email or here as soon as we're back online.", 'agent');
+      renderMode();
+    }).finally(function () { offlineSendBtn.disabled = false; });
+  }
+
   sendBtn.addEventListener('click', send);
   input.addEventListener('keydown', function (e) { if (e.key === 'Enter') { send(); } });
+  offlineSendBtn.addEventListener('click', sendOffline);
   bubble.addEventListener('click', function () {
     state.open = !state.open;
     panel.style.display = state.open ? 'flex' : 'none';
@@ -134,10 +192,11 @@ WIDGET_JS = r"""
     state.color = data.bubble_color || state.color;
     state.offlineMessage = data.offline_message || '';
     header.textContent = state.online ? state.greeting : 'We are offline';
-    if (!state.online && state.offlineMessage) {
-      appendMessage(state.offlineMessage, 'agent');
+    if (state.online && !thread.childNodes.length) {
+      appendMessage(state.greeting, 'agent');
     }
     applyColor();
+    renderMode();
   });
 
   connectSocket();
