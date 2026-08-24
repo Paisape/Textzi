@@ -2158,6 +2158,10 @@ class WebchatWidgetSettings(Base):
     proactive_trigger_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     proactive_trigger_delay_seconds: Mapped[int] = mapped_column(Integer, default=30)
     proactive_trigger_message: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Freshdesk-style routing -- every new webchat conversation is auto-assigned to this group the
+    # moment it's created (see webchat_public._find_or_create_webchat_conversation), reusing
+    # TicketGroup as-is (already built for WhatsApp/email tickets, zero schema change needed there).
+    default_group_id: Mapped[str | None] = mapped_column(ForeignKey("ticket_groups.id"), nullable=True)
 
 
 class WebchatVisit(Base):

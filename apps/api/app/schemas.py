@@ -2641,6 +2641,7 @@ class WebchatWidgetSettingsOut(BaseModel):
     proactive_trigger_enabled: bool
     proactive_trigger_delay_seconds: int
     proactive_trigger_message: str | None
+    default_group_id: str | None
     embed_snippet: str
 
 
@@ -2653,6 +2654,12 @@ class WebchatWidgetSettingsUpdateRequest(BaseModel):
     proactive_trigger_enabled: bool | None = None
     proactive_trigger_delay_seconds: int | None = Field(default=None, ge=1, le=600)
     proactive_trigger_message: str | None = Field(default=None, max_length=300)
+
+
+class WebchatDefaultGroupUpdateRequest(BaseModel):
+    # Required, not optional -- same shape as waba_inbox.py's own TicketGroupAssignRequest, so
+    # None unambiguously means "clear the default group" with no separate flag needed.
+    group_id: str | None = None
 
 
 class WebchatVisitRequest(BaseModel):

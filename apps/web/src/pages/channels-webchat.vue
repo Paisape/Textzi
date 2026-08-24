@@ -15,10 +15,13 @@ type WebchatSettings = {
   proactive_trigger_enabled: boolean
   proactive_trigger_delay_seconds: number
   proactive_trigger_message: string | null
+  default_group_id: string | null
   embed_snippet: string
 }
+type TicketGroup = { id: string, name: string }
 
 const settings = ref<WebchatSettings | null>(null)
+const ticketGroups = ref<TicketGroup[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const saving = ref(false)
@@ -26,18 +29,40 @@ const saveError = ref('')
 const saveSuccess = ref('')
 const newOrigin = ref('')
 const copied = ref(false)
+const savingGroup = ref(false)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    settings.value = await $api<WebchatSettings>('/v1/webchat/settings')
+    const [settingsResult, groupsResult] = await Promise.all([
+      $api<WebchatSettings>('/v1/webchat/settings'),
+      $api<TicketGroup[]>('/v1/waba/ticket-groups').catch(() => []),
+    ])
+    settings.value = settingsResult
+    ticketGroups.value = groupsResult
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load website chat settings.')
   }
   finally {
     loading.value = false
+  }
+}
+
+async function saveDefaultGroup(groupId: string | null) {
+  if (!settings.value)
+    return
+  savingGroup.value = true
+  saveError.value = ''
+  try {
+    settings.value = await $api<WebchatSettings>('/v1/webchat/settings/default-group', { method: 'PUT', body: { group_id: groupId } })
+  }
+  catch (error: any) {
+    saveError.value = extractErrorMessage(error, 'Could not update the default group.')
+  }
+  finally {
+    savingGroup.value = false
   }
 }
 
@@ -189,6 +214,22 @@ onMounted(load)
               class="mb-4"
             />
           </template>
+
+          <VDivider class="mb-4" />
+
+          <p class="text-body-1 mb-2">
+            Default group
+          </p>
+          <p class="text-body-2 text-medium-emphasis mb-2">
+            Every new website chat conversation is automatically routed to this group.
+          </p>
+          <VSelect
+            :model-value="settings.default_group_id"
+            :items="[{ title: 'No default group', value: null }, ...ticketGroups.map(g => ({ title: g.name, value: g.id }))]"
+            :loading="savingGroup"
+            class="mb-4"
+            @update:model-value="saveDefaultGroup"
+          />
 
           <VBtn :loading="saving" @click="save">
             Save

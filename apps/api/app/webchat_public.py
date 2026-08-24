@@ -116,13 +116,15 @@ def _find_or_create_webchat_contact(db: Session, entity_id: str, visitor_id: str
     return contact
 
 
-def _find_or_create_webchat_conversation(db: Session, entity_id: str, contact_id: str) -> Conversation:
+def _find_or_create_webchat_conversation(db: Session, entity_id: str, contact_id: str, default_group_id: str | None = None) -> Conversation:
     conversation = db.scalar(
         select(Conversation).where(Conversation.entity_id == entity_id, Conversation.contact_id == contact_id, Conversation.channel == "webchat"),
     )
     if conversation:
         return conversation
-    conversation = Conversation(entity_id=entity_id, contact_id=contact_id, channel="webchat")
+    # Freshdesk-style routing -- only applied at creation time, never overwrites a group an agent
+    # has since reassigned on an existing conversation.
+    conversation = Conversation(entity_id=entity_id, contact_id=contact_id, channel="webchat", group_id=default_group_id)
     db.add(conversation)
     try:
         db.flush()
@@ -143,7 +145,7 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     require_turnstile(payload.turnstile_token, request, db)
 
     contact = _find_or_create_webchat_contact(db, settings_row.entity_id, payload.visitor_id, payload.name, payload.email)
-    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id)
+    conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id)
 
     now = datetime.now(timezone.utc)
     message = ConversationMessage(conversation_id=conversation.id, direction="inbound", message_type="text", body=payload.body, status="received")

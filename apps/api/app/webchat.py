@@ -11,9 +11,9 @@ from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import Contact, Conversation, ConversationMessage, User, WebchatVisit, WebchatWidgetSettings
+from .models import Contact, Conversation, ConversationMessage, TicketGroup, User, WebchatVisit, WebchatWidgetSettings
 from .permissions import require_channel_scope_any
-from .schemas import WebchatVisitTelemetryOut, WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest
+from .schemas import WebchatDefaultGroupUpdateRequest, WebchatVisitTelemetryOut, WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest
 from .services import DomainError, channel_active, get_platform_company_info, resolve_user_entity
 from .waba_realtime import message_payload, publish_event
 from .webchat_realtime import publish_to_visitor
@@ -49,7 +49,8 @@ def _settings_out(db: Session, settings_row: WebchatWidgetSettings) -> WebchatWi
         enabled=settings_row.enabled, widget_key=settings_row.widget_key, allowed_origins=settings_row.allowed_origins,
         bubble_color=settings_row.bubble_color, greeting_message=settings_row.greeting_message, offline_message=settings_row.offline_message,
         proactive_trigger_enabled=settings_row.proactive_trigger_enabled, proactive_trigger_delay_seconds=settings_row.proactive_trigger_delay_seconds,
-        proactive_trigger_message=settings_row.proactive_trigger_message, embed_snippet=_embed_snippet(db, settings_row.widget_key),
+        proactive_trigger_message=settings_row.proactive_trigger_message, default_group_id=settings_row.default_group_id,
+        embed_snippet=_embed_snippet(db, settings_row.widget_key),
     )
 
 
@@ -129,6 +130,28 @@ def update_webchat_settings(payload: WebchatWidgetSettingsUpdateRequest, user: U
         settings_row.proactive_trigger_delay_seconds = payload.proactive_trigger_delay_seconds
     if payload.proactive_trigger_message is not None:
         settings_row.proactive_trigger_message = payload.proactive_trigger_message
+    db.commit()
+    db.refresh(settings_row)
+    return _settings_out(db, settings_row)
+
+
+@router.put("/settings/default-group", response_model=WebchatWidgetSettingsOut)
+def update_webchat_default_group(payload: WebchatDefaultGroupUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Separate endpoint (not folded into the general settings update above) because group_id is
+    required-but-nullable here -- same shape as waba_inbox.py's own update_ticket_group -- so None
+    unambiguously means "clear the default group", which a genuinely-optional partial-update field
+    (as every other settings field above is) can't express without an extra flag."""
+    entity = _resolve_entity(db, user)
+    _require_webchat(db, entity.id)
+    if payload.group_id:
+        group = db.get(TicketGroup, payload.group_id)
+        if not group or group.entity_id != entity.id:
+            raise HTTPException(status_code=422, detail="group_id must belong to your organization")
+    settings_row = db.get(WebchatWidgetSettings, entity.id)
+    if not settings_row:
+        settings_row = WebchatWidgetSettings(entity_id=entity.id)
+        db.add(settings_row)
+    settings_row.default_group_id = payload.group_id
     db.commit()
     db.refresh(settings_row)
     return _settings_out(db, settings_row)

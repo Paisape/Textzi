@@ -216,6 +216,12 @@ WIDGET_JS = r"""
     panel.style.display = state.open ? 'flex' : 'none';
   });
 
+  function openPanel() {
+    if (state.open) { return; }
+    state.open = true;
+    panel.style.display = 'flex';
+  }
+
   post('/v1/public/webchat/' + widgetKey + '/visit', {
     visitor_id: visitorId, current_url: window.location.href, referrer: document.referrer || null,
   }).then(function (data) {
@@ -230,6 +236,17 @@ WIDGET_JS = r"""
     }
     applyColor();
     renderMode();
+
+    // Proactive trigger -- auto-opens the bubble after the configured delay if the visitor
+    // hasn't interacted yet (only makes sense while online -- an offline proactive nudge would
+    // just dump someone into the email-capture form unprompted, not a good first impression).
+    if (data.proactive_trigger_enabled && state.online && data.proactive_trigger_message) {
+      setTimeout(function () {
+        if (state.open) { return; }
+        appendMessage(data.proactive_trigger_message, 'agent');
+        openPanel();
+      }, Math.max(1, data.proactive_trigger_delay_seconds || 30) * 1000);
+    }
   });
 
   connectSocket();
