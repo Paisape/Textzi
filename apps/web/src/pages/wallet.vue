@@ -206,10 +206,10 @@ onMounted(() => {
                 <VAlert type="info" variant="tonal" density="compact" class="mt-4">
                   Transfer any amount via IMPS, NEFT, or RTGS only — UPI transfers to this account are not supported.
                   <template v-if="smartCollectFeeLabel">
-                    A flat fee of {{ smartCollectFeeLabel }} applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                    A flat fee of {{ smartCollectFeeLabel }} (inclusive of GST) applies; the rest is added to your Textzi Wallet, usually within a few minutes.
                   </template>
                   <template v-else>
-                    A flat fee applies; the rest is added to your Textzi Wallet, usually within a few minutes.
+                    A flat fee (inclusive of GST) applies; the rest is added to your Textzi Wallet, usually within a few minutes.
                   </template>
                 </VAlert>
                 <VBtn variant="text" color="error" size="small" class="mt-3" @click="removeConfirmOpen = true">
