@@ -6,13 +6,14 @@ is authenticated-agent-only (settings CRUD + the embed snippet to copy)."""
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import Contact, Conversation, ConversationMessage, User, WebchatWidgetSettings
+from .models import Contact, Conversation, ConversationMessage, User, WebchatVisit, WebchatWidgetSettings
 from .permissions import require_channel_scope_any
-from .schemas import WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest
+from .schemas import WebchatVisitTelemetryOut, WebchatWidgetSettingsOut, WebchatWidgetSettingsUpdateRequest
 from .services import DomainError, channel_active, get_platform_company_info, resolve_user_entity
 from .waba_realtime import message_payload, publish_event
 from .webchat_realtime import publish_to_visitor
@@ -71,6 +72,25 @@ def send_webchat_text(db: Session, entity_id: str, conversation: Conversation, c
     publish_event(entity_id, {"type": "message", "message": message_payload(message)})
     publish_to_visitor(contact.visitor_id, {"type": "message", "message": message_payload(message)})
     return message
+
+
+@router.get("/visits/{conversation_id}", response_model=WebchatVisitTelemetryOut)
+def get_visit_telemetry(conversation_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Backs the Telemetry panel on a webchat conversation's detail view in the inbox --
+    current page/referrer/browser/geo/pages-viewed-this-session, per the user's confirmed
+    telemetry scope for this feature."""
+    entity = _resolve_entity(db, user)
+    conversation = db.get(Conversation, conversation_id)
+    if not conversation or conversation.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    visit = db.scalar(select(WebchatVisit).where(WebchatVisit.conversation_id == conversation_id))
+    if not visit:
+        raise HTTPException(status_code=404, detail="No telemetry recorded for this conversation")
+    return WebchatVisitTelemetryOut(
+        current_url=visit.current_url, referrer=visit.referrer, user_agent=visit.user_agent,
+        country=visit.country, city=visit.city, pages_viewed=visit.pages_viewed,
+        started_at=visit.started_at.isoformat(), last_seen_at=visit.last_seen_at.isoformat(),
+    )
 
 
 @router.get("/settings", response_model=WebchatWidgetSettingsOut)

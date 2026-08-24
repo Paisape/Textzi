@@ -153,5 +153,45 @@ definePage({
         </VCardText>
       </VCard>
     </VCol>
+
+    <VCol
+      cols="12"
+      sm="6"
+      lg="4"
+      class="d-flex"
+    >
+      <VCard class="h-100 d-flex flex-column flex-grow-1">
+        <VCardText class="flex-grow-1">
+          <div class="d-flex align-center justify-space-between mb-4">
+            <div class="d-flex align-center gap-2">
+              <VIcon
+                icon="tabler-message-circle"
+                color="primary"
+                size="24"
+              />
+              <span class="text-h6">Website Chat</span>
+            </div>
+            <VChip
+              color="info"
+              size="small"
+            >
+              Connect
+            </VChip>
+          </div>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Embed a live chat widget on your own website — visitor messages land right in this inbox.
+          </p>
+        </VCardText>
+        <VDivider />
+        <VCardText class="d-flex gap-4">
+          <RouterLink
+            to="/channels-webchat"
+            class="font-weight-medium"
+          >
+            Manage
+          </RouterLink>
+        </VCardText>
+      </VCard>
+    </VCol>
   </VRow>
 </template>

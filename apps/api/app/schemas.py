@@ -2684,6 +2684,17 @@ class WebchatMessageResponse(BaseModel):
     message_id: str
 
 
+class WebchatVisitTelemetryOut(BaseModel):
+    current_url: str | None
+    referrer: str | None
+    user_agent: str | None
+    country: str | None
+    city: str | None
+    pages_viewed: list[dict]
+    started_at: str
+    last_seen_at: str
+
+
 class EmailAccountOut(BaseModel):
     connected: bool
     from_name: str | None = None
