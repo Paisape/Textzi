@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, time, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+import nh3
 from fastapi import HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -16,6 +17,26 @@ from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+
+# Strict allowlist for untrusted-user-supplied rich text (webchat visitor messages) -- nh3 is a
+# Rust-backed sanitizer (same allowlist model as the Python "bleach" package, actively
+# maintained), used instead of hand-rolling regex-based HTML stripping, which is a well-known way
+# to accidentally leave a stored-XSS hole. No img/script/style/on*-attribute ever passes through
+# regardless of what's requested below -- only these specific inline formatting tags survive.
+_RICH_TEXT_ALLOWED_TAGS = {"b", "strong", "i", "em", "u", "a", "ul", "ol", "li", "br", "p"}
+# "rel" deliberately excluded here -- nh3 manages that attribute itself via link_rel below and
+# panics if it's also listed as an explicitly-allowed attribute (confirmed live: passing both
+# raises a PanicException from the underlying Rust ammonia library, not a soft validation error).
+_RICH_TEXT_ALLOWED_ATTRIBUTES = {"a": {"href", "target"}}
+
+
+def sanitize_rich_text(html: str) -> str:
+    """Strips everything except a small safe inline-formatting tag set -- used specifically for
+    content that originated from an untrusted party (a webchat visitor's own browser), never for
+    an authenticated agent's own composer output (that's already implicitly trusted the same way
+    every other admin/agent-authored HTML in this codebase is, e.g. crm_email.py's outbound
+    body)."""
+    return nh3.clean(html, tags=_RICH_TEXT_ALLOWED_TAGS, attributes=_RICH_TEXT_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
 
 
 def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:

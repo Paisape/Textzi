@@ -49,7 +49,7 @@ WIDGET_JS = r"""
             if (data.message.message_type && data.message.message_type !== 'text' && data.message.media_url) {
               appendMedia(data.message.id, data.message.message_type, 'agent');
             } else {
-              appendMessage(data.message.body, 'agent');
+              appendRichMessage(data.message.body, 'agent');
             }
           } else if (data.type === 'csat_request') {
             appendCsatPrompt();
@@ -86,8 +86,47 @@ WIDGET_JS = r"""
   panel.appendChild(thread);
 
   // Live composer (online) -----------------------------------------------------------------
+  // A small contenteditable + toolbar rather than a full editor library, to keep the widget
+  // tiny/framework-free -- output is real HTML (bold/italic/link/list), sanitized server-side
+  // (services.sanitize_rich_text) before storage, since this is untrusted visitor input.
+  var composerWrap = document.createElement('div');
+  composerWrap.style.cssText = 'border-top:1px solid #eee;padding:8px;';
+
+  var toolbar = document.createElement('div');
+  toolbar.style.cssText = 'display:flex;gap:4px;margin-bottom:6px;';
+  function makeToolbarBtn(label, title, command, value) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.textContent = label;
+    btn.title = title;
+    btn.style.cssText = 'border:1px solid #ddd;background:#fff;border-radius:4px;width:26px;height:26px;cursor:pointer;font-size:12px;';
+    btn.addEventListener('mousedown', function (e) {
+      e.preventDefault(); // keep focus/selection in the editable div
+      document.execCommand(command, false, value || null);
+      input.focus();
+    });
+    return btn;
+  }
+  var boldBtn = makeToolbarBtn('B', 'Bold', 'bold');
+  boldBtn.style.fontWeight = 'bold';
+  var italicBtn = makeToolbarBtn('I', 'Italic', 'italic');
+  italicBtn.style.fontStyle = 'italic';
+  var listBtn = makeToolbarBtn('•', 'Bullet list', 'insertUnorderedList');
+  var linkBtn = makeToolbarBtn('🔗', 'Link', '');
+  linkBtn.addEventListener('mousedown', function (e) {
+    e.preventDefault();
+    var url = window.prompt('Link URL:');
+    if (url) { document.execCommand('createLink', false, url); }
+    input.focus();
+  });
+  toolbar.appendChild(boldBtn);
+  toolbar.appendChild(italicBtn);
+  toolbar.appendChild(listBtn);
+  toolbar.appendChild(linkBtn);
+  composerWrap.appendChild(toolbar);
+
   var composer = document.createElement('div');
-  composer.style.cssText = 'display:flex;border-top:1px solid #eee;padding:8px;';
+  composer.style.cssText = 'display:flex;';
   var attachBtn = document.createElement('button');
   attachBtn.type = 'button';
   attachBtn.textContent = '📎';
@@ -97,18 +136,30 @@ WIDGET_JS = r"""
   fileInput.type = 'file';
   fileInput.style.display = 'none';
   fileInput.accept = 'image/jpeg,image/png,image/webp,application/pdf,.doc,.docx,.xls,.xlsx,.txt';
-  var input = document.createElement('input');
-  input.type = 'text';
-  input.placeholder = 'Type a message...';
-  input.style.cssText = 'flex:1;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;';
+  var input = document.createElement('div');
+  input.contentEditable = 'true';
+  input.setAttribute('data-placeholder', 'Type a message...');
+  input.style.cssText = 'flex:1;border:1px solid #ddd;border-radius:6px;padding:8px;font-size:14px;min-height:20px;max-height:80px;overflow-y:auto;outline:none;';
   var sendBtn = document.createElement('button');
   sendBtn.textContent = 'Send';
-  sendBtn.style.cssText = 'margin-left:8px;border:0;border-radius:6px;padding:8px 14px;color:#fff;cursor:pointer;';
+  sendBtn.style.cssText = 'margin-left:8px;border:0;border-radius:6px;padding:8px 14px;color:#fff;cursor:pointer;align-self:flex-end;';
   composer.appendChild(attachBtn);
   composer.appendChild(fileInput);
   composer.appendChild(input);
   composer.appendChild(sendBtn);
-  panel.appendChild(composer);
+  composerWrap.appendChild(composer);
+  panel.appendChild(composerWrap);
+
+  // Lightweight placeholder emulation for the contenteditable div (no :placeholder-shown reliance
+  // across older browsers -- just toggle a CSS class based on actual content).
+  function updatePlaceholderState() {
+    if (input.textContent.trim() === '') { input.classList.add('textzi-empty'); } else { input.classList.remove('textzi-empty'); }
+  }
+  var placeholderStyle = document.createElement('style');
+  placeholderStyle.textContent = '.textzi-empty:before{content:attr(data-placeholder);color:#999;pointer-events:none;}';
+  document.head.appendChild(placeholderStyle);
+  input.addEventListener('input', updatePlaceholderState);
+  updatePlaceholderState();
 
   // Offline capture form (shown instead of the composer when is_online is false) -----------
   var offlineForm = document.createElement('div');
@@ -137,12 +188,33 @@ WIDGET_JS = r"""
   offlineForm.appendChild(offlineSendBtn);
   panel.appendChild(offlineForm);
 
+  // Plain-text system strings only (greeting/offline/proactive copy from admin settings, local
+  // confirmation text) -- always textContent, never innerHTML, so nothing here is ever
+  // interpreted as markup.
   function appendMessage(body, who) {
     var row = document.createElement('div');
     row.style.cssText = 'margin-bottom:8px;display:flex;' + (who === 'visitor' ? 'justify-content:flex-end;' : '');
     var bubbleEl = document.createElement('div');
     bubbleEl.textContent = body;
     bubbleEl.style.cssText = 'max-width:75%;padding:8px 12px;border-radius:10px;font-size:14px;' +
+      (who === 'visitor' ? 'background:' + state.color + ';color:#fff;' : 'background:#f1f1f1;color:#222;');
+    row.appendChild(bubbleEl);
+    thread.appendChild(row);
+    thread.scrollTop = thread.scrollHeight;
+  }
+
+  // Real chat message bodies -- innerHTML, since these carry real formatting (bold/italic/link/
+  // list). Safe on both sides: the visitor's own just-typed content here is their own browser
+  // (nothing to protect against), and an agent's reply has already been through
+  // services.sanitize_rich_text server-side by the time it round-trips back if it originated from
+  // a visitor -- an agent's OWN composed HTML is trusted the same way crm-email.vue's outbound
+  // v-html already is elsewhere in this codebase.
+  function appendRichMessage(html, who) {
+    var row = document.createElement('div');
+    row.style.cssText = 'margin-bottom:8px;display:flex;' + (who === 'visitor' ? 'justify-content:flex-end;' : '');
+    var bubbleEl = document.createElement('div');
+    bubbleEl.innerHTML = html;
+    bubbleEl.style.cssText = 'max-width:75%;padding:8px 12px;border-radius:10px;font-size:14px;word-break:break-word;' +
       (who === 'visitor' ? 'background:' + state.color + ';color:#fff;' : 'background:#f1f1f1;color:#222;');
     row.appendChild(bubbleEl);
     thread.appendChild(row);
@@ -225,10 +297,11 @@ WIDGET_JS = r"""
   }
 
   function send() {
-    var body = input.value.trim();
-    if (!body) { return; }
-    appendMessage(body, 'visitor');
-    input.value = '';
+    var body = input.innerHTML.trim();
+    if (!input.textContent.trim()) { return; }
+    appendRichMessage(body, 'visitor');
+    input.innerHTML = '';
+    updatePlaceholderState();
     post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body }).then(function () {
       if (!ws) { connectSocket(); }
     });

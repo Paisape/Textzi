@@ -407,9 +407,8 @@ onBeforeUnmount(() => {
                 <VIcon icon="tabler-file" size="18" />
                 Download file
               </a>
-              <p v-if="m.body" class="mb-1" style="white-space: pre-wrap;">
-                {{ m.body }}
-              </p>
+              <!-- eslint-disable-next-line vue/no-v-html -->
+              <div v-if="m.body" class="mb-1 webchat-rich-body" v-html="m.body" />
               <p class="text-caption mb-0" :class="m.direction === 'outbound' ? 'text-white' : 'text-medium-emphasis'" style="opacity: 0.75;">
                 {{ formatDate(m.created_at) }}
               </p>
@@ -425,15 +424,11 @@ onBeforeUnmount(() => {
             {{ sendError }}
           </VAlert>
           <input ref="fileInput" type="file" hidden @change="onFileSelected">
-          <div class="d-flex ga-2">
+          <div class="d-flex align-end ga-2">
             <VBtn icon="tabler-paperclip" variant="outlined" :loading="uploadingFile" @click="triggerFilePicker" />
-            <VTextField
-              v-model="replyBody"
-              placeholder="Type a reply..."
-              density="compact"
-              hide-details
-              @keydown.enter.prevent="sendReply"
-            />
+            <VCard variant="outlined" class="flex-grow-1">
+              <TiptapEditor v-model="replyBody" placeholder="Type a reply..." />
+            </VCard>
             <VBtn :loading="sending" :disabled="!replyBody.trim()" @click="sendReply">
               Send
             </VBtn>
@@ -497,3 +492,13 @@ onBeforeUnmount(() => {
     </template>
   </div>
 </template>
+
+<style scoped>
+.webchat-rich-body :deep(p) {
+  margin-block-end: 0;
+}
+.webchat-rich-body :deep(a) {
+  color: inherit;
+  text-decoration: underline;
+}
+</style>

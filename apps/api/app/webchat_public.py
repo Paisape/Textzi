@@ -22,7 +22,7 @@ from .database import get_db
 from .geoip import lookup_geo
 from .models import Contact, Conversation, ConversationMessage, CsatResponse, WebchatVisit, WebchatWidgetSettings
 from .schemas import WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
-from .services import client_ip, is_outside_business_hours
+from .services import client_ip, is_outside_business_hours, sanitize_rich_text
 from .turnstile import require_turnstile
 from .waba_realtime import message_payload, publish_event
 from .webchat_widget_js import WIDGET_JS
@@ -150,7 +150,12 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
     conversation = _find_or_create_webchat_conversation(db, settings_row.entity_id, contact.id, settings_row.default_group_id)
 
     now = datetime.now(timezone.utc)
-    message = ConversationMessage(conversation_id=conversation.id, direction="inbound", message_type="text", body=payload.body, status="received")
+    # sanitize_rich_text -- this body came straight from an anonymous visitor's own browser, never
+    # trusted as-is (unlike an agent's own composer output elsewhere in this codebase); strips
+    # everything except a small safe inline-formatting tag set before it's ever stored or rendered
+    # with v-html in the agent's inbox.
+    body = sanitize_rich_text(payload.body)
+    message = ConversationMessage(conversation_id=conversation.id, direction="inbound", message_type="text", body=body, status="received")
     db.add(message)
     conversation.status = "open"
     conversation.last_message_at = now
