@@ -3,6 +3,7 @@ order and recording a DeliveryAttempt per try. Shared by the internal worker end
 (main.py, called via /v1/internal/messages/{id}/dispatch with the worker key) and the
 dashboard compose endpoint (sms.py) -- there is no real queue consumer yet, so the dashboard
 dispatches inline right after accepting a message instead of waiting on one."""
+from cryptography.fernet import InvalidToken
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 from fastapi import HTTPException
@@ -10,6 +11,18 @@ from .models import DeliveryAttempt, Header as HeaderModel, Message, PeId, Provi
 from .providers import HttpsSmsProvider, ProviderMessage, SimulatedSmsProvider, TtbsSmsProvider
 from .security import decrypt_recipient_lenient, decrypt_secret
 from .services import DomainError, credit_wallet, mask_mobile, redact_payload_values, ttbs_webhook_url as _ttbs_webhook_url
+
+
+def _decrypt_route_secret(route: str, encrypted: str) -> str:
+    # A route's stored secret can fail to decrypt (e.g. a rotated Fernet key, or a corrupted
+    # value) -- re-raised as HTTPException so dispatch_message's per-route try/except treats it
+    # exactly like a missing/incomplete config: this route's own failure, not a reason to abandon
+    # the rest of the route plan. Fernet's InvalidToken previously escaped uncaught here, crashing
+    # the whole dispatch instead of falling through to the next route.
+    try:
+        return decrypt_secret(encrypted)
+    except InvalidToken as exc:
+        raise HTTPException(status_code=500, detail=f"Provider route '{route}' has a secret that could not be decrypted") from exc
 
 
 def provider_for_route(db: Session, route: str) -> HttpsSmsProvider | TtbsSmsProvider | SimulatedSmsProvider:
@@ -26,7 +39,7 @@ def provider_for_route(db: Session, route: str) -> HttpsSmsProvider | TtbsSmsPro
             method=cfg.get("method", "POST"),
             auth_style=cfg.get("auth_style", "none"),
             auth_key_name=cfg.get("auth_key_name"),
-            auth_value=decrypt_secret(cfg["auth_value_encrypted"]) if cfg.get("auth_value_encrypted") else None,
+            auth_value=_decrypt_route_secret(route, cfg["auth_value_encrypted"]) if cfg.get("auth_value_encrypted") else None,
             param_mapping=cfg.get("param_mapping", {}),
         )
     if provider_route and provider_route.provider_type == "ttbs":
@@ -35,8 +48,8 @@ def provider_for_route(db: Session, route: str) -> HttpsSmsProvider | TtbsSmsPro
         if not endpoint or not user or not pswd_encrypted:
             raise HTTPException(status_code=500, detail=f"Provider route '{route}' has an incomplete ttbs config (missing endpoint/user/pswd)")
         webhook_secret_encrypted = cfg.get("webhook_secret_encrypted")
-        webhook_url = _ttbs_webhook_url(db, decrypt_secret(webhook_secret_encrypted)) if webhook_secret_encrypted else None
-        return TtbsSmsProvider(endpoint=endpoint, user=user, pswd=decrypt_secret(pswd_encrypted), webhook_url=webhook_url)
+        webhook_url = _ttbs_webhook_url(db, _decrypt_route_secret(route, webhook_secret_encrypted)) if webhook_secret_encrypted else None
+        return TtbsSmsProvider(endpoint=endpoint, user=user, pswd=_decrypt_route_secret(route, pswd_encrypted), webhook_url=webhook_url)
     return SimulatedSmsProvider()
 
 
