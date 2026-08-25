@@ -23,7 +23,14 @@ type Order = {
   currency: string | null
   created_at: string
   status_updated_at: string | null
+  payment_status: string
+  payment_link_url: string | null
   items: OrderItem[]
+}
+
+const paymentStatusColor: Record<string, string | undefined> = {
+  pending: 'warning',
+  paid: 'success',
 }
 
 const STATUSES = ['new', 'confirmed', 'shipped', 'delivered', 'cancelled'] as const
@@ -79,6 +86,25 @@ async function setStatus(order: Order, status: string) {
   }
 }
 
+const requestingPaymentId = ref<string | null>(null)
+
+async function requestPayment(order: Order) {
+  requestingPaymentId.value = order.id
+  updateError.value = ''
+  try {
+    const updated = await $api<Order>(`/v1/waba/orders/${order.id}/request-payment`, { method: 'POST' })
+    const index = orders.value.findIndex(o => o.id === order.id)
+    if (index !== -1)
+      orders.value[index] = updated
+  }
+  catch (error: any) {
+    updateError.value = extractErrorMessage(error, 'Could not send a payment link for this order.')
+  }
+  finally {
+    requestingPaymentId.value = null
+  }
+}
+
 watch(statusFilter, load)
 onMounted(load)
 </script>
@@ -118,6 +144,7 @@ onMounted(load)
           <th>Items</th>
           <th>Total</th>
           <th>Status</th>
+          <th>Payment</th>
           <th>Placed</th>
           <th />
         </tr>
@@ -139,6 +166,12 @@ onMounted(load)
                 {{ order.status }}
               </VChip>
             </td>
+            <td>
+              <VChip v-if="order.payment_status !== 'none'" :color="paymentStatusColor[order.payment_status]" size="small" variant="tonal">
+                {{ order.payment_status }}
+              </VChip>
+              <span v-else class="text-medium-emphasis">—</span>
+            </td>
             <td>{{ new Date(order.created_at).toLocaleString('en-IN') }}</td>
             <td @click.stop>
               <VSelect
@@ -155,7 +188,18 @@ onMounted(load)
           </tr>
           <tr v-if="expandedId === order.id">
             <td />
-            <td colspan="6" class="pb-4">
+            <td colspan="7" class="pb-4">
+              <div v-if="order.payment_status !== 'paid'" class="d-flex align-center ga-3 mb-3">
+                <VBtn
+                  v-if="order.payment_status !== 'pending'" size="small" variant="tonal"
+                  :loading="requestingPaymentId === order.id" @click="requestPayment(order)"
+                >
+                  Request payment
+                </VBtn>
+                <span v-if="order.payment_link_url" class="text-caption text-medium-emphasis">
+                  Link sent: <a :href="order.payment_link_url" target="_blank" rel="noopener">{{ order.payment_link_url }}</a>
+                </span>
+              </div>
               <VTable density="compact">
                 <thead>
                   <tr>

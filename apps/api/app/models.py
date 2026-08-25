@@ -527,6 +527,14 @@ class WabaOrder(Base):
     currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Razorpay Payment Link, not the Checkout-order flow channel_billing.py/payments.py use --
+    # there's no Textzi UI session to complete a Checkout popup in (the customer is inside
+    # WhatsApp, not Textzi's own app), so a shareable link sent as a normal message is the right
+    # primitive here, matching what the WhatsApp Commerce market research found is the *actual*
+    # mechanism behind most competitors' "native payment" marketing (see Addendum 14).
+    razorpay_payment_link_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    razorpay_payment_link_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    payment_status: Mapped[str] = mapped_column(String(20), default="none")
 
 
 class WabaOrderItem(Base):
