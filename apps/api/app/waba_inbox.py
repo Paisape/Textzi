@@ -26,7 +26,7 @@ from .schemas import (
     CannedResponseCreateRequest, CannedResponseOut, ContactDirectoryEntryOut, ContactMessageRequest, ContactOut, ContactTimelineOut, ContactUpdateRequest,
     ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
     ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest,
-    CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest, ProductMessageRequest,
+    CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest, ProductListMessageRequest, ProductMessageRequest,
     LabelCreateRequest, LabelOut, LeadOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
     SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest, StartConversationRequest, TemplateButtonOut, TemplateCreateRequest,
     TemplateMessageRequest, TicketCategoryUpdateRequest, TicketCountsOut, TicketCustomFieldsUpdateRequest, TicketGroupAssignRequest,
@@ -39,7 +39,7 @@ from .security import decrypt_secret
 from .services import DomainError, channel_active, get_platform_waba_settings, resolve_user_entity
 from .waba_dispatch import (
     mark_conversation_read, send_whatsapp_contact, send_whatsapp_interactive_buttons, send_whatsapp_interactive_list,
-    send_whatsapp_location, send_whatsapp_media, send_whatsapp_product, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
+    send_whatsapp_location, send_whatsapp_media, send_whatsapp_product, send_whatsapp_product_list, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
 )
 from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates, upload_template_header_media
 from .waba_realtime import authenticate_query_token, message_payload, publish_event
@@ -664,6 +664,25 @@ def send_conversation_product(conversation_id: str, payload: ProductMessageReque
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MetaApiError as exc:
         raise HTTPException(status_code=422, detail=f"Could not send this product: {exc}") from exc
+    return _message_out(message)
+
+
+@router.post("/conversations/{conversation_id}/product-list", response_model=ConversationMessageOut)
+def send_conversation_product_list(conversation_id: str, payload: ProductListMessageRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    if not contact.wa_id:
+        raise HTTPException(status_code=422, detail="This contact has no WhatsApp number to send to")
+    sections = [{"title": s.title, "product_items": [{"product_retailer_id": i.product_retailer_id} for i in s.product_items]} for s in payload.sections]
+    try:
+        message = send_whatsapp_product_list(db, entity.id, contact.wa_id, payload.header_text, payload.body_text, sections, sent_by_user_id=user.id)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except MetaApiError as exc:
+        raise HTTPException(status_code=422, detail=f"Could not send this product list: {exc}") from exc
     return _message_out(message)
 
 

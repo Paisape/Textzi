@@ -1427,6 +1427,17 @@ class CatalogIdUpdateRequest(BaseModel):
     catalog_id: str | None = Field(default=None, max_length=64)
 
 
+class WabaCatalogItemOut(BaseModel):
+    id: str
+    product_retailer_id: str
+    name: str
+    image_url: str | None = None
+    price: str | None = None
+    currency: str | None = None
+    availability: str | None = None
+    last_synced_at: str
+
+
 class LabelOut(BaseModel):
     id: str
     scope: str
@@ -1728,6 +1739,21 @@ class InteractiveListRequest(BaseModel):
 class ProductMessageRequest(BaseModel):
     product_retailer_id: str = Field(min_length=1, max_length=100)
     body_text: str | None = Field(default=None, max_length=1024)
+
+
+class ProductListItem(BaseModel):
+    product_retailer_id: str = Field(min_length=1, max_length=100)
+
+
+class ProductListSection(BaseModel):
+    title: str = Field(min_length=1, max_length=24)
+    product_items: list[ProductListItem] = Field(min_length=1)
+
+
+class ProductListMessageRequest(BaseModel):
+    header_text: str = Field(min_length=1, max_length=60)
+    body_text: str = Field(min_length=1, max_length=1024)
+    sections: list[ProductListSection] = Field(min_length=1)
 
 
 class ReactionRequest(BaseModel):

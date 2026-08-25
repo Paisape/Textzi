@@ -228,6 +228,25 @@ async function saveCatalogId() {
   }
 }
 
+const catalogSyncing = ref(false)
+const catalogSyncMessage = ref('')
+
+async function syncCatalogNow() {
+  catalogSyncing.value = true
+  catalogError.value = ''
+  catalogSyncMessage.value = ''
+  try {
+    const result = await $api<{ synced: number }>('/v1/waba/catalog/sync', { method: 'POST' })
+    catalogSyncMessage.value = `Synced ${result.synced} product${result.synced === 1 ? '' : 's'}.`
+  }
+  catch (error: any) {
+    catalogError.value = extractErrorMessage(error, 'Could not sync the catalog.')
+  }
+  finally {
+    catalogSyncing.value = false
+  }
+}
+
 function loadFacebookSdk(appId: string): Promise<void> {
   if (sdkReadyPromise)
     return sdkReadyPromise
@@ -655,12 +674,21 @@ watch(activeTab, tab => {
           <VAlert v-if="catalogError" type="error" variant="tonal" density="compact" class="mb-3">
             {{ catalogError }}
           </VAlert>
-          <div class="d-flex align-center ga-2">
+          <VAlert v-if="catalogSyncMessage" type="success" variant="tonal" density="compact" class="mb-3">
+            {{ catalogSyncMessage }}
+          </VAlert>
+          <div class="d-flex align-center ga-2 flex-wrap">
             <VTextField v-model="catalogIdInput" label="Catalog id" density="compact" hide-details style="max-inline-size: 320px;" />
             <VBtn size="small" :loading="catalogSaving" @click="saveCatalogId">
               Save
             </VBtn>
+            <VBtn size="small" variant="tonal" :loading="catalogSyncing" :disabled="!status?.catalog_id" @click="syncCatalogNow">
+              Sync now
+            </VBtn>
           </div>
+          <p class="text-caption text-medium-emphasis mt-2 mb-0">
+            Products sync automatically once an hour; use "Sync now" for immediate feedback after saving a new catalog id.
+          </p>
         </VCardText>
       </VCard>
 

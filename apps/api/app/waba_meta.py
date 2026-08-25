@@ -380,6 +380,19 @@ def list_message_templates(waba_id: str, access_token: str) -> list[dict]:
     return body.get("data", [])
 
 
+def get_catalog_products(catalog_id: str, access_token: str) -> list[dict]:
+    """Read-only catalog sync -- Meta's Product Catalog is a Business-Manager-owned asset shared
+    across Facebook/Instagram/WhatsApp Shops, not something the WhatsApp Cloud API itself owns, but
+    it's readable with the same WABA access token via the Graph API's generic node-fields
+    mechanism. Returns Meta's raw product rows (retailer_id/name/image_url/price/currency/
+    availability); catalog_sync.py shapes these into WabaCatalogItem rows. Follows the same
+    pagination-unaware "limit=100, single page" convention as list_message_templates above --
+    catalogs beyond 100 items would need real pagination, not attempted here since no caller needs
+    it yet."""
+    body = _get(f"{catalog_id}/products", {"access_token": access_token, "fields": "id,retailer_id,name,image_url,price,currency,availability", "limit": 100})
+    return body.get("data", [])
+
+
 def get_template_analytics(waba_id: str, access_token: str, template_ids: list[str], start: int, end: int) -> list[dict]:
     """Meta's real per-template performance endpoint (distinct from list_message_templates above,
     which only returns definitions/status) -- sent/delivered/read/clicked counts per template,

@@ -942,6 +942,39 @@ async function sendContactCard() {
   }
 }
 
+type CatalogItem = {
+  id: string
+  product_retailer_id: string
+  name: string
+  image_url: string | null
+  price: string | null
+  currency: string | null
+  availability: string | null
+}
+
+const catalogItems = ref<CatalogItem[]>([])
+const catalogSearch = ref('')
+const catalogLoading = ref(false)
+let catalogSearchTimer: ReturnType<typeof setTimeout> | undefined
+
+async function loadCatalogItems() {
+  catalogLoading.value = true
+  try {
+    catalogItems.value = await $api<CatalogItem[]>('/v1/waba/catalog', { params: catalogSearch.value ? { q: catalogSearch.value } : {} })
+  }
+  catch {
+    catalogItems.value = []
+  }
+  finally {
+    catalogLoading.value = false
+  }
+}
+
+watch(catalogSearch, () => {
+  clearTimeout(catalogSearchTimer)
+  catalogSearchTimer = setTimeout(loadCatalogItems, 300)
+})
+
 const productDialog = ref(false)
 const productForm = ref({ product_retailer_id: '', body_text: '' })
 const productError = ref('')
@@ -950,14 +983,20 @@ const productSending = ref(false)
 function openProductDialog() {
   productForm.value = { product_retailer_id: '', body_text: '' }
   productError.value = ''
+  catalogSearch.value = ''
   productDialog.value = true
+  loadCatalogItems()
+}
+
+function pickProduct(item: CatalogItem) {
+  productForm.value.product_retailer_id = item.product_retailer_id
 }
 
 async function sendProduct() {
   if (!activeConversation.value)
     return
   if (!productForm.value.product_retailer_id.trim()) {
-    productError.value = 'Enter the product ID from your Meta catalog.'
+    productError.value = 'Pick a product, or enter its ID from your Meta catalog.'
     return
   }
   productError.value = ''
@@ -977,6 +1016,64 @@ async function sendProduct() {
   }
   finally {
     productSending.value = false
+  }
+}
+
+const productListDialog = ref(false)
+const productListForm = ref({ header_text: '', body_text: '' })
+const productListSelection = ref<CatalogItem[]>([])
+const productListError = ref('')
+const productListSending = ref(false)
+
+function openProductListDialog() {
+  productListForm.value = { header_text: '', body_text: '' }
+  productListSelection.value = []
+  productListError.value = ''
+  catalogSearch.value = ''
+  productListDialog.value = true
+  loadCatalogItems()
+}
+
+function toggleProductListItem(item: CatalogItem) {
+  const index = productListSelection.value.findIndex(p => p.product_retailer_id === item.product_retailer_id)
+  if (index === -1)
+    productListSelection.value.push(item)
+  else
+    productListSelection.value.splice(index, 1)
+}
+
+async function sendProductList() {
+  if (!activeConversation.value)
+    return
+  if (!productListForm.value.header_text.trim() || !productListForm.value.body_text.trim()) {
+    productListError.value = 'Header and message are both required.'
+    return
+  }
+  if (!productListSelection.value.length) {
+    productListError.value = 'Select at least one product.'
+    return
+  }
+  productListError.value = ''
+  productListSending.value = true
+  try {
+    const message = await $api<ConversationMessage>(`/v1/waba/conversations/${activeConversation.value.id}/product-list`, {
+      method: 'POST',
+      body: {
+        header_text: productListForm.value.header_text.trim(),
+        body_text: productListForm.value.body_text.trim(),
+        sections: [{ title: 'Products', product_items: productListSelection.value.map(p => ({ product_retailer_id: p.product_retailer_id })) }],
+      },
+    })
+    activeConversation.value.messages.push(message)
+    productListDialog.value = false
+    scrollToBottom()
+    await loadConversations()
+  }
+  catch (error: any) {
+    productListError.value = extractErrorMessage(error, 'Could not send this product list.')
+  }
+  finally {
+    productListSending.value = false
   }
 }
 
@@ -1651,6 +1748,7 @@ watch(statusFilter, loadConversations)
                   <VListItem prepend-icon="tabler-list-details" title="Quick-reply buttons" @click="openButtonsDialog" />
                   <VListItem prepend-icon="tabler-list" title="List message" @click="openListDialog" />
                   <VListItem prepend-icon="tabler-shopping-bag" title="Product" @click="openProductDialog" />
+                  <VListItem prepend-icon="tabler-shopping-cart" title="Product list" @click="openProductListDialog" />
                 </VList>
               </VMenu>
             </VBtn>
@@ -2004,14 +2102,32 @@ watch(statusFilter, loadConversations)
     </VCard>
   </VDialog>
 
-  <VDialog v-model="productDialog" max-width="420">
+  <VDialog v-model="productDialog" max-width="460">
     <VCard>
       <VCardTitle>Send a product</VCardTitle>
       <VCardText>
         <VAlert v-if="productError" type="error" variant="tonal" density="compact" class="mb-3">
           {{ productError }}
         </VAlert>
-        <AppTextField v-model="productForm.product_retailer_id" label="Product ID (from your Meta catalog)" class="mb-3" />
+        <AppTextField v-model="catalogSearch" label="Search your catalog" prepend-inner-icon="tabler-search" class="mb-2" />
+        <VProgressLinear v-if="catalogLoading" indeterminate color="primary" class="mb-2" />
+        <VList v-else density="compact" class="mb-3" style="max-height: 220px; overflow-y: auto;">
+          <VListItem
+            v-for="item in catalogItems" :key="item.id" :active="productForm.product_retailer_id === item.product_retailer_id"
+            @click="pickProduct(item)"
+          >
+            <template #prepend>
+              <VAvatar v-if="item.image_url" :image="item.image_url" size="32" rounded />
+              <VAvatar v-else size="32" rounded color="secondary" variant="tonal">
+                <VIcon icon="tabler-shopping-bag" size="16" />
+              </VAvatar>
+            </template>
+            <VListItemTitle>{{ item.name }}</VListItemTitle>
+            <VListItemSubtitle>{{ item.product_retailer_id }}<span v-if="item.price"> &middot; {{ item.price }} {{ item.currency }}</span></VListItemSubtitle>
+          </VListItem>
+          <VListItem v-if="!catalogItems.length" title="No products found -- sync your catalog in Manage WhatsApp, or enter an ID below." />
+        </VList>
+        <AppTextField v-model="productForm.product_retailer_id" label="Product ID" class="mb-3" />
         <AppTextField v-model="productForm.body_text" label="Message (optional)" />
       </VCardText>
       <VCardText class="d-flex justify-end ga-3 pt-0">
@@ -2019,6 +2135,46 @@ watch(statusFilter, loadConversations)
           Cancel
         </VBtn>
         <VBtn :loading="productSending" @click="sendProduct">
+          Send
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="productListDialog" max-width="500">
+    <VCard>
+      <VCardTitle>Send a product list</VCardTitle>
+      <VCardText>
+        <VAlert v-if="productListError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ productListError }}
+        </VAlert>
+        <AppTextField v-model="productListForm.header_text" label="Header" class="mb-3" />
+        <AppTextField v-model="productListForm.body_text" label="Message" class="mb-3" />
+        <AppTextField v-model="catalogSearch" label="Search your catalog" prepend-inner-icon="tabler-search" class="mb-2" />
+        <VProgressLinear v-if="catalogLoading" indeterminate color="primary" class="mb-2" />
+        <VList v-else density="compact" class="mb-2" style="max-height: 220px; overflow-y: auto;">
+          <VListItem
+            v-for="item in catalogItems" :key="item.id"
+            :active="productListSelection.some(p => p.product_retailer_id === item.product_retailer_id)"
+            @click="toggleProductListItem(item)"
+          >
+            <template #prepend>
+              <VCheckboxBtn :model-value="productListSelection.some(p => p.product_retailer_id === item.product_retailer_id)" readonly />
+            </template>
+            <VListItemTitle>{{ item.name }}</VListItemTitle>
+            <VListItemSubtitle>{{ item.product_retailer_id }}<span v-if="item.price"> &middot; {{ item.price }} {{ item.currency }}</span></VListItemSubtitle>
+          </VListItem>
+          <VListItem v-if="!catalogItems.length" title="No products found -- sync your catalog in Manage WhatsApp." />
+        </VList>
+        <p class="text-caption text-medium-emphasis mb-0">
+          {{ productListSelection.length }} selected (up to 30)
+        </p>
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="productListDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn :loading="productListSending" @click="sendProductList">
           Send
         </VBtn>
       </VCardText>

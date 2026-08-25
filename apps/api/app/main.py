@@ -16,6 +16,7 @@ from .config import settings
 from .admin import router as admin_router, require_admin
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
+from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
 from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
 from .crm import router as crm_router, send_due_scheduled_reports
@@ -105,8 +106,12 @@ async def lifespan(_: FastAPI):
     # (network blip, a briefly-misconfigured secret, downtime). 15 minutes balances catching a
     # missed credit reasonably quickly against not hammering Razorpay's API per active account.
     scheduler.add_job(run_smart_collect_reconciliation, IntervalTrigger(minutes=15), id="smart_collect_reconcile_job", misfire_grace_time=900)
+    # WhatsApp Commerce catalog sync (Addendum 14 Phase 1) -- keeps the local WabaCatalogItem
+    # mirror close to Meta's own catalog for the agent-inbox product picker. Hourly, same
+    # reasoning as the CRM sequence runner: granular enough, cheap enough to just poll.
+    scheduler.add_job(sync_all_catalogs, IntervalTrigger(hours=1), id="catalog_sync_job", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, and 15-minute Smart Collect reconcile")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, and hourly catalog sync")
 
     yield
 
@@ -117,6 +122,7 @@ app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 app.include_router(admin_router)
 app.include_router(auth_router)
+app.include_router(catalog_sync_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
 app.include_router(crm_router)

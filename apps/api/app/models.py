@@ -483,6 +483,28 @@ class WabaConnection(Base):
     disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class WabaCatalogItem(Base):
+    """A read-only local mirror of one product in the entity's Meta Commerce Manager catalog --
+    synced periodically (catalog_sync.py) so the agent inbox can show a searchable product picker
+    instead of requiring an agent to already know a product's retailer_id by heart. Meta's catalog
+    stays the source of truth for price/availability/existence; this table is a display cache, not
+    something Textzi writes back to Meta. Deleting a product in Meta just means it stops
+    reappearing on the next sync -- stale rows aren't proactively pruned mid-sync since an
+    in-flight order (waba_orders) may still reference a retailer_id whose catalog row disappeared,
+    and that lookup should degrade gracefully, not break."""
+    __tablename__ = "waba_catalog_items"
+    __table_args__ = (UniqueConstraint("entity_id", "product_retailer_id", name="uq_waba_catalog_items_entity_retailer_id"),)
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    product_retailer_id: Mapped[str] = mapped_column(String(100))
+    name: Mapped[str] = mapped_column(String(200))
+    image_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    price: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    availability: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class WalletTransaction(Base):
     """Immutable ledger entry for every wallet-affecting event (recharge, message debit, manual
     adjustment, refund). `amount` is signed: positive credits the wallet, negative debits it.
