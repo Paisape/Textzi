@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session
 
 from . import waba_media
 from .database import get_db
-from .models import BusinessHours, Contact, Conversation, ConversationMessage, CsatResponse, SlaPolicy, WabaConnection, WabaWebhookLog, WabaWebhookSubscription
+from .models import BusinessHours, Contact, Conversation, ConversationMessage, CsatResponse, SlaPolicy, WabaCatalogItem, WabaConnection, WabaOrder, WabaOrderItem, WabaWebhookLog, WabaWebhookSubscription
 from .security import decrypt_secret, sign_webhook_payload
 from .services import client_ip, get_platform_waba_settings, get_platform_waba_webhook_verify_token, is_outside_business_hours, stamp_sla_due_at
 from .waba_automation import apply_rules
@@ -301,6 +301,8 @@ def _handle_inbound_messages(db: Session, connection: WabaConnection, value: dic
         stamp_sla_due_at(db, connection.entity_id, conversation, created_at)
         _match_csat_response(db, conversation, message_type, payload)
         db.flush()
+        if message_type == "order":
+            _create_order_record(db, connection.entity_id, contact.id, conversation.id, message, wamid, payload or {})
         _maybe_send_business_hours_reply(db, connection, contact, conversation, created_at)
         apply_rules(db, connection.entity_id, contact, conversation, body, is_new_contact, is_outside_business_hours(db, connection.entity_id, created_at))
         created.append((connection.entity_id, message))
@@ -336,6 +338,36 @@ def _match_csat_response(db: Session, conversation: Conversation, message_type: 
     if pending:
         pending.rating = int(title)
         pending.responded_at = datetime.now(timezone.utc)
+
+
+def _create_order_record(db: Session, entity_id: str, contact_id: str, conversation_id: str, message: ConversationMessage, wamid: str, order: dict) -> None:
+    """Additive to the chat-bubble display already built above -- a structured WabaOrder/
+    WabaOrderItem an agent can actually act on (status lifecycle), since Meta's own order-status
+    push-back only exists inside the separate, gated Payments API flow, not for a plain cart order
+    like this one. Denormalizes product_name from the local WabaCatalogItem mirror where a match
+    exists at receipt time -- best-effort, an order is a snapshot, not a live catalog lookup."""
+    items = order.get("product_items", [])
+    catalog_names = {}
+    if items:
+        retailer_ids = [i.get("product_retailer_id") for i in items if i.get("product_retailer_id")]
+        rows = db.scalars(select(WabaCatalogItem).where(WabaCatalogItem.entity_id == entity_id, WabaCatalogItem.product_retailer_id.in_(retailer_ids)))
+        catalog_names = {row.product_retailer_id: row.name for row in rows}
+    currency = items[0].get("currency") if items else None
+    total = sum(float(i.get("item_price") or 0) * int(i.get("quantity") or 0) for i in items) if items else None
+    waba_order = WabaOrder(
+        entity_id=entity_id, contact_id=contact_id, conversation_id=conversation_id, conversation_message_id=message.id,
+        meta_message_id=wamid, status="new", total_amount=total, currency=currency,
+    )
+    db.add(waba_order)
+    db.flush()
+    for item in items:
+        retailer_id = item.get("product_retailer_id")
+        if not retailer_id:
+            continue
+        db.add(WabaOrderItem(
+            order_id=waba_order.id, product_retailer_id=retailer_id, product_name=catalog_names.get(retailer_id),
+            quantity=int(item.get("quantity") or 0), item_price=item.get("item_price"), currency=item.get("currency"),
+        ))
 
 
 def _handle_statuses(db: Session, entity_id: str, value: dict) -> list[tuple[str, ConversationMessage]]:

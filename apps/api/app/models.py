@@ -505,6 +505,46 @@ class WabaCatalogItem(Base):
     last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class WabaOrder(Base):
+    """A structured record of a WhatsApp native-cart order (Meta's `type: "order"` inbound
+    webhook message -- customer taps through a catalog/product message, adds items, taps "Review
+    and send" inside WhatsApp itself). The chat bubble showing the order already exists
+    (ConversationMessage with message_type="order", raw payload in .payload) -- this is additive,
+    not a replacement: a real status lifecycle an agent can actually act on, since Meta's own
+    order-status push-back message only exists inside its separate, gated Payments API flow (see
+    Addendum 14's own research notes), not for a plain cart order like this one. status transitions
+    are agent-driven from Textzi's own UI, each one sending an ordinary outbound template message
+    to the customer (waba_orders.py) rather than relying on any Meta-side structured mechanism."""
+    __tablename__ = "waba_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    contact_id: Mapped[str] = mapped_column(ForeignKey("contacts.id"))
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"))
+    conversation_message_id: Mapped[str | None] = mapped_column(ForeignKey("conversation_messages.id"), nullable=True)
+    meta_message_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="new")
+    total_amount: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    status_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class WabaOrderItem(Base):
+    """One line item on a WabaOrder -- copied from Meta's order.product_items at receipt time,
+    never re-fetched/re-synced afterward (an order is a snapshot of what the customer actually
+    ordered, not a live view of current catalog state). product_name is denormalized from
+    WabaCatalogItem if a match exists at receipt time, left null otherwise -- an order referencing
+    a since-deleted/renamed catalog item must still display something sensible, not break."""
+    __tablename__ = "waba_order_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    order_id: Mapped[str] = mapped_column(ForeignKey("waba_orders.id"), index=True)
+    product_retailer_id: Mapped[str] = mapped_column(String(100))
+    product_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    quantity: Mapped[int] = mapped_column(Integer, default=1)
+    item_price: Mapped[float | None] = mapped_column(Numeric(12, 2), nullable=True)
+    currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+
+
 class WalletTransaction(Base):
     """Immutable ledger entry for every wallet-affecting event (recharge, message debit, manual
     adjustment, refund). `amount` is signed: positive credits the wallet, negative debits it.

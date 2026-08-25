@@ -18,6 +18,11 @@ export const WABA_NAV_ITEMS = [
     icon: { icon: 'tabler-speakerphone' },
   },
   {
+    title: 'Orders',
+    to: { name: 'waba-orders' },
+    icon: { icon: 'tabler-shopping-cart' },
+  },
+  {
     title: 'Reports',
     to: { name: 'waba-reports' },
     icon: { icon: 'tabler-chart-bar' },

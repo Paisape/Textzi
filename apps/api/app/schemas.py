@@ -1438,6 +1438,31 @@ class WabaCatalogItemOut(BaseModel):
     last_synced_at: str
 
 
+class WabaOrderItemOut(BaseModel):
+    product_retailer_id: str
+    product_name: str | None = None
+    quantity: int
+    item_price: float | None = None
+    currency: str | None = None
+
+
+class WabaOrderOut(BaseModel):
+    id: str
+    contact_id: str
+    contact_name: str | None = None
+    conversation_id: str
+    status: str
+    total_amount: float | None = None
+    currency: str | None = None
+    created_at: str
+    status_updated_at: str | None = None
+    items: list[WabaOrderItemOut]
+
+
+class WabaOrderStatusUpdateRequest(BaseModel):
+    status: str = Field(min_length=1, max_length=20)
+
+
 class LabelOut(BaseModel):
     id: str
     scope: str

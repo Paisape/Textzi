@@ -43,6 +43,7 @@ from .two_factor import router as two_factor_router
 from .waba import router as waba_router
 from .waba_campaigns import router as waba_campaigns_router, run_due_campaigns
 from .waba_inbox import router as waba_inbox_router
+from .waba_orders import router as waba_orders_router
 from .waba_realtime import router as waba_realtime_router
 from .waba_reports import router as waba_reports_router
 from .waba_webhooks import router as waba_webhooks_router
@@ -147,6 +148,7 @@ app.include_router(two_factor_router)
 app.include_router(waba_router)
 app.include_router(waba_campaigns_router)
 app.include_router(waba_inbox_router)
+app.include_router(waba_orders_router)
 app.include_router(waba_realtime_router)
 app.include_router(waba_reports_router)
 app.include_router(waba_webhooks_router)
