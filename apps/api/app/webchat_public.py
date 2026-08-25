@@ -194,13 +194,21 @@ def _find_or_create_webchat_contact(db: Session, entity_id: str, visitor_id: str
     db.add(contact)
     # Same race as every other find-or-create in this codebase (crm.py's _resolve_or_create_contact,
     # crm_email.py's _find_or_create_contact) -- two rapid messages from the same brand-new visitor
-    # (e.g. a double-click on send) can both pass the SELECT above before either commits.
-    # uq_contacts_entity_visitor_id is the real guarantee.
+    # (e.g. a double-click on send) can both pass the SELECT above before either commits. Two
+    # separate unique constraints can trigger this flush's IntegrityError here, not just one:
+    # uq_contacts_entity_visitor_id (a second message from the same never-before-seen visitor_id),
+    # or uq_contacts_entity_email (this offline-form submission's email already belongs to a
+    # DIFFERENT existing Contact -- a returning visitor on a new device/browser, or the same
+    # person's second visitor_id). Re-querying by visitor_id alone misses the second case entirely
+    # -- when email collided instead, that lookup finds nothing and the original error re-raises
+    # unhandled. Falling back to an email lookup when the visitor_id one comes up empty covers both.
     try:
         db.flush()
     except IntegrityError:
         db.rollback()
         contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.visitor_id == visitor_id))
+        if not contact and email:
+            contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.email == email))
         if not contact:
             raise
     return contact

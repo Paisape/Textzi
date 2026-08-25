@@ -138,23 +138,37 @@ def get_webchat_reports(days: int = 30, user: User = Depends(require_user), db: 
     # message and the first non-private outbound reply that follows it. Computed from actual
     # message timestamps (not the SLA due-at/breached fields, which only ever tell you whether a
     # deadline was met, never the real elapsed time for a conversation that met it).
+    #
+    # Batched, not per-conversation -- the original version issued up to 2 extra queries per
+    # conversation in a Python loop, scaling linearly with total historical conversation count
+    # (not even bounded by `since`). Two grouped MIN() queries (first inbound per conversation,
+    # first non-private outbound reply per conversation) replace that entirely: pull both maps
+    # once, then pair them up in Python.
     response_gaps: list[float] = []
     resolution_gaps: list[float] = []
+    first_inbound_rows = db.execute(
+        select(ConversationMessage.conversation_id, func.min(ConversationMessage.created_at))
+        .where(ConversationMessage.conversation_id.in_(conversation_ids), ConversationMessage.direction == "inbound")
+        .group_by(ConversationMessage.conversation_id),
+    ).all()
+    first_inbound_by_conv = dict(first_inbound_rows)
+    first_reply_rows = db.execute(
+        select(ConversationMessage.conversation_id, func.min(ConversationMessage.created_at))
+        .where(
+            ConversationMessage.conversation_id.in_(conversation_ids), ConversationMessage.direction == "outbound",
+            ConversationMessage.is_private.is_(False),
+        )
+        .group_by(ConversationMessage.conversation_id),
+    ).all()
+    first_reply_by_conv = dict(first_reply_rows)
     conversations = db.scalars(select(Conversation).where(Conversation.id.in_(conversation_ids))).all()
     for conv in conversations:
-        first_inbound = db.scalar(
-            select(ConversationMessage.created_at).where(ConversationMessage.conversation_id == conv.id, ConversationMessage.direction == "inbound")
-            .order_by(ConversationMessage.created_at.asc()).limit(1),
-        )
-        if first_inbound:
-            first_reply = db.scalar(
-                select(ConversationMessage.created_at).where(
-                    ConversationMessage.conversation_id == conv.id, ConversationMessage.direction == "outbound",
-                    ConversationMessage.is_private.is_(False), ConversationMessage.created_at > first_inbound,
-                ).order_by(ConversationMessage.created_at.asc()).limit(1),
-            )
-            if first_reply:
-                response_gaps.append((first_reply - first_inbound).total_seconds() / 60)
+        first_inbound = first_inbound_by_conv.get(conv.id)
+        first_reply = first_reply_by_conv.get(conv.id)
+        # The reply must actually follow the first inbound message -- an agent-initiated outbound
+        # send (a proactive trigger, a macro) with no inbound message yet isn't a "response."
+        if first_inbound and first_reply and first_reply > first_inbound:
+            response_gaps.append((first_reply - first_inbound).total_seconds() / 60)
         if conv.resolved_at:
             resolution_gaps.append((conv.resolved_at - conv.created_at).total_seconds() / 60)
 

@@ -41,8 +41,12 @@ _STATUS_MESSAGES = {
 def _order_out(db: Session, order: WabaOrder) -> WabaOrderOut:
     items = db.scalars(select(WabaOrderItem).where(WabaOrderItem.order_id == order.id)).all()
     contact = db.get(Contact, order.contact_id)
+    return _build_order_out(order, items, contact.name if contact else None)
+
+
+def _build_order_out(order: WabaOrder, items: list[WabaOrderItem], contact_name: str | None) -> WabaOrderOut:
     return WabaOrderOut(
-        id=order.id, contact_id=order.contact_id, contact_name=contact.name if contact else None,
+        id=order.id, contact_id=order.contact_id, contact_name=contact_name,
         conversation_id=order.conversation_id, status=order.status,
         total_amount=float(order.total_amount) if order.total_amount is not None else None,
         currency=order.currency, created_at=order.created_at.isoformat(),
@@ -73,7 +77,15 @@ def list_orders(status: str | None = None, user: User = Depends(require_user), d
     if status:
         query = query.where(WabaOrder.status == status)
     orders = db.scalars(query.order_by(WabaOrder.created_at.desc()).limit(200)).all()
-    return [_order_out(db, order) for order in orders]
+    if not orders:
+        return []
+    order_ids = [o.id for o in orders]
+    contact_ids = [o.contact_id for o in orders]
+    items_by_order: dict[str, list[WabaOrderItem]] = {}
+    for item in db.scalars(select(WabaOrderItem).where(WabaOrderItem.order_id.in_(order_ids))):
+        items_by_order.setdefault(item.order_id, []).append(item)
+    names_by_contact = {c.id: c.name for c in db.scalars(select(Contact).where(Contact.id.in_(contact_ids)))}
+    return [_build_order_out(order, items_by_order.get(order.id, []), names_by_contact.get(order.contact_id)) for order in orders]
 
 
 @router.get("/{order_id}", response_model=WabaOrderOut)
@@ -137,7 +149,12 @@ def request_payment(order_id: str, user: User = Depends(require_user), db: Sessi
     order = db.get(WabaOrder, order_id)
     if not order or order.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Order not found")
-    if not order.total_amount:
+    # is None, not falsy -- a genuinely free/all-zero-priced order (e.g. every line item's
+    # item_price was missing from Meta's payload) has a real total_amount of 0.0, which is a
+    # meaningfully different case from "no total was ever computed" and shouldn't be blocked the
+    # same way (a request for zero rupees would just fail on Razorpay's own side, which is the
+    # right place for that to be rejected, not here).
+    if order.total_amount is None:
         raise HTTPException(status_code=422, detail="This order has no total amount to request payment for")
     if order.payment_status == "paid":
         raise HTTPException(status_code=409, detail="This order has already been paid")
