@@ -27,7 +27,7 @@ from .email_service import render_email, send_email
 from .models import (
     Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
     Customer, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesTarget, SavedReport, SavedView, ScoringRule,
-    Task, Territory, User, UserRole, WebForm,
+    Task, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
@@ -40,11 +40,11 @@ from .schemas import (
     LeadConvertRequest, LeadCreateFromConversationRequest,
     LeadCreateRequest, LeadDetailOut, LeadFunnelMonth, LeadFunnelOut, LeadOut, LeadUpdateRequest, ManagerUpdateRequest,
     MapToCustomerRequest, MergeContactsRequest, NotificationOut, PipelineCreateRequest, PipelineOut, PipelineStagesUpdateRequest, ProductSalesRow,
-    ReportDrillDownRequest, ReportDrillDownResult, ReportDrillDownRow, ReportRow, ReportRunRequest, ReportRunResult, SalesTargetCreateRequest,
+    QuoteOut, ReportDrillDownRequest, ReportDrillDownResult, ReportDrillDownRow, ReportRow, ReportRunRequest, ReportRunResult, SalesTargetCreateRequest,
     SalesTargetOut, SalesTargetUpdateRequest, SavedReportCreateRequest,
     SavedReportOut, SavedReportUpdateRequest, SavedViewCreateRequest, SavedViewOut, ScoringRuleCreateRequest,
     ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskCreateRequest, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
-    TerritoryOut, TerritoryUpdateRequest, WebFormOut, WebFormUpdateRequest,
+    TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormOut, WebFormUpdateRequest,
 )
 from .permissions import require_channel_scope, require_page_scope
 from .services import DomainError, channel_active, log_activity, notify_user, resolve_user_entity, save_upload
@@ -1189,6 +1189,74 @@ def map_contact_to_customer(contact_id: str, payload: MapToCustomerRequest, user
     db.commit()
     db.refresh(contact)
     return _contact_out(contact)
+
+
+def _get_owned_waba_order(db: Session, entity_id: str, order_id: str) -> WabaOrder:
+    order = db.get(WabaOrder, order_id)
+    if not order or order.entity_id != entity_id:
+        raise HTTPException(status_code=404, detail="Order not found")
+    return order
+
+
+@router.post("/waba-orders/{order_id}/link-deal", response_model=WabaOrderOut)
+def link_waba_order_to_deal(order_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Attaches a WhatsApp Commerce order to a Deal so its value/history shows up in the pipeline
+    (Addendum 14 Phase 4) -- reuses the contact if it already has an open deal, otherwise creates
+    one fresh, same "no forced Lead-first requirement" precedent as every other direct conversion
+    in this file. The order's own contact_id points at the WABA Contact table (waba_orders.py
+    reads Contact/Conversation directly, same shared-inbox-layer reasoning as every other CRM
+    endpoint here) -- _get_or_create_crm_contact_from_waba is what bridges it to a CrmContact."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    order = _get_owned_waba_order(db, entity.id, order_id)
+    if order.deal_id:
+        raise HTTPException(status_code=409, detail="This order is already linked to a deal")
+    waba_contact = db.get(Contact, order.contact_id)
+    if not waba_contact:
+        raise HTTPException(status_code=404, detail="This order's contact no longer exists")
+    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact)
+    deal = db.scalar(select(Deal).where(Deal.contact_id == contact.id, Deal.entity_id == entity.id, Deal.status == "open"))
+    if not deal:
+        deal = Deal(
+            entity_id=entity.id, contact_id=contact.id, source="whatsapp_conversation",
+            converted_from_conversation_id=order.conversation_id,
+            pipeline_id=_get_or_create_default_pipeline(db, entity.id).id,
+            value=order.total_amount, notes=f"Auto-created from WhatsApp order {order.id}",
+        )
+        db.add(deal)
+        db.flush()
+        _open_deal_stage_event(db, deal)
+    order.deal_id = deal.id
+    db.commit()
+    from .waba_orders import _order_out
+    return _order_out(db, order)
+
+
+@router.post("/waba-orders/{order_id}/convert-to-quote", response_model=QuoteOut)
+def convert_waba_order_to_quote(order_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Generates a GST-compliant Quote from an order's line items (Addendum 14 Phase 4) -- a real
+    differentiator over every India BSP competitor researched for this addendum, none of which
+    have GST-invoice generation from a WhatsApp order at all. Links the order to a Deal first if
+    it isn't already (Quote.deal_id is required, not nullable), reusing link_waba_order_to_deal's
+    own logic rather than duplicating it."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    order = _get_owned_waba_order(db, entity.id, order_id)
+    items = db.scalars(select(WabaOrderItem).where(WabaOrderItem.order_id == order.id)).all()
+    if not items:
+        raise HTTPException(status_code=422, detail="This order has no line items to build a quote from")
+    if not order.deal_id:
+        link_waba_order_to_deal(order_id, user, db)
+        db.refresh(order)
+    line_items = [
+        {"description": item.product_name or item.product_retailer_id, "hsn_code": "", "quantity": float(item.quantity), "unit_price": float(item.item_price) if item.item_price is not None else 0.0}
+        for item in items
+    ]
+    quote = Quote(entity_id=entity.id, deal_id=order.deal_id, line_items=line_items, created_by_user_id=user.id)
+    db.add(quote)
+    db.commit()
+    db.refresh(quote)
+    return _quote_out(db, quote)
 
 
 _STAGE_REQUIREMENT_LABELS = {

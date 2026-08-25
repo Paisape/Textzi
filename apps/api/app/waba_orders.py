@@ -1,13 +1,13 @@
-"""WhatsApp Commerce order management (Addendum 14 Phases 2-3) -- a structured status lifecycle on
+"""WhatsApp Commerce order management (Addendum 14 Phases 2-4) -- a structured status lifecycle on
 top of the WabaOrder/WabaOrderItem rows waba_webhooks.py creates from Meta's inbound cart-order
-messages, plus Razorpay Payment Link-based payment collection. Deliberately its own module, same
-"one file per distinct integration surface" convention as catalog_sync.py; imports waba_dispatch
-one-directionally, never the reverse."""
+messages, Razorpay Payment Link-based payment collection, and an abandoned-cart reminder job.
+Deliberately its own module, same "one file per distinct integration surface" convention as
+catalog_sync.py; imports waba_dispatch one-directionally, never the reverse."""
 import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import razorpay
 import requests
@@ -16,8 +16,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import require_user
-from .database import get_db
-from .models import Contact, PaymentOrder, User, WabaOrder, WabaOrderItem
+from .database import SessionLocal, get_db
+from .models import Contact, Conversation, ConversationMessage, PaymentOrder, User, WabaOrder, WabaOrderItem
 from .permissions import require_channel_scope
 from .schemas import WabaOrderOut, WabaOrderStatusUpdateRequest
 from .services import DomainError, get_platform_razorpay_keys, get_platform_razorpay_webhook_secret, resolve_user_entity
@@ -47,7 +47,7 @@ def _order_out(db: Session, order: WabaOrder) -> WabaOrderOut:
         total_amount=float(order.total_amount) if order.total_amount is not None else None,
         currency=order.currency, created_at=order.created_at.isoformat(),
         status_updated_at=order.status_updated_at.isoformat() if order.status_updated_at else None,
-        payment_status=order.payment_status, payment_link_url=order.razorpay_payment_link_url,
+        payment_status=order.payment_status, payment_link_url=order.razorpay_payment_link_url, deal_id=order.deal_id,
         items=[
             {"product_retailer_id": i.product_retailer_id, "product_name": i.product_name, "quantity": i.quantity,
              "item_price": float(i.item_price) if i.item_price is not None else None, "currency": i.currency}
@@ -237,3 +237,63 @@ async def receive_waba_order_payment_webhook(request: Request, db: Session = Dep
             pass
     db.commit()
     return {"status": "ok"}
+
+
+_ABANDONED_CART_WINDOW = timedelta(hours=24)
+_ABANDONED_CART_MESSAGE = "Still interested? Your items are waiting -- reply here if you'd like to complete your order."
+
+
+def _has_reminded(message: ConversationMessage) -> bool:
+    return bool((message.payload or {}).get("cart_reminder_sent"))
+
+
+def send_abandoned_cart_reminders() -> None:
+    """The scheduled runner (main.py's lifespan, hourly) -- Meta emits no cart-abandonment webhook
+    at all (confirmed in Addendum 14's own research), and unlike every India BSP competitor
+    researched there, this platform has no e-commerce-platform backend to infer abandonment from
+    either. The honest signal available: a product/product_list message was sent and no WabaOrder
+    followed from that same conversation within the window below -- weaker than a real cart-state
+    event, a real and disclosed limitation, not hidden. Owns its own DB session since it runs
+    outside any request context, same shape as catalog_sync.sync_all_catalogs."""
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - _ABANDONED_CART_WINDOW
+        # Candidates: outbound product/product_list sends old enough that any resulting order
+        # would already have arrived, not yet reminded. A tighter lower bound (say, 7 days) would
+        # be a reasonable follow-on to avoid resurfacing very old sends forever; not added here
+        # since nothing in this codebase yet prunes ConversationMessage rows that old anyway.
+        candidates = db.scalars(
+            select(ConversationMessage).where(
+                ConversationMessage.direction == "outbound",
+                ConversationMessage.message_type.in_(("product", "product_list")),
+                ConversationMessage.created_at <= cutoff,
+            ).order_by(ConversationMessage.created_at.desc()),
+        ).all()
+        for message in candidates:
+            if _has_reminded(message):
+                continue
+            conversation = db.get(Conversation, message.conversation_id)
+            if not conversation:
+                continue
+            # An order created any time after this product message (not just within the window)
+            # counts as "didn't abandon" -- a customer who takes 2 days to check out shouldn't get
+            # a reminder for an order they already placed.
+            has_order = db.scalar(
+                select(WabaOrder.id).where(WabaOrder.conversation_id == conversation.id, WabaOrder.created_at >= message.created_at).limit(1),
+            )
+            message.payload = {**(message.payload or {}), "cart_reminder_sent": True}
+            if has_order:
+                continue
+            contact = db.get(Contact, conversation.contact_id)
+            if not contact or not contact.wa_id:
+                continue
+            try:
+                send_whatsapp_text(db, conversation.entity_id, contact.wa_id, _ABANDONED_CART_MESSAGE, sent_by_user_id=None)
+            except (DomainError, MetaApiError):
+                logger.info("abandoned cart reminder: could not send for conversation_id=%s", conversation.id)
+        db.commit()
+    except Exception:
+        logger.warning("abandoned cart reminder job failed", exc_info=True)
+        db.rollback()
+    finally:
+        db.close()

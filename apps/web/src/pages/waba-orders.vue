@@ -25,6 +25,7 @@ type Order = {
   status_updated_at: string | null
   payment_status: string
   payment_link_url: string | null
+  deal_id: string | null
   items: OrderItem[]
 }
 
@@ -105,6 +106,45 @@ async function requestPayment(order: Order) {
   }
 }
 
+const linkingDealId = ref<string | null>(null)
+
+async function linkToDeal(order: Order) {
+  linkingDealId.value = order.id
+  updateError.value = ''
+  try {
+    const updated = await $api<Order>(`/v1/crm/waba-orders/${order.id}/link-deal`, { method: 'POST' })
+    const index = orders.value.findIndex(o => o.id === order.id)
+    if (index !== -1)
+      orders.value[index] = updated
+  }
+  catch (error: any) {
+    updateError.value = extractErrorMessage(error, 'Could not link this order to a deal.')
+  }
+  finally {
+    linkingDealId.value = null
+  }
+}
+
+const convertingQuoteId = ref<string | null>(null)
+const quoteSuccessMessage = ref('')
+
+async function convertToQuote(order: Order) {
+  convertingQuoteId.value = order.id
+  updateError.value = ''
+  quoteSuccessMessage.value = ''
+  try {
+    const quote = await $api<{ id: string, quote_number: string | null }>(`/v1/crm/waba-orders/${order.id}/convert-to-quote`, { method: 'POST' })
+    quoteSuccessMessage.value = `Quote ${quote.quote_number || quote.id} created.`
+    await load()
+  }
+  catch (error: any) {
+    updateError.value = extractErrorMessage(error, 'Could not create a quote from this order.')
+  }
+  finally {
+    convertingQuoteId.value = null
+  }
+}
+
 watch(statusFilter, load)
 onMounted(load)
 </script>
@@ -131,6 +171,9 @@ onMounted(load)
   </VAlert>
   <VAlert v-if="updateError" type="error" variant="tonal" class="mb-4" closable @click:close="updateError = ''">
     {{ updateError }}
+  </VAlert>
+  <VAlert v-if="quoteSuccessMessage" type="success" variant="tonal" class="mb-4" closable @click:close="quoteSuccessMessage = ''">
+    {{ quoteSuccessMessage }}
   </VAlert>
 
   <VProgressLinear v-if="loading" indeterminate color="primary" class="mb-4" />
@@ -199,6 +242,23 @@ onMounted(load)
                 <span v-if="order.payment_link_url" class="text-caption text-medium-emphasis">
                   Link sent: <a :href="order.payment_link_url" target="_blank" rel="noopener">{{ order.payment_link_url }}</a>
                 </span>
+              </div>
+              <div class="d-flex align-center ga-3 mb-3">
+                <VBtn
+                  v-if="!order.deal_id" size="small" variant="tonal"
+                  :loading="linkingDealId === order.id" @click="linkToDeal(order)"
+                >
+                  Link to deal
+                </VBtn>
+                <RouterLink v-else :to="{ name: 'crm-deals-id', params: { id: order.deal_id } }" class="text-caption">
+                  View linked deal
+                </RouterLink>
+                <VBtn
+                  size="small" variant="tonal"
+                  :loading="convertingQuoteId === order.id" @click="convertToQuote(order)"
+                >
+                  Convert to quote
+                </VBtn>
               </div>
               <VTable density="compact">
                 <thead>

@@ -535,6 +535,12 @@ class WabaOrder(Base):
     razorpay_payment_link_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     razorpay_payment_link_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
     payment_status: Mapped[str] = mapped_column(String(20), default="none")
+    # CRM linkage (Addendum 14 Phase 4) -- an order can be attached to a Deal (auto-linked to the
+    # contact's existing open deal, or created fresh) so its value/history shows up in the
+    # pipeline, and a Quote/Invoice can be generated from its line items. Nullable: an order never
+    # requires a CRM plan to exist, only to be linked -- matches this platform's own WABA-or-CRM
+    # (either one) gating decision for webchat, extended here to commerce.
+    deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), nullable=True)
 
 
 class WabaOrderItem(Base):

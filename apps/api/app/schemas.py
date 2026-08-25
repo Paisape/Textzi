@@ -1458,6 +1458,7 @@ class WabaOrderOut(BaseModel):
     status_updated_at: str | None = None
     payment_status: str = "none"
     payment_link_url: str | None = None
+    deal_id: str | None = None
     items: list[WabaOrderItemOut]
 
 

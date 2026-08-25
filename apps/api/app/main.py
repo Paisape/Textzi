@@ -43,7 +43,7 @@ from .two_factor import router as two_factor_router
 from .waba import router as waba_router
 from .waba_campaigns import router as waba_campaigns_router, run_due_campaigns
 from .waba_inbox import router as waba_inbox_router
-from .waba_orders import router as waba_orders_router, webhook_router as waba_orders_webhook_router
+from .waba_orders import router as waba_orders_router, send_abandoned_cart_reminders, webhook_router as waba_orders_webhook_router
 from .waba_realtime import router as waba_realtime_router
 from .waba_reports import router as waba_reports_router
 from .waba_webhooks import router as waba_webhooks_router
@@ -111,8 +111,11 @@ async def lifespan(_: FastAPI):
     # mirror close to Meta's own catalog for the agent-inbox product picker. Hourly, same
     # reasoning as the CRM sequence runner: granular enough, cheap enough to just poll.
     scheduler.add_job(sync_all_catalogs, IntervalTrigger(hours=1), id="catalog_sync_job", misfire_grace_time=3600)
+    # WhatsApp Commerce abandoned-cart reminders (Addendum 14 Phase 4) -- hourly is enough
+    # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
+    scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, and hourly catalog sync")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly catalog sync, and hourly abandoned-cart reminders")
 
     yield
 
