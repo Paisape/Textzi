@@ -515,13 +515,20 @@ def import_contacts(file: UploadFile = File(...), user: User = Depends(require_u
                 company = Company(entity_id=entity.id, name=company_name)
                 db.add(company)
                 try:
-                    db.flush()
+                    # A savepoint, not the whole session -- this loop defers its one real commit
+                    # to the very end (line ~531), so every earlier row's already-added CrmContact
+                    # is still pending in the session at this point. A plain db.rollback() here
+                    # would discard all of them along with this row's failed Company insert, while
+                    # `created` keeps counting them as if they'd persisted. begin_nested()'s own
+                    # rollback only undoes what happened since this savepoint -- this row's Company
+                    # insert -- leaving every prior row's pending work untouched.
+                    with db.begin_nested():
+                        db.flush()
                 except IntegrityError:
                     # Two concurrent imports/creates for the same company name -- re-fetch rather
                     # than crash. No DB-level unique constraint backs this (unlike phone/email,
                     # two real companies can legitimately share a name), so this only closes the
                     # race within this same flush, not a hard guarantee across all writers.
-                    db.rollback()
                     company = db.scalar(select(Company).where(Company.entity_id == entity.id, Company.name == company_name))
                     if not company:
                         raise

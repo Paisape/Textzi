@@ -753,26 +753,44 @@ def flag_refunded_payment(db: Session, order: PaymentOrder, entity: Entity, paym
     if credits_to_reverse is None and order.price_per_sms:
         credits_to_reverse = float(order.amount) / float(order.price_per_sms)
     order.status = "refunded"
-    reversed_credit = False
-    if credits_to_reverse:
+    # Three real outcomes here, not the two a plain "reversed or not" flag can express: nothing
+    # was ever credited for this order (credits_to_reverse is None or exactly 0 -- correct,
+    # unremarkable, not something a human needs to look at); a reversal was attempted and
+    # succeeded; or a reversal was attempted and failed (balance already spent elsewhere -- the
+    # one case that actually needs manual review). `if credits_to_reverse:` used to conflate the
+    # first case with the third, sending a "needs manual review" alert for an order that had
+    # nothing to reverse in the first place.
+    if not credits_to_reverse:
+        reversal_outcome = "not_applicable"
+    else:
         try:
             debit_wallet(db, entity.id, credits_to_reverse, reference=f"refund:{payment_id}")
-            reversed_credit = True
+            reversal_outcome = "reversed"
         except DomainError:
-            pass
+            reversal_outcome = "failed"
+    reversal_log_text = {
+        "not_applicable": "no wallet credit was ever applied for this order, nothing to reverse",
+        "reversed": "applied",
+        "failed": "skipped -- insufficient balance, needs manual review",
+    }[reversal_outcome]
     log_activity(
         db, entity.organization_id, "payment_flagged_refunded",
-        f"Payment order {order.id} refunded on Razorpay: {reason} (wallet reversal {'applied' if reversed_credit else 'skipped -- insufficient balance, needs manual review'})",
+        f"Payment order {order.id} refunded on Razorpay: {reason} (wallet reversal {reversal_log_text})",
         user_id=user.id if user else None, actor_email=user.email if user else None,
     )
     info = get_platform_company_info(db)
+    reversal_email_text = {
+        "not_applicable": "No wallet credit was ever applied for this order, so there was nothing to reverse.",
+        "reversed": "The wallet credit was automatically reversed.",
+        "failed": "The wallet credit could NOT be automatically reversed (balance already spent) -- review and adjust manually.",
+    }[reversal_outcome]
     send_email(
         db, to=info.support_email,
         subject=f"[Review] Payment order {order.id} was refunded on Razorpay",
         html_body=render_email(
             "A previously-paid order was refunded",
             f"<p>Order <strong>{order.id}</strong> (entity {entity.id}) shows as refunded on Razorpay: {reason}</p>"
-            f"<p>{'The wallet credit was automatically reversed.' if reversed_credit else 'The wallet credit could NOT be automatically reversed (balance already spent) -- review and adjust manually.'}</p>",
+            f"<p>{reversal_email_text}</p>",
         ),
     )
 
