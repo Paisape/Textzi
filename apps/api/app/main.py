@@ -49,7 +49,7 @@ from .waba_reports import router as waba_reports_router
 from .waba_webhooks import router as waba_webhooks_router
 from .wallet import router as wallet_router
 from .webchat import router as webchat_router
-from .webchat_public import router as webchat_public_router
+from .webchat_public import WebchatCorsMiddleware, router as webchat_public_router
 from .webchat_realtime import router as webchat_realtime_router
 from .webhooks import router as webhooks_router
 from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
@@ -124,6 +124,13 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
+# Added after CORSMiddleware above -- Starlette runs middleware in reverse-add order (last added
+# wraps outermost, sees the request first), so this sees every /v1/public/webchat/* request before
+# CORSMiddleware's own static web_origin-only check would otherwise reject it. See
+# webchat_public.py's own module docstring for why this exists (a real, verified bug: every widget
+# fetch() call from a real third-party embed site was silently blocked by the app's own CORS
+# policy, confirmed via a live Playwright browser test against this container).
+app.add_middleware(WebchatCorsMiddleware)
 app.include_router(admin_router)
 app.include_router(auth_router)
 app.include_router(catalog_sync_router)

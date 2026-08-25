@@ -37,6 +37,79 @@ WIDGET_JS = r"""
     }).then(function (r) { return r.json(); });
   }
 
+  // Turnstile -- send_visitor_message on the backend requires a token whenever a platform secret
+  // is configured (fails closed outside development, same posture as every other public form in
+  // this codebase). Invisible mode (no visible checkbox) since the widget has no spare UI real
+  // estate for one. Rendered once with execution:'execute' (token generated only when explicitly
+  // triggered, not automatically on render) and one stable callback set at render time -- Cloudflare's
+  // per-widget callback is fixed at render(), so a fresh token per send comes from calling
+  // turnstile.execute(widgetId) again (implicitly resetting) and awaiting that same callback,
+  // tracked via a module-scoped pending-resolver rather than passing a new callback each time.
+  var turnstileWidgetId = null;
+  var turnstileSetupPromise = null;
+  var turnstilePendingResolve = null;
+
+  function loadTurnstileScript() {
+    if (window.turnstile) { return Promise.resolve(); }
+    if (window.__textziTurnstileLoading) { return window.__textziTurnstileLoading; }
+    window.__textziTurnstileLoading = new Promise(function (resolve) {
+      var el = document.createElement('script');
+      el.src = 'https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit';
+      el.async = true;
+      el.onload = function () { resolve(); };
+      el.onerror = function () { resolve(); };
+      document.head.appendChild(el);
+    });
+    return window.__textziTurnstileLoading;
+  }
+
+  function resolveTurnstilePending(token) {
+    if (turnstilePendingResolve) {
+      var resolve = turnstilePendingResolve;
+      turnstilePendingResolve = null;
+      resolve(token || '');
+    }
+  }
+
+  function setupTurnstile() {
+    if (turnstileSetupPromise) { return turnstileSetupPromise; }
+    turnstileSetupPromise = fetch(apiOrigin + '/v1/public/webchat/turnstile-config').then(function (r) { return r.json(); })
+      .then(function (config) {
+        if (!config || !config.site_key) { return null; }
+        return loadTurnstileScript().then(function () {
+          if (!window.turnstile) { return null; }
+          var container = document.createElement('div');
+          container.style.display = 'none';
+          document.body.appendChild(container);
+          turnstileWidgetId = window.turnstile.render(container, {
+            sitekey: config.site_key, size: 'invisible', execution: 'execute',
+            callback: function (token) { resolveTurnstilePending(token); },
+            'error-callback': function () { resolveTurnstilePending(''); },
+            'expired-callback': function () { resolveTurnstilePending(''); },
+          });
+          return turnstileWidgetId;
+        });
+      })
+      .catch(function () { return null; });
+    return turnstileSetupPromise;
+  }
+
+  // Resolves to a fresh token for one send, or '' if Turnstile isn't configured/failed to load --
+  // an empty token still reaches the backend, which then fails closed exactly as if this fix had
+  // never shipped (no worse than before, just correctly gated instead of silently broken).
+  function getTurnstileToken() {
+    return setupTurnstile().then(function (widgetId) {
+      if (!widgetId || !window.turnstile) { return ''; }
+      return new Promise(function (resolve) {
+        turnstilePendingResolve = resolve;
+        try {
+          window.turnstile.execute(widgetId);
+        } catch (e) { resolveTurnstilePending(''); return; }
+        setTimeout(function () { resolveTurnstilePending(''); }, 8000);
+      });
+    });
+  }
+
   function connectSocket() {
     var wsScheme = apiOrigin.indexOf('https') === 0 ? 'wss' : 'ws';
     var wsUrl = wsScheme + '://' + apiOrigin.replace(/^https?:\/\//, '') + '/v1/public/webchat/' + widgetKey + '/ws?visitor_id=' + encodeURIComponent(visitorId);
@@ -302,7 +375,9 @@ WIDGET_JS = r"""
     appendRichMessage(body, 'visitor');
     input.innerHTML = '';
     updatePlaceholderState();
-    post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body }).then(function () {
+    getTurnstileToken().then(function (token) {
+      return post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body, turnstile_token: token || null });
+    }).then(function () {
       if (!ws) { connectSocket(); }
     });
   }
@@ -329,7 +404,9 @@ WIDGET_JS = r"""
     var email = offlineEmailInput.value.trim();
     if (!body || !email) { return; }
     offlineSendBtn.disabled = true;
-    post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body, name: name || null, email: email }).then(function () {
+    getTurnstileToken().then(function (token) {
+      return post('/v1/public/webchat/' + widgetKey + '/message', { visitor_id: visitorId, body: body, name: name || null, email: email, turnstile_token: token || null });
+    }).then(function () {
       state.offlineCaptured = true;
       thread.innerHTML = '';
       appendMessage(body, 'visitor');

@@ -2,12 +2,20 @@
 on a third-party website, plus the widget script itself (GET /widget.js -- a plain string
 constant, no build step, deliberately framework-free since it has to run inside an arbitrary
 third-party page and stay tiny). Same posture as crm_public.py/public.py: no require_user
-anywhere in this file. Origin-checked against WebchatWidgetSettings.allowed_origins on every call,
-since (confirmed via research this session) a WebSocket handshake isn't covered by the app's
-regular CORSMiddleware the way a normal HTTP request is -- for the plain HTTP endpoints here,
-standard CORSMiddleware DOES apply, but the Origin check is done manually anyway so the same
-allowed_origins list is the single source of truth for both the HTTP and WebSocket paths, not two
-separate mechanisms to keep in sync."""
+anywhere in this file. Origin-checked against WebchatWidgetSettings.allowed_origins on every call
+-- this is the real security boundary, not the app's own CORSMiddleware (main.py's, scoped to
+settings.web_origin -- Textzi's own dashboard -- which is a different, unrelated origin from
+every customer's own website the widget actually gets embedded on). Confirmed via a real browser
+(Playwright) against a live container: the plain HTTP endpoints here (unlike the WebSocket
+handshake below, which browsers never subject to CORS at all) DO get a real preflight from the
+browser, and main.py's CORSMiddleware answered it "Disallowed CORS origin" for anything but
+web_origin -- meaning every fetch() call this widget makes from a real third-party site was
+silently blocked before _check_origin below ever got a chance to run. WebchatCorsMiddleware fixes
+this: it intercepts only this router's own path prefix, does the identical allowed_origins lookup
+_check_origin does (same DB-backed allowlist, same fail-closed-on-unconfigured posture), and
+issues its own CORS response/headers for exactly the origins that check already approves --
+every other route in the app keeps going through main.py's CORSMiddleware exactly as before,
+untouched."""
 import logging
 import mimetypes
 from datetime import datetime, timezone
@@ -16,13 +24,15 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Resp
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp
 
 from . import waba_media
-from .database import get_db
+from .database import SessionLocal, get_db
 from .geoip import lookup_geo
 from .models import Contact, Conversation, ConversationMessage, CsatResponse, TicketGroup, WebchatVisit, WebchatWidgetSettings
-from .schemas import WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
-from .services import client_ip, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
+from .schemas import PublicTurnstileConfigOut, WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
+from .services import client_ip, get_platform_turnstile_settings, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
 from .turnstile import require_turnstile
 from .waba_realtime import message_payload, publish_event
 from .webchat_widget_js import WIDGET_JS
@@ -31,10 +41,86 @@ logger = logging.getLogger("textzi.webchat")
 
 router = APIRouter(prefix="/v1/public/webchat", tags=["webchat"])
 
+_PUBLIC_PREFIX = "/v1/public/webchat/"
+
+
+_ORIGIN_AGNOSTIC_PATHS = {"/v1/public/webchat/widget.js", "/v1/public/webchat/turnstile-config"}
+
+
+def _origin_allowed_for_path(db: Session, path: str, origin: str | None) -> bool:
+    """Same allowlist _check_origin enforces inside the route handlers -- kept as its own tiny
+    function (not a call into _check_origin, which needs a WebchatWidgetSettings row + raises
+    HTTPException) since the middleware runs before routing and only needs a yes/no answer to
+    decide the CORS headers, not to actually reject the request (that's still _check_origin's job,
+    inside the handler, for the real 403). GET /widget.js and GET /turnstile-config have no
+    widget_key in their path and are meant to be reachable by any site regardless -- neither
+    carries a secret (the widget script is public by nature; the Turnstile site key is designed to
+    be shipped to every visitor's browser, same reasoning as public.py's own turnstile-config
+    route) -- so both are excluded from the per-widget-key origin check entirely."""
+    if path in _ORIGIN_AGNOSTIC_PATHS:
+        return True
+    if not origin:
+        return False
+    parts = path[len(_PUBLIC_PREFIX):].split("/", 1)
+    widget_key = parts[0] if parts else None
+    if not widget_key:
+        return False
+    settings_row = db.scalar(select(WebchatWidgetSettings).where(WebchatWidgetSettings.widget_key == widget_key))
+    return bool(settings_row and settings_row.allowed_origins and origin in settings_row.allowed_origins)
+
+
+class WebchatCorsMiddleware(BaseHTTPMiddleware):
+    """Registered in main.py ahead of (i.e. wrapping outside) the app's own CORSMiddleware, so it
+    sees the request first for this one path prefix. Passes every other path straight through
+    untouched. Owns its own short-lived DB session per request (matches the shape of every other
+    place in this codebase that needs a session outside the normal Depends(get_db) request scope,
+    e.g. catalog_sync.sync_all_catalogs)."""
+    def __init__(self, app: ASGIApp):
+        super().__init__(app)
+
+    async def dispatch(self, request: Request, call_next):
+        if not request.url.path.startswith(_PUBLIC_PREFIX):
+            return await call_next(request)
+
+        origin = request.headers.get("origin")
+        db = SessionLocal()
+        try:
+            allowed = _origin_allowed_for_path(db, request.url.path, origin)
+        finally:
+            db.close()
+
+        if request.method == "OPTIONS":
+            if not allowed:
+                return Response(status_code=400, content="Disallowed CORS origin")
+            return Response(status_code=200, headers={
+                "Access-Control-Allow-Origin": origin or "*",
+                "Access-Control-Allow-Methods": "GET, POST, PATCH",
+                "Access-Control-Allow-Headers": request.headers.get("access-control-request-headers", "*"),
+                "Access-Control-Max-Age": "600",
+                "Vary": "Origin",
+            })
+
+        response = await call_next(request)
+        if allowed and origin:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Vary"] = "Origin"
+        return response
+
 
 @router.get("/widget.js")
 def get_widget_script():
     return Response(content=WIDGET_JS, media_type="application/javascript")
+
+
+@router.get("/turnstile-config", response_model=PublicTurnstileConfigOut)
+def get_widget_turnstile_config(db: Session = Depends(get_db)):
+    """A webchat-scoped mirror of public.py's own /v1/public/turnstile-config -- needed because
+    that route isn't covered by WebchatCorsMiddleware (which only intercepts this router's own
+    path prefix), so a fetch() call to it from a real third-party embed site hits the exact same
+    CORS wall this whole module exists to work around. Same site-key-isn't-a-secret reasoning as
+    the original route; this one just lives somewhere the widget can actually reach it from."""
+    site_key, _ = get_platform_turnstile_settings(db)
+    return PublicTurnstileConfigOut(site_key=site_key)
 
 
 def _widget_settings(db: Session, widget_key: str) -> WebchatWidgetSettings:
