@@ -182,6 +182,32 @@ def record_visit(widget_key: str, payload: WebchatVisitRequest, request: Request
     )
 
 
+@router.get("/{widget_key}/history")
+def get_visitor_history(widget_key: str, visitor_id: str, request: Request, db: Session = Depends(get_db)):
+    """Lets a returning visitor (or, per the in-app Support page, an authenticated dashboard user
+    using their own user id as visitor_id) reload prior messages instead of losing them on refresh
+    -- the widget itself never needed this (a fresh embed session is expected to start blank), but
+    the Support page is a page a customer navigates back to and expects their own history to still
+    be there, the same way any other inbox page in this app works."""
+    settings_row = _widget_settings(db, widget_key)
+    _check_origin(request, settings_row)
+
+    contact = db.scalar(select(Contact).where(Contact.entity_id == settings_row.entity_id, Contact.visitor_id == visitor_id))
+    if not contact:
+        return {"messages": []}
+    conversation = db.scalar(
+        select(Conversation).where(Conversation.entity_id == settings_row.entity_id, Conversation.contact_id == contact.id, Conversation.channel == "webchat"),
+    )
+    if not conversation:
+        return {"messages": []}
+    messages = db.scalars(
+        select(ConversationMessage)
+        .where(ConversationMessage.conversation_id == conversation.id, ConversationMessage.is_private.is_(False))
+        .order_by(ConversationMessage.created_at),
+    ).all()
+    return {"messages": [message_payload(m) for m in messages]}
+
+
 def _find_or_create_webchat_contact(db: Session, entity_id: str, visitor_id: str, name: str | None, email: str | None) -> Contact:
     contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.visitor_id == visitor_id))
     if contact:

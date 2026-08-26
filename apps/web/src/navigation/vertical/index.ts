@@ -229,6 +229,11 @@ export function customerNav(status: { wabaActive: boolean, crmActive: boolean },
       icon: { icon: 'tabler-apps' },
     },
     {
+      title: 'Support',
+      to: { name: 'support' },
+      icon: { icon: 'tabler-headset' },
+    },
+    {
       title: 'Wallet & Billing',
       to: { name: 'wallet' },
       icon: { icon: 'tabler-wallet' },
