@@ -7,6 +7,7 @@ still all that's persisted either way — codes are never stored in plaintext)."
 import hmac
 import html
 import logging
+import secrets
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -507,6 +508,22 @@ def me(user: User = Depends(require_user), db: Session = Depends(get_db)):
         status=user.status, organization_id=user.organization_id, role=user.role, profile_completed=profile_completed,
         channel_scope=user.channel_scope, page_scope=user.page_scope,
     )
+
+
+@router.get("/support-visitor-token")
+def get_support_visitor_token(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """The in-app Support page (support.vue) needs a webchat visitor_id for this user -- but
+    webchat_public.py's endpoints authorize purely by visitor_id (correct for an anonymous website
+    visitor, whose id is a private client-generated UUID nobody else can derive). This user's own
+    id is NOT safe to reuse directly for that: it's visible/derivable elsewhere, so any other
+    logged-in user could pass it as visitor_id and read or post into this user's support
+    conversation. Returning a random opaque token here, generated lazily and only ever exposed
+    through this authenticated endpoint, keeps webchat_public.py's existing "visitor_id is the
+    only credential" model safe for this reused case too."""
+    if not user.support_visitor_token:
+        user.support_visitor_token = secrets.token_urlsafe(32)
+        db.commit()
+    return {"visitor_id": f"user-{user.support_visitor_token}"}
 
 
 @router.post("/profile-change-requests", response_model=ProfileChangeRequestOut)

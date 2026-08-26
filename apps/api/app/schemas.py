@@ -2820,6 +2820,23 @@ class WebchatMessageResponse(BaseModel):
     message_id: str
 
 
+class WebchatHistoryMessageOut(BaseModel):
+    # Deliberately narrower than waba_realtime.message_payload's full dict -- this is returned to
+    # the visitor's own browser (or, for the Support page, an authenticated dashboard user), so an
+    # internal agent identifier like sent_by_user_id has no reason to leave the server.
+    id: str
+    direction: str
+    message_type: str
+    body: str | None
+    media_url: str | None
+    status: str
+    created_at: str
+
+
+class WebchatHistoryResponse(BaseModel):
+    messages: list[WebchatHistoryMessageOut]
+
+
 class WebchatCsatRequest(BaseModel):
     visitor_id: str = Field(min_length=1, max_length=64)
     rating: int = Field(ge=1, le=5)

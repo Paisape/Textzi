@@ -28,7 +28,13 @@ const apiBase = computed(() => {
   return base.startsWith('http') ? base : window.location.origin
 })
 
-const visitorId = computed(() => `user-${authStore.profile?.id}`)
+// An opaque, unguessable per-user token -- NOT derived from authStore.profile.id, which is
+// visible/derivable elsewhere and would let any other logged-in user read or post into this
+// user's support conversation by passing it as visitor_id (webchat_public.py authorizes purely by
+// visitor_id, correct for an anonymous website visitor's private client-generated UUID, unsafe for
+// a value guessable from this user's own id). Fetched fresh each visit rather than cached, since
+// it's cheap and avoids ever persisting it in localStorage/etc.
+const visitorId = ref<string | null>(null)
 const messages = ref<WebchatMessage[]>([])
 const loadError = ref('')
 const loading = ref(true)
@@ -44,10 +50,18 @@ function scrollToBottom() {
   })
 }
 
+async function ensureVisitorId() {
+  if (visitorId.value)
+    return
+  const data = await $api<{ visitor_id: string }>('/v1/auth/support-visitor-token')
+  visitorId.value = data.visitor_id
+}
+
 async function loadHistory() {
   loading.value = true
   loadError.value = ''
   try {
+    await ensureVisitorId()
     const data = await $api<{ messages: WebchatMessage[] }>(`${apiBase.value}/v1/public/webchat/${TEXTZI_SUPPORT_WIDGET_KEY}/history`, {
       query: { visitor_id: visitorId.value },
     })
@@ -64,7 +78,7 @@ async function loadHistory() {
 
 async function onSend() {
   const body = draft.value.trim()
-  if (!body)
+  if (!body || !visitorId.value)
     return
   sending.value = true
   sendError.value = ''
@@ -92,6 +106,8 @@ async function onSend() {
 let socket: WebSocket | null = null
 
 function connectRealtime() {
+  if (!visitorId.value)
+    return
   const wsBase = apiBase.value.replace(/^http/, 'ws')
   socket = new WebSocket(`${wsBase}/v1/public/webchat/${TEXTZI_SUPPORT_WIDGET_KEY}/ws?visitor_id=${encodeURIComponent(visitorId.value)}`)
   socket.onmessage = (event) => {
@@ -106,8 +122,8 @@ function connectRealtime() {
   }
 }
 
-onMounted(() => {
-  loadHistory()
+onMounted(async () => {
+  await loadHistory()
   connectRealtime()
 })
 

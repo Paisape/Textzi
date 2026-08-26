@@ -31,7 +31,7 @@ from . import waba_media
 from .database import SessionLocal, get_db
 from .geoip import lookup_geo
 from .models import Contact, Conversation, ConversationMessage, CsatResponse, TicketGroup, WebchatVisit, WebchatWidgetSettings
-from .schemas import PublicTurnstileConfigOut, WebchatCsatRequest, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
+from .schemas import PublicTurnstileConfigOut, WebchatCsatRequest, WebchatHistoryMessageOut, WebchatHistoryResponse, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
 from .services import client_ip, get_platform_turnstile_settings, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
 from .turnstile import require_turnstile
 from .waba_realtime import message_payload, publish_event
@@ -182,30 +182,40 @@ def record_visit(widget_key: str, payload: WebchatVisitRequest, request: Request
     )
 
 
-@router.get("/{widget_key}/history")
+@router.get("/{widget_key}/history", response_model=WebchatHistoryResponse)
 def get_visitor_history(widget_key: str, visitor_id: str, request: Request, db: Session = Depends(get_db)):
-    """Lets a returning visitor (or, per the in-app Support page, an authenticated dashboard user
-    using their own user id as visitor_id) reload prior messages instead of losing them on refresh
-    -- the widget itself never needed this (a fresh embed session is expected to start blank), but
-    the Support page is a page a customer navigates back to and expects their own history to still
-    be there, the same way any other inbox page in this app works."""
+    """Lets a returning visitor (or, per the in-app Support page, an authenticated dashboard user)
+    reload prior messages instead of losing them on refresh -- the widget itself never needed this
+    (a fresh embed session is expected to start blank), but the Support page is a page a customer
+    navigates back to and expects their own history to still be there, the same way any other
+    inbox page in this app works. Response is explicitly WebchatHistoryResponse, not the full
+    message_payload() dict every other realtime consumer gets -- that includes sent_by_user_id (an
+    internal agent id), which has no reason to reach a visitor's own browser. Authorization here is
+    still purely visitor_id, same as every other endpoint in this file -- callers MUST pass an
+    unguessable visitor_id (see auth.get_support_visitor_token for the Support page's own case)."""
     settings_row = _widget_settings(db, widget_key)
     _check_origin(request, settings_row)
 
     contact = db.scalar(select(Contact).where(Contact.entity_id == settings_row.entity_id, Contact.visitor_id == visitor_id))
     if not contact:
-        return {"messages": []}
+        return WebchatHistoryResponse(messages=[])
     conversation = db.scalar(
         select(Conversation).where(Conversation.entity_id == settings_row.entity_id, Conversation.contact_id == contact.id, Conversation.channel == "webchat"),
     )
     if not conversation:
-        return {"messages": []}
+        return WebchatHistoryResponse(messages=[])
     messages = db.scalars(
         select(ConversationMessage)
         .where(ConversationMessage.conversation_id == conversation.id, ConversationMessage.is_private.is_(False))
         .order_by(ConversationMessage.created_at),
     ).all()
-    return {"messages": [message_payload(m) for m in messages]}
+    return WebchatHistoryResponse(messages=[
+        WebchatHistoryMessageOut(
+            id=m.id, direction=m.direction, message_type=m.message_type, body=m.body,
+            media_url=m.media_url, status=m.status, created_at=m.created_at.isoformat(),
+        )
+        for m in messages
+    ])
 
 
 def _find_or_create_webchat_contact(db: Session, entity_id: str, visitor_id: str, name: str | None, email: str | None) -> Contact:

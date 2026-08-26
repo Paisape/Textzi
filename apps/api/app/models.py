@@ -96,6 +96,15 @@ class User(Base):
     # require_page_scope_for reject the matching backend endpoints directly, so a restricted
     # teammate can't bypass the UI by calling the API.
     page_scope: Mapped[list | None] = mapped_column(JSON, nullable=True)
+    # Opaque per-user identity for the in-app Support page's webchat visitor_id (support.vue).
+    # webchat_public.py's endpoints authorize purely by visitor_id (correct for an anonymous
+    # website visitor, whose visitor_id is a private client-generated UUID nobody else can derive)
+    # -- using this user's own id directly would have been guessable/enumerable by any other logged
+    # in user, letting them read or post into someone else's support conversation. Generated lazily
+    # (secrets.token_urlsafe(32), same convention as every other bearer-style token in this
+    # codebase) and only ever returned via an authenticated endpoint, never derivable from data
+    # visible elsewhere.
+    support_visitor_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
