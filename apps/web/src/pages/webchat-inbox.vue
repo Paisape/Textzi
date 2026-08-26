@@ -3,6 +3,13 @@ definePage({
   meta: {
     layout: 'default',
     layoutWrapperClasses: 'layout-content-width-fluid',
+    // Webchat itself is gated WABA-or-CRM (either channel unlocks it) but the focused-workspace
+    // router guard's meta.channel is single-valued -- same "pick one" precedent already set for
+    // tickets.vue (also WABA-or-CRM gated). Tagged 'waba' since this page now lives in
+    // WABA_NAV_ITEMS. A CRM-only-scoped teammate can't reach it via this route guard today, same
+    // pre-existing limitation tickets.vue already has for CRM-scoped access -- not introduced
+    // here, just inherited.
+    channel: 'waba',
   },
 })
 

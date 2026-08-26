@@ -8,6 +8,11 @@ export const WABA_NAV_ITEMS = [
     icon: { icon: 'tabler-messages' },
   },
   {
+    title: 'Website Chat',
+    to: { name: 'webchat-inbox' },
+    icon: { icon: 'tabler-message-circle' },
+  },
+  {
     title: 'Customers',
     to: { name: 'waba-customers' },
     icon: { icon: 'tabler-users' },
