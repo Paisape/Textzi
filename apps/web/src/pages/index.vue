@@ -12,13 +12,29 @@ const channelCards = [
   { icon: 'tabler-users-group', color: 'primary', title: 'CRM', desc: 'Pipelines, helpdesk, GST quotes, and live chat — connected to your WhatsApp conversations.', to: '/products/crm' },
 ]
 
-const features = [
-  { icon: 'tabler-brand-whatsapp', title: 'WhatsApp Business API', desc: 'Connect with customers on official WhatsApp Business API. Send templates, media and interactive messages.' },
-  { icon: 'tabler-messages', title: 'Bulk SMS (DLT Compliant)', desc: 'Send promotional and transactional SMS across India with full DLT compliance. Entity ID and template registration handled for you.' },
-  { icon: 'tabler-chart-funnel', title: 'CRM Pipeline & Helpdesk', desc: 'Track leads and deals through a real sales pipeline, and run a Freshdesk-style helpdesk with SLA and canned responses.' },
-  { icon: 'tabler-address-book', title: 'Contact Management', desc: 'Import, segment and manage your contacts effortlessly. Build targeted audience groups for personalised campaigns.' },
-  { icon: 'tabler-chart-line', title: 'Advanced Analytics', desc: 'Track delivery rates, read receipts, click-through rates and campaign performance with real-time dashboards.' },
-  { icon: 'tabler-bolt', title: 'Automation Builder', desc: 'Create powerful automated workflows with our visual drag-and-drop builder. No coding required.' },
+const showcaseFeatures = [
+  {
+    icon: 'tabler-arrow-big-right-lines',
+    title: 'A WhatsApp chat becomes a tracked deal',
+    desc: 'Convert any conversation into a lead or deal with one click — full chat history carries over, so your sales pipeline never starts from a blank contact card.',
+  },
+  {
+    icon: 'tabler-file-invoice',
+    title: 'GST-compliant quotes, sent where the chat is',
+    desc: 'Build a quote with correct CGST/SGST/IGST splits and send it as a WhatsApp document — the customer can accept it right there, no separate email thread.',
+  },
+  {
+    icon: 'tabler-headset',
+    title: 'One inbox for chat, tickets, and email',
+    desc: 'SLA timers, canned responses, and team assignment work the same way whether a customer messages you on WhatsApp, your website, or email.',
+  },
+]
+
+const supportingFeatures = [
+  { icon: 'tabler-address-book', title: 'Contact Management', desc: 'Import, segment and manage your contacts effortlessly.' },
+  { icon: 'tabler-chart-line', title: 'Advanced Analytics', desc: 'Delivery rates, read receipts, and campaign performance in real time.' },
+  { icon: 'tabler-bolt', title: 'Rule-Based Automation', desc: 'Auto-assign, auto-label, and route conversations — no black-box AI.' },
+  { icon: 'tabler-shield-check', title: 'DLT & Data Compliance', desc: 'Entity ID, Sender Header, and template registration handled for you.' },
 ]
 
 const steps = [
@@ -37,8 +53,8 @@ const trustPoints = [
 const trustStats = [
   { icon: 'tabler-map-2', label: 'Pan-India Coverage' },
   { icon: 'tabler-bolt', label: '99.9% Uptime' },
-  { icon: 'tabler-lock', label: 'GDPR Compliant' },
-  { icon: 'tabler-users', label: 'Built for Scale' },
+  { icon: 'tabler-lock', label: 'DPDP Act Ready' },
+  { icon: 'tabler-brand-whatsapp', label: 'Official Meta Cloud API' },
 ]
 
 const kpis = [
@@ -259,10 +275,10 @@ onUnmounted(() => {
               Built for Indian businesses
             </VChip>
             <h1 class="hero-title mb-4 hero-anim hero-anim-2">
-              WhatsApp, SMS &amp; CRM <span class="text-primary">on One Platform</span>
+              Every customer conversation, <span class="text-primary">one inbox, one pipeline</span>
             </h1>
             <p class="hero-subtitle mb-6 hero-anim hero-anim-3">
-              India's business messaging platform. Send campaigns on WhatsApp Business API and DLT-compliant SMS, and run your sales pipeline and helpdesk on a CRM connected to it all &mdash; from one dashboard, one API.
+              Textzi connects WhatsApp Business API, DLT-compliant SMS, and a real sales CRM in one platform — so a WhatsApp chat can become a tracked lead, a quote, and a closed deal without ever leaving the inbox.
             </p>
             <div class="d-flex flex-wrap gap-4 mb-4 hero-anim hero-anim-4">
               <VBtn
@@ -294,69 +310,116 @@ onUnmounted(() => {
             cols="12"
             md="6"
           >
-            <VCard
-              class="hero-preview-card hero-anim hero-anim-5 hero-float"
-              elevation="12"
-              rounded="lg"
-            >
-              <VCardText>
-                <div class="d-flex align-center gap-3 mb-4">
-                  <div class="font-weight-medium">
-                    Today across your channels
+            <div class="hero-mockup hero-anim hero-anim-5 hero-float">
+              <VCard
+                class="hero-mockup-card"
+                elevation="16"
+                rounded="lg"
+              >
+                <div class="hero-mockup-titlebar">
+                  <span class="hero-mockup-dot" />
+                  <span class="hero-mockup-dot" />
+                  <span class="hero-mockup-dot" />
+                  <span class="hero-mockup-titlebar-label">Inbox</span>
+                </div>
+                <div class="hero-mockup-row hero-mockup-row-active">
+                  <VAvatar
+                    color="success"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-brand-whatsapp"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <div class="hero-mockup-row-body">
+                    <div class="d-flex align-center justify-space-between">
+                      <span class="font-weight-medium">Priya Sharma</span>
+                      <span class="text-caption text-medium-emphasis">2m</span>
+                    </div>
+                    <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
+                      Can you share the GST invoice for order #4521?
+                    </p>
                   </div>
                 </div>
-                <VRow dense>
-                  <VCol cols="4">
-                    <div class="stat-tile stat-tile-primary text-center">
-                      <VIcon
-                        icon="tabler-messages"
-                        color="info"
-                        size="20"
-                        class="mb-1"
-                      />
-                      <div class="text-caption text-medium-emphasis">
-                        SMS Delivered
-                      </div>
-                      <div class="text-h6 font-weight-bold">
-                        98.5%
-                      </div>
+                <div class="hero-mockup-row">
+                  <VAvatar
+                    color="info"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-message-2"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <div class="hero-mockup-row-body">
+                    <div class="d-flex align-center justify-space-between">
+                      <span class="font-weight-medium">Rahul Verma</span>
+                      <span class="text-caption text-medium-emphasis">14m</span>
                     </div>
-                  </VCol>
-                  <VCol cols="4">
-                    <div class="stat-tile text-center">
-                      <VIcon
-                        icon="tabler-brand-whatsapp"
-                        color="success"
-                        size="20"
-                        class="mb-1"
-                      />
-                      <div class="text-caption text-medium-emphasis">
-                        WhatsApp Read
-                      </div>
-                      <div class="text-h6 font-weight-bold">
-                        72.3%
-                      </div>
-                    </div>
-                  </VCol>
-                  <VCol cols="4">
-                    <div class="stat-tile text-center">
-                      <VIcon
-                        icon="tabler-users-group"
+                    <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
+                      OTP delivered — thanks, that worked.
+                    </p>
+                  </div>
+                </div>
+                <div class="hero-mockup-row">
+                  <VAvatar
+                    color="primary"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-users-group"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <div class="hero-mockup-row-body">
+                    <div class="d-flex align-center justify-space-between">
+                      <span class="font-weight-medium">Ananya Textiles</span>
+                      <VChip
                         color="primary"
-                        size="20"
-                        class="mb-1"
-                      />
-                      <div class="text-caption text-medium-emphasis">
-                        Deals Open
-                      </div>
-                      <div class="text-h6 font-weight-bold">
-                        24
-                      </div>
+                        size="x-small"
+                        variant="tonal"
+                      >
+                        Deal · ₹85,000
+                      </VChip>
                     </div>
-                  </VCol>
-                </VRow>
-              </VCardText>
-            </VCard>
+                    <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
+                      Moved to "Proposal Sent" stage
+                    </p>
+                  </div>
+                </div>
+              </VCard>
+
+              <VCard
+                class="hero-mockup-toast"
+                elevation="10"
+                rounded="lg"
+              >
+                <VCardText class="d-flex align-center gap-3 py-3 px-4">
+                  <VAvatar
+                    color="success"
+                    variant="tonal"
+                    size="32"
+                  >
+                    <VIcon
+                      icon="tabler-check"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <div>
+                    <div class="text-body-2 font-weight-medium">
+                      Deal won
+                    </div>
+                    <div class="text-caption text-medium-emphasis">
+                      ₹1,20,000 · Ananya Textiles
+                    </div>
+                  </div>
+                </VCardText>
+              </VCard>
+            </div>
           </VCol>
         </VRow>
       </VContainer>
@@ -467,39 +530,41 @@ onUnmounted(() => {
             size="small"
             class="mb-3"
           >
-            Features
+            Why Textzi
           </VChip>
           <h2 class="text-h3 font-weight-bold mb-3">
-            Everything You Need to Scale Customer Communication
+            Built to Connect, Not Just Send
           </h2>
           <p class="text-medium-emphasis">
-            From WhatsApp Business API and DLT-compliant SMS to a full CRM pipeline, Textzi provides all the tools you need to engage customers effectively.
+            Most platforms stop at sending a message. Textzi carries the conversation through to a quote, a deal, and a resolved ticket.
           </p>
         </div>
 
-        <VRow>
+        <VRow class="mb-2">
           <VCol
-            v-for="(feature, index) in features"
+            v-for="(feature, index) in showcaseFeatures"
             :key="feature.title"
             cols="12"
-            sm="6"
             md="4"
             v-reveal="index"
           >
             <VCard
               variant="outlined"
-              class="feature-card"
+              class="showcase-card"
               height="100%"
             >
               <VCardText>
                 <VAvatar
                   color="primary"
-                  variant="tonal"
-                  size="48"
+                  variant="flat"
+                  size="52"
                   rounded="lg"
-                  class="mb-4 feature-icon"
+                  class="mb-5 showcase-icon"
                 >
-                  <VIcon :icon="feature.icon" />
+                  <VIcon
+                    :icon="feature.icon"
+                    size="26"
+                  />
                 </VAvatar>
                 <h3 class="text-h6 font-weight-bold mb-2">
                   {{ feature.title }}
@@ -509,6 +574,31 @@ onUnmounted(() => {
                 </p>
               </VCardText>
             </VCard>
+          </VCol>
+        </VRow>
+
+        <VRow>
+          <VCol
+            v-for="(feature, index) in supportingFeatures"
+            :key="feature.title"
+            cols="6"
+            md="3"
+            v-reveal="index"
+          >
+            <div class="supporting-feature">
+              <VIcon
+                :icon="feature.icon"
+                color="primary"
+                size="22"
+                class="mb-2"
+              />
+              <h4 class="text-body-1 font-weight-medium mb-1">
+                {{ feature.title }}
+              </h4>
+              <p class="text-caption text-medium-emphasis mb-0">
+                {{ feature.desc }}
+              </p>
+            </div>
           </VCol>
         </VRow>
       </VContainer>
@@ -1255,11 +1345,6 @@ onUnmounted(() => {
   max-inline-size: 34rem;
 }
 
-.hero-preview-card {
-  max-inline-size: 420px;
-  margin-inline: auto;
-}
-
 .hero-anim {
   opacity: 0;
   transform: translateY(20px);
@@ -1276,14 +1361,73 @@ onUnmounted(() => {
   animation: fade-in-up 0.7s ease forwards, float 6s ease-in-out 0.9s infinite;
 }
 
-.stat-tile {
-  padding: 12px;
-  border-radius: 10px;
-  background: rgba(var(--v-theme-on-surface), 0.04);
+.hero-mockup {
+  position: relative;
+  max-inline-size: 440px;
+  margin-inline: auto;
+  padding-block-end: 72px;
 }
 
-.stat-tile-primary {
-  background: rgba(var(--v-theme-primary), 0.1);
+.hero-mockup-card {
+  overflow: hidden;
+}
+
+.hero-mockup-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 16px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.hero-mockup-dot {
+  inline-size: 8px;
+  block-size: 8px;
+  border-radius: 50%;
+  background: rgba(var(--v-theme-on-surface), 0.15);
+}
+
+.hero-mockup-titlebar-label {
+  margin-inline-start: 8px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+}
+
+.hero-mockup-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+}
+
+.hero-mockup-row:last-child {
+  border-block-end: none;
+}
+
+.hero-mockup-row-active {
+  background: rgba(var(--v-theme-primary), 0.05);
+}
+
+.hero-mockup-row-body {
+  flex: 1 1 auto;
+  min-inline-size: 0;
+}
+
+.hero-mockup-snippet {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hero-mockup-toast {
+  position: absolute;
+  inset-block-end: 0;
+  inset-inline-start: 12px;
+  max-inline-size: 260px;
+  animation: fade-in-up 0.7s ease 0.9s backwards, float 6s ease-in-out 1.4s infinite;
 }
 
 .kpi-band {
@@ -1334,21 +1478,25 @@ onUnmounted(() => {
   font-weight: 500;
 }
 
-.feature-card {
+.showcase-card {
   transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 
-.feature-card:hover {
+.showcase-card:hover {
   transform: translateY(-6px);
-  box-shadow: 0 12px 28px rgba(var(--v-theme-on-surface), 0.12);
+  box-shadow: 0 16px 32px rgba(var(--v-theme-on-surface), 0.12);
 }
 
-.feature-card:hover .feature-icon {
-  transform: scale(1.1) rotate(-6deg);
-}
-
-.feature-icon {
+.showcase-icon {
   transition: transform 0.3s ease;
+}
+
+.showcase-card:hover .showcase-icon {
+  transform: scale(1.08);
+}
+
+.supporting-feature {
+  padding-block: 8px;
 }
 
 .step-col {
@@ -1558,6 +1706,7 @@ onUnmounted(() => {
   .hero-anim,
   .hero-float,
   .hero-blob,
+  .hero-mockup-toast,
   .cta-blob,
   .pricing-popular-badge,
   .reveal-init {
