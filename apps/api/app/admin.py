@@ -499,13 +499,14 @@ def update_channel_fees(channel: str, payload: ChannelFeeConfigUpdate, db: Sessi
     return ChannelFeeConfigOut(channel=fees.channel, subscription_price=float(fees.subscription_price), dlt_platform_fee=float(fees.dlt_platform_fee), dlt_service_fee=float(fees.dlt_service_fee), enabled=fees.enabled)
 
 
-_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect")
+_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect", "bank_transfer")
 
 
 @router.get("/payment-methods", response_model=list[PaymentMethodConfigOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_payment_methods(db: Session = Depends(get_db)):
     # razorpay_checkout defaults enabled (today's only method, must not silently disappear for
-    # existing customers); razorpay_smart_collect defaults disabled until an admin turns it on.
+    # existing customers); razorpay_smart_collect and bank_transfer both default disabled until an
+    # admin turns them on.
     configs = {c.payment_method: c for c in db.scalars(select(PlatformPaymentMethodConfig)).all()}
     return [
         PaymentMethodConfigOut(
