@@ -6,13 +6,19 @@ definePage({
   },
 })
 
+const channelCards = [
+  { icon: 'tabler-messages', color: 'info', title: 'SMS', desc: 'DLT-compliant bulk & transactional SMS across India, pay-as-you-go.', to: '/products/sms' },
+  { icon: 'tabler-brand-whatsapp', color: 'success', title: 'WhatsApp Business API', desc: 'Templates, catalog & commerce, and a shared team inbox on the official Cloud API.', to: '/products/whatsapp' },
+  { icon: 'tabler-users-group', color: 'primary', title: 'CRM', desc: 'Pipelines, helpdesk, GST quotes, and live chat — connected to your WhatsApp conversations.', to: '/products/crm' },
+]
+
 const features = [
   { icon: 'tabler-brand-whatsapp', title: 'WhatsApp Business API', desc: 'Connect with customers on official WhatsApp Business API. Send templates, media and interactive messages.' },
   { icon: 'tabler-messages', title: 'Bulk SMS (DLT Compliant)', desc: 'Send promotional and transactional SMS across India with full DLT compliance. Entity ID and template registration handled for you.' },
+  { icon: 'tabler-chart-funnel', title: 'CRM Pipeline & Helpdesk', desc: 'Track leads and deals through a real sales pipeline, and run a Freshdesk-style helpdesk with SLA and canned responses.' },
   { icon: 'tabler-address-book', title: 'Contact Management', desc: 'Import, segment and manage your contacts effortlessly. Build targeted audience groups for personalised campaigns.' },
   { icon: 'tabler-chart-line', title: 'Advanced Analytics', desc: 'Track delivery rates, read receipts, click-through rates and campaign performance with real-time dashboards.' },
   { icon: 'tabler-bolt', title: 'Automation Builder', desc: 'Create powerful automated workflows with our visual drag-and-drop builder. No coding required.' },
-  { icon: 'tabler-shield-check', title: 'Enterprise Security', desc: 'Bank-grade encryption, role-based access and complete data isolation for multi-tenant deployments.' },
 ]
 
 const steps = [
@@ -253,10 +259,10 @@ onUnmounted(() => {
               Built for Indian businesses
             </VChip>
             <h1 class="hero-title mb-4 hero-anim hero-anim-2">
-              Connect with Your Customers on <span class="text-primary">WhatsApp &amp; SMS</span>
+              WhatsApp, SMS &amp; CRM <span class="text-primary">on One Platform</span>
             </h1>
             <p class="hero-subtitle mb-6 hero-anim hero-anim-3">
-              India's business messaging platform. Send campaigns, automate conversations, and grow your business with the WhatsApp Business API and DLT-compliant SMS &mdash; from one dashboard, one API.
+              India's business messaging platform. Send campaigns on WhatsApp Business API and DLT-compliant SMS, and run your sales pipeline and helpdesk on a CRM connected to it all &mdash; from one dashboard, one API.
             </p>
             <div class="d-flex flex-wrap gap-4 mb-4 hero-anim hero-anim-4">
               <VBtn
@@ -295,44 +301,56 @@ onUnmounted(() => {
             >
               <VCardText>
                 <div class="d-flex align-center gap-3 mb-4">
-                  <VAvatar
-                    color="success"
-                    variant="tonal"
-                    size="40"
-                  >
-                    <VIcon icon="tabler-brand-whatsapp" />
-                  </VAvatar>
-                  <div>
-                    <div class="font-weight-medium">
-                      WhatsApp Messages
-                    </div>
-                    <div class="text-caption text-medium-emphasis">
-                      Today's stats
-                    </div>
-                  </div>
-                  <VSpacer />
-                  <div class="text-h5 font-weight-bold">
-                    12,450
+                  <div class="font-weight-medium">
+                    Today across your channels
                   </div>
                 </div>
                 <VRow dense>
-                  <VCol cols="6">
-                    <div class="stat-tile stat-tile-primary">
+                  <VCol cols="4">
+                    <div class="stat-tile stat-tile-primary text-center">
+                      <VIcon
+                        icon="tabler-messages"
+                        color="info"
+                        size="20"
+                        class="mb-1"
+                      />
                       <div class="text-caption text-medium-emphasis">
-                        Delivered
+                        SMS Delivered
                       </div>
                       <div class="text-h6 font-weight-bold">
                         98.5%
                       </div>
                     </div>
                   </VCol>
-                  <VCol cols="6">
-                    <div class="stat-tile">
+                  <VCol cols="4">
+                    <div class="stat-tile text-center">
+                      <VIcon
+                        icon="tabler-brand-whatsapp"
+                        color="success"
+                        size="20"
+                        class="mb-1"
+                      />
                       <div class="text-caption text-medium-emphasis">
-                        Read Rate
+                        WhatsApp Read
                       </div>
                       <div class="text-h6 font-weight-bold">
                         72.3%
+                      </div>
+                    </div>
+                  </VCol>
+                  <VCol cols="4">
+                    <div class="stat-tile text-center">
+                      <VIcon
+                        icon="tabler-users-group"
+                        color="primary"
+                        size="20"
+                        class="mb-1"
+                      />
+                      <div class="text-caption text-medium-emphasis">
+                        Deals Open
+                      </div>
+                      <div class="text-h6 font-weight-bold">
+                        24
                       </div>
                     </div>
                   </VCol>
@@ -368,9 +386,75 @@ onUnmounted(() => {
       </VContainer>
     </section>
 
+    <section class="section-py">
+      <VContainer>
+        <div
+          v-reveal
+          class="text-center section-heading"
+        >
+          <VChip
+            color="primary"
+            variant="tonal"
+            size="small"
+            class="mb-3"
+          >
+            Channels
+          </VChip>
+          <h2 class="text-h3 font-weight-bold mb-3">
+            One Platform, Three Ways to Reach Customers
+          </h2>
+        </div>
+
+        <VRow>
+          <VCol
+            v-for="(channel, index) in channelCards"
+            :key="channel.title"
+            cols="12"
+            md="4"
+            v-reveal="index"
+          >
+            <RouterLink
+              :to="channel.to"
+              class="channel-card-link"
+            >
+              <VCard
+                variant="outlined"
+                class="channel-card"
+                height="100%"
+              >
+                <VCardText>
+                  <VAvatar
+                    :color="channel.color"
+                    variant="tonal"
+                    size="48"
+                    rounded="lg"
+                    class="mb-4"
+                  >
+                    <VIcon :icon="channel.icon" />
+                  </VAvatar>
+                  <h3 class="text-h6 font-weight-bold mb-2">
+                    {{ channel.title }}
+                  </h3>
+                  <p class="text-medium-emphasis mb-4">
+                    {{ channel.desc }}
+                  </p>
+                  <span class="channel-card-cta">
+                    Learn more <VIcon
+                      icon="tabler-arrow-right"
+                      size="16"
+                    />
+                  </span>
+                </VCardText>
+              </VCard>
+            </RouterLink>
+          </VCol>
+        </VRow>
+      </VContainer>
+    </section>
+
     <section
       id="features"
-      class="section-py"
+      class="section-py bg-surface"
     >
       <VContainer>
         <div
@@ -389,7 +473,7 @@ onUnmounted(() => {
             Everything You Need to Scale Customer Communication
           </h2>
           <p class="text-medium-emphasis">
-            From WhatsApp Business API to DLT-compliant SMS, Textzi provides all the tools you need to engage customers effectively.
+            From WhatsApp Business API and DLT-compliant SMS to a full CRM pipeline, Textzi provides all the tools you need to engage customers effectively.
           </p>
         </div>
 
@@ -430,7 +514,7 @@ onUnmounted(() => {
       </VContainer>
     </section>
 
-    <section class="section-py bg-surface">
+    <section class="section-py">
       <VContainer>
         <div
           v-reveal
@@ -940,7 +1024,7 @@ onUnmounted(() => {
           Ready to Transform Your Customer Communication?
         </h2>
         <p class="mb-6">
-          Join Indian businesses already using Textzi to engage customers on WhatsApp and SMS.
+          Join Indian businesses already using Textzi to engage customers on WhatsApp, SMS, and CRM.
         </p>
         <div class="d-flex flex-wrap justify-center gap-4 mb-4">
           <VBtn
@@ -1225,6 +1309,29 @@ onUnmounted(() => {
   max-inline-size: 640px;
   margin-inline: auto;
   margin-block-end: 3rem;
+}
+
+.channel-card-link {
+  display: block;
+  text-decoration: none;
+  color: inherit;
+}
+
+.channel-card {
+  transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.channel-card:hover {
+  transform: translateY(-6px);
+  box-shadow: 0 12px 28px rgba(var(--v-theme-on-surface), 0.12);
+}
+
+.channel-card-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: rgb(var(--v-theme-primary));
+  font-weight: 500;
 }
 
 .feature-card {

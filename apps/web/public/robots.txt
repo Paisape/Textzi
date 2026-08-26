@@ -7,6 +7,7 @@ Allow: /privacy-policy
 Allow: /refund-policy
 Allow: /login
 Allow: /register
+Allow: /products
 Disallow: /admin-*
 Disallow: /platform-*
 Disallow: /dashboard

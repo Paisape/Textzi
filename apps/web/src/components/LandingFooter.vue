@@ -29,7 +29,7 @@ onMounted(loadCompanyInfo)
             <div v-html="logoFull" />
           </div>
           <p class="text-medium-emphasis">
-            Secure, DLT-compliant business messaging for WhatsApp &amp; SMS.
+            WhatsApp, SMS &amp; CRM for Indian businesses.
           </p>
         </VCol>
         <VCol
@@ -39,18 +39,30 @@ onMounted(loadCompanyInfo)
           <div class="footer-heading">
             Product
           </div>
-          <div class="footer-link">
+          <RouterLink
+            to="/products/whatsapp"
+            class="footer-link d-block"
+          >
             WhatsApp API
-          </div>
-          <div class="footer-link">
+          </RouterLink>
+          <RouterLink
+            to="/products/sms"
+            class="footer-link d-block"
+          >
             SMS Gateway
-          </div>
-          <div class="footer-link">
-            Automation
-          </div>
-          <div class="footer-link">
-            Analytics
-          </div>
+          </RouterLink>
+          <RouterLink
+            to="/products/crm"
+            class="footer-link d-block"
+          >
+            CRM
+          </RouterLink>
+          <RouterLink
+            to="/products/pricing"
+            class="footer-link d-block"
+          >
+            Pricing
+          </RouterLink>
         </VCol>
         <VCol
           cols="6"

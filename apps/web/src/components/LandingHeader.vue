@@ -3,6 +3,13 @@ import logoFull from '@images/logo-full.svg?raw'
 
 const mobileNavOpen = ref(false)
 const headerScrolled = ref(false)
+const mobileChannelsOpen = ref(false)
+
+const channelLinks = [
+  { to: '/products/sms', label: 'SMS' },
+  { to: '/products/whatsapp', label: 'WhatsApp' },
+  { to: '/products/crm', label: 'CRM' },
+]
 
 function onWindowScroll() {
   headerScrolled.value = window.scrollY > 24
@@ -39,14 +46,33 @@ onUnmounted(() => {
       </RouterLink>
 
       <nav class="d-none d-md-flex align-center gap-x-8 landing-nav">
-        <RouterLink to="/#features">
-          Features
-        </RouterLink>
-        <RouterLink to="/#pricing">
+        <VMenu open-on-hover>
+          <template #activator="{ props: menuProps }">
+            <a
+              v-bind="menuProps"
+              class="landing-nav-trigger"
+            >
+              Channels
+              <VIcon
+                icon="tabler-chevron-down"
+                size="14"
+              />
+            </a>
+          </template>
+          <VList density="compact">
+            <VListItem
+              v-for="channel in channelLinks"
+              :key="channel.to"
+              :to="channel.to"
+              :title="channel.label"
+            />
+          </VList>
+        </VMenu>
+        <RouterLink to="/products/pricing">
           Pricing
         </RouterLink>
-        <RouterLink to="/#testimonials">
-          Testimonials
+        <RouterLink to="/knowledge-base">
+          Resources
         </RouterLink>
         <RouterLink to="/#contact">
           Contact
@@ -84,23 +110,43 @@ onUnmounted(() => {
         class="d-md-none px-4 pb-4"
       >
         <div class="d-flex flex-column gap-3">
-          <RouterLink
-            to="/#features"
-            @click="closeMobileNav"
+          <button
+            type="button"
+            class="mobile-nav-toggle"
+            @click="mobileChannelsOpen = !mobileChannelsOpen"
           >
-            Features
-          </RouterLink>
+            Channels
+            <VIcon
+              :icon="mobileChannelsOpen ? 'tabler-chevron-up' : 'tabler-chevron-down'"
+              size="14"
+            />
+          </button>
+          <VExpandTransition>
+            <div
+              v-if="mobileChannelsOpen"
+              class="d-flex flex-column gap-3 pl-4"
+            >
+              <RouterLink
+                v-for="channel in channelLinks"
+                :key="channel.to"
+                :to="channel.to"
+                @click="closeMobileNav"
+              >
+                {{ channel.label }}
+              </RouterLink>
+            </div>
+          </VExpandTransition>
           <RouterLink
-            to="/#pricing"
+            to="/products/pricing"
             @click="closeMobileNav"
           >
             Pricing
           </RouterLink>
           <RouterLink
-            to="/#testimonials"
+            to="/knowledge-base"
             @click="closeMobileNav"
           >
-            Testimonials
+            Resources
           </RouterLink>
           <RouterLink
             to="/#contact"
@@ -185,5 +231,31 @@ onUnmounted(() => {
 
 .landing-nav a:hover::after {
   inline-size: 100%;
+}
+
+.landing-nav-trigger {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: rgb(var(--v-theme-on-surface));
+  font-weight: 500;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.landing-nav-trigger:hover {
+  color: rgb(var(--v-theme-primary));
+}
+
+.mobile-nav-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: rgb(var(--v-theme-on-surface));
+  font-weight: 500;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: start;
 }
 </style>
