@@ -385,6 +385,16 @@ export const adminNav = [
         icon: { icon: 'tabler-coin' },
       },
       {
+        title: 'Textzi Wallet Credits',
+        to: { name: 'admin-textzi-wallet-credits' },
+        icon: { icon: 'tabler-wallet' },
+      },
+      {
+        title: 'Bank Transfer Requests',
+        to: { name: 'admin-bank-transfer-requests' },
+        icon: { icon: 'tabler-building-bank' },
+      },
+      {
         title: 'Invoices',
         to: { name: 'admin-invoices' },
         icon: { icon: 'tabler-receipt' },
@@ -486,6 +496,16 @@ export const financeNav = [
         title: 'Wallet Credits',
         to: { name: 'admin-wallet-credits' },
         icon: { icon: 'tabler-coin' },
+      },
+      {
+        title: 'Textzi Wallet Credits',
+        to: { name: 'admin-textzi-wallet-credits' },
+        icon: { icon: 'tabler-wallet' },
+      },
+      {
+        title: 'Bank Transfer Requests',
+        to: { name: 'admin-bank-transfer-requests' },
+        icon: { icon: 'tabler-building-bank' },
       },
       {
         title: 'Invoices',

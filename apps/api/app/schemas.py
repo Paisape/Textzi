@@ -401,6 +401,64 @@ class TextziWalletTransactionOut(BaseModel):
     created_at: str
 
 
+class TextziBankDetailsOut(BaseModel):
+    bank_account_holder_name: str | None
+    bank_account_number: str | None
+    bank_ifsc: str | None
+    bank_name: str | None
+
+
+class BankTransferTopupRequestCreate(BaseModel):
+    transfer_date: str = Field(min_length=1)  # ISO date, e.g. "2026-08-26"
+    mode: str = Field(pattern=r"^(imps|upi|neft|rtgs)$")
+    amount: float = Field(gt=0)
+    utr_number: str = Field(min_length=1, max_length=40)
+    notes: str | None = Field(default=None, max_length=500)
+
+
+class BankTransferTopupRequestOut(BaseModel):
+    id: str
+    transfer_date: str
+    mode: str
+    amount: float
+    utr_number: str
+    notes: str | None
+    status: str
+    credited_amount: float | None
+    admin_note: str | None
+    reviewed_at: str | None
+    created_at: str
+
+
+class BankTransferTopupRequestAdminOut(BankTransferTopupRequestOut):
+    entity_id: str
+    organization_name: str | None = None
+
+
+class BankTransferTopupRequestReview(BaseModel):
+    status: str = Field(pattern=r"^(approved|rejected)$")
+    credited_amount: float | None = Field(default=None, gt=0)
+    admin_note: str | None = Field(default=None, max_length=500)
+
+
+class TextziWalletAdminCreditRequest(BaseModel):
+    entity_id: str
+    amount: float = Field(gt=0, le=1_000_000)
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class TextziWalletAdminDebitRequest(BaseModel):
+    entity_id: str
+    amount: float = Field(gt=0, le=1_000_000)
+    notes: str | None = Field(default=None, max_length=300)
+
+
+class TextziWalletAdminAdjustmentResponse(BaseModel):
+    entity_id: str
+    amount: float
+    balance: float
+
+
 class WalletSpendOtpRequest(BaseModel):
     purpose: str = Field(pattern="^(sms_credit|waba_subscription|crm_subscription)$")
 
@@ -1959,6 +2017,10 @@ class PlatformGeneralSettingsOut(BaseModel):
     company_phone: str
     support_email: str
     public_api_base_url: str
+    bank_account_holder_name: str | None = None
+    bank_account_number: str | None = None
+    bank_ifsc: str | None = None
+    bank_name: str | None = None
 
 
 class PlatformGeneralSettingsUpdate(BaseModel):
@@ -1970,6 +2032,10 @@ class PlatformGeneralSettingsUpdate(BaseModel):
     company_phone: str | None = None
     support_email: str | None = None
     public_api_base_url: str | None = None
+    bank_account_holder_name: str | None = None
+    bank_account_number: str | None = None
+    bank_ifsc: str | None = None
+    bank_name: str | None = None
 
 
 class PublicCompanyInfoOut(BaseModel):

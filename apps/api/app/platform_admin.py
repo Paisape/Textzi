@@ -411,6 +411,8 @@ def get_general_settings(db: Session = Depends(get_db)):
         company_name=info.company_name, company_address=info.company_address, company_gstin=info.company_gstin,
         company_state=info.company_state, company_state_code=info.company_state_code, company_phone=info.company_phone,
         support_email=info.support_email, public_api_base_url=info.public_api_base_url,
+        bank_account_holder_name=info.bank_account_holder_name, bank_account_number=info.bank_account_number,
+        bank_ifsc=info.bank_ifsc, bank_name=info.bank_name,
     )
 
 
@@ -431,6 +433,10 @@ def update_general_settings(payload: PlatformGeneralSettingsUpdate, request: Req
     row.company_phone = _norm(payload.company_phone)
     row.support_email = _norm(payload.support_email)
     row.public_api_base_url = _norm(payload.public_api_base_url)
+    row.bank_account_holder_name = _norm(payload.bank_account_holder_name)
+    row.bank_account_number = _norm(payload.bank_account_number)
+    row.bank_ifsc = _norm(payload.bank_ifsc)
+    row.bank_name = _norm(payload.bank_name)
     log_activity(db, None, "platform_general_settings_updated", "Platform general settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit()
     info = get_platform_company_info(db)
@@ -438,6 +444,8 @@ def update_general_settings(payload: PlatformGeneralSettingsUpdate, request: Req
         company_name=info.company_name, company_address=info.company_address, company_gstin=info.company_gstin,
         company_state=info.company_state, company_state_code=info.company_state_code, company_phone=info.company_phone,
         support_email=info.support_email, public_api_base_url=info.public_api_base_url,
+        bank_account_holder_name=info.bank_account_holder_name, bank_account_number=info.bank_account_number,
+        bank_ifsc=info.bank_ifsc, bank_name=info.bank_name,
     )
 
 

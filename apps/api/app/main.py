@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .admin import router as admin_router, require_admin
+from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
 from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
@@ -132,6 +133,7 @@ app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_cr
 # policy, confirmed via a live Playwright browser test against this container).
 app.add_middleware(WebchatCorsMiddleware)
 app.include_router(admin_router)
+app.include_router(admin_wallet_router)
 app.include_router(auth_router)
 app.include_router(catalog_sync_router)
 app.include_router(channel_billing_router)

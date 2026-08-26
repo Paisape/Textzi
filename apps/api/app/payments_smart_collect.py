@@ -16,7 +16,7 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import razorpay
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -28,14 +28,14 @@ from .channel_billing import PERIOD_DAYS
 from .database import SessionLocal, get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .email_service import render_email, send_email
-from .models import BillingPlan, ChannelSubscription, Entity, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
+from .models import BankTransferTopupRequest, BillingPlan, ChannelSubscription, Entity, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
 from .schemas import (
-    ApiKeyOtpResponse, BillingPlanOut, ChannelSubscriptionStatusOut, RazorpayVirtualAccountOut, RechargeResponse,
-    TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
+    ApiKeyOtpResponse, BankTransferTopupRequestOut, BillingPlanOut, ChannelSubscriptionStatusOut, RazorpayVirtualAccountOut, RechargeResponse,
+    TextziBankDetailsOut, TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
 )
 from .services import (
     GST_RATE, DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_platform_company_info, get_platform_razorpay_keys,
-    get_platform_razorpay_webhook_secret, log_activity, payment_method_config, quote_credits, resolve_rate_card, resolve_user_entity,
+    get_platform_razorpay_webhook_secret, log_activity, payment_method_config, quote_credits, resolve_rate_card, resolve_user_entity, save_upload,
 )
 
 logger = logging.getLogger("textzi.payments")
@@ -157,6 +157,70 @@ def close_virtual_account(user: User = Depends(require_user), db: Session = Depe
     existing.status = "closed"
     db.commit()
     return {"status": "closed"}
+
+
+@router.get("/bank-details", response_model=TextziBankDetailsOut)
+def get_textzi_bank_details(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Read-only display of Textzi's own bank account (Addendum 15) -- the manual-transfer
+    alternative to Smart Collect. resolve_user_entity isn't needed here (these details are the
+    same for every customer, not entity-scoped) -- require_user alone is enough to keep this
+    behind a real login, matching the same "logged-in but not entity-specific" gate
+    waba.get_waba_config already uses for its own platform-wide, non-secret config."""
+    info = get_platform_company_info(db)
+    return TextziBankDetailsOut(
+        bank_account_holder_name=info.bank_account_holder_name, bank_account_number=info.bank_account_number,
+        bank_ifsc=info.bank_ifsc, bank_name=info.bank_name,
+    )
+
+
+def _bank_transfer_request_out(row: BankTransferTopupRequest) -> BankTransferTopupRequestOut:
+    return BankTransferTopupRequestOut(
+        id=row.id, transfer_date=row.transfer_date.date().isoformat(), mode=row.mode, amount=float(row.amount),
+        utr_number=row.utr_number, notes=row.notes, status=row.status,
+        credited_amount=float(row.credited_amount) if row.credited_amount is not None else None,
+        admin_note=row.admin_note, reviewed_at=row.reviewed_at.isoformat() if row.reviewed_at else None,
+        created_at=row.created_at.isoformat(),
+    )
+
+
+@router.post("/bank-transfer-requests", response_model=BankTransferTopupRequestOut)
+def submit_bank_transfer_request(
+    transfer_date: str = Form(...), mode: str = Form(...), amount: float = Form(...), utr_number: str = Form(...),
+    notes: str | None = Form(default=None), receipt: UploadFile = File(...),
+    user: User = Depends(require_user), db: Session = Depends(get_db),
+):
+    """Customer submits an "I sent a bank transfer" claim for manual admin verification --
+    amount/date/UTR are exactly what the customer reports, not verified against anything at
+    submission time (that's the admin's job at approval, against the real bank statement)."""
+    if not payment_method_config(db, "bank_transfer").enabled:
+        raise HTTPException(status_code=422, detail="Bank transfer top-up is not available right now")
+    if mode not in ("imps", "upi", "neft", "rtgs"):
+        raise HTTPException(status_code=422, detail="mode must be one of imps, upi, neft, rtgs")
+    if amount <= 0:
+        raise HTTPException(status_code=422, detail="amount must be positive")
+    entity = _resolve_entity(db, user)
+    try:
+        parsed_date = datetime.fromisoformat(transfer_date).replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="transfer_date must be a valid date (YYYY-MM-DD)")
+    stored_path, _ = save_upload(receipt, f"bank-transfer-requests/{entity.id}")
+    row = BankTransferTopupRequest(
+        entity_id=entity.id, submitted_by_user_id=user.id, transfer_date=parsed_date, mode=mode,
+        amount=amount, utr_number=utr_number.strip(), receipt_path=stored_path, notes=(notes or "").strip() or None,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _bank_transfer_request_out(row)
+
+
+@router.get("/bank-transfer-requests", response_model=list[BankTransferTopupRequestOut])
+def list_own_bank_transfer_requests(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    rows = db.scalars(
+        select(BankTransferTopupRequest).where(BankTransferTopupRequest.entity_id == entity.id).order_by(BankTransferTopupRequest.created_at.desc()).limit(100),
+    ).all()
+    return [_bank_transfer_request_out(row) for row in rows]
 
 
 @router.post("/admin/reconcile/{entity_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

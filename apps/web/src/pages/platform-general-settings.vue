@@ -20,10 +20,15 @@ type GeneralSettings = {
   company_phone: string
   support_email: string
   public_api_base_url: string
+  bank_account_holder_name: string | null
+  bank_account_number: string | null
+  bank_ifsc: string | null
+  bank_name: string | null
 }
 
 const form = ref<GeneralSettings>({
   company_name: '', company_address: '', company_gstin: '', company_state: '', company_state_code: '', company_phone: '', support_email: '', public_api_base_url: '',
+  bank_account_holder_name: null, bank_account_number: null, bank_ifsc: null, bank_name: null,
 })
 
 const loadError = ref('')
@@ -60,6 +65,10 @@ async function onSave() {
         company_phone: form.value.company_phone || null,
         support_email: form.value.support_email || null,
         public_api_base_url: form.value.public_api_base_url || null,
+        bank_account_holder_name: form.value.bank_account_holder_name || null,
+        bank_account_number: form.value.bank_account_number || null,
+        bank_ifsc: form.value.bank_ifsc || null,
+        bank_name: form.value.bank_name || null,
       },
     })
     saveSuccess.value = 'Saved.'
@@ -196,6 +205,45 @@ onMounted(loadSettings)
               placeholder="https://api.textzi.in"
               hint="Externally-reachable base URL of this API. Blank = provider delivery-report webhooks aren't requested."
               persistent-hint
+            />
+          </VCol>
+        </VRow>
+
+        <VDivider class="my-6" />
+
+        <h6 class="text-h6 mb-4">
+          Bank account (for manual bank-transfer top-ups)
+        </h6>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          Shown to customers on their Wallet page as where to send a manual bank transfer. Leave
+          blank to hide the bank-transfer option entirely.
+        </p>
+        <VRow>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model="form.bank_account_holder_name"
+              label="Account holder name"
+              placeholder="Textzi Technologies Pvt Ltd"
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model="form.bank_name"
+              label="Bank name"
+              placeholder="HDFC Bank"
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model="form.bank_account_number"
+              label="Account number"
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model="form.bank_ifsc"
+              label="IFSC code"
+              placeholder="HDFC0001234"
             />
           </VCol>
           <VCol cols="12">

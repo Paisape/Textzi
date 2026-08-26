@@ -134,6 +134,14 @@ class PlatformCompanyInfo:
     company_phone: str
     support_email: str
     public_api_base_url: str
+    # No .env fallback for these four (unlike every field above) -- there's no sensible default
+    # bank account to fall back to, and "not configured yet" is a real state the customer-facing
+    # bank-details endpoint needs to detect (Addendum 15), not something to paper over with a
+    # placeholder value the way the rest of this dataclass does.
+    bank_account_holder_name: str | None
+    bank_account_number: str | None
+    bank_ifsc: str | None
+    bank_name: str | None
 
 
 def get_platform_company_info(db: Session) -> PlatformCompanyInfo:
@@ -150,6 +158,10 @@ def get_platform_company_info(db: Session) -> PlatformCompanyInfo:
         company_phone=(row.company_phone if row and row.company_phone else settings.company_phone),
         support_email=(row.support_email if row and row.support_email else settings.support_email),
         public_api_base_url=(row.public_api_base_url if row and row.public_api_base_url else settings.public_api_base_url),
+        bank_account_holder_name=row.bank_account_holder_name if row else None,
+        bank_account_number=row.bank_account_number if row else None,
+        bank_ifsc=row.bank_ifsc if row else None,
+        bank_name=row.bank_name if row else None,
     )
 
 
@@ -639,6 +651,25 @@ def debit_textzi_wallet(db: Session, entity_id: str, amount: float, transaction_
     amount_dec = Decimal(str(amount))
     wallet.balance = wallet.balance - amount_dec
     db.add(TextziWalletTransaction(entity_id=entity_id, type=transaction_type, amount=-amount_dec, balance_after=Decimal(str(wallet.balance)), reference=reference))
+    return wallet
+
+
+def credit_textzi_wallet_manual(db: Session, entity_id: str, amount: float, reference: str, admin_user: User | None) -> TextziWallet:
+    """Thin wrapper around credit_textzi_wallet for the two admin-initiated crediting paths
+    (Addendum 15): approving a BankTransferTopupRequest, and the standalone manual adjustment
+    page. Unlike Smart Collect's automated webhook credit, a human admin is the one authorizing
+    this, so it's also logged to AccountActivity naming that admin -- Smart Collect's own credit
+    path has no such audit row since no admin action is involved there. admin_user is None when
+    the caller authenticated via the X-Admin-Key bootstrap key rather than a real logged-in user
+    (same "no single person to attribute this to" case admin.py's own debit_wallet_admin already
+    handles for the SMS wallet) -- logged as "admin (bootstrap key)" rather than a fabricated user."""
+    wallet = credit_textzi_wallet(db, entity_id, amount, transaction_type="admin_manual_credit", reference=reference)
+    entity = db.get(Entity, entity_id)
+    log_activity(
+        db, entity.organization_id if entity else None, "textzi_wallet_manual_credit",
+        f"Textzi Wallet manually credited Rs.{amount} for entity {entity_id} (reference: {reference})",
+        user_id=admin_user.id if admin_user else None, actor_email=admin_user.email if admin_user else "admin (bootstrap key)",
+    )
     return wallet
 
 

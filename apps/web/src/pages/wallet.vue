@@ -32,6 +32,8 @@ const textziLoading = ref(false)
 const textziError = ref('')
 const generatingAccount = ref(false)
 const smartCollectFeePaise = ref<number | null>(null)
+const smartCollectEnabled = ref(false)
+const bankTransferEnabled = ref(false)
 
 const smartCollectFeeLabel = computed(() => smartCollectFeePaise.value === null ? null : inr(smartCollectFeePaise.value / 100))
 
@@ -47,12 +49,88 @@ async function loadTextziWallet() {
     textziWallet.value = walletResult
     textziTransactions.value = txnResult
     smartCollectFeePaise.value = methodsResult.find(m => m.payment_method === 'razorpay_smart_collect')?.flat_fee_paise ?? null
+    smartCollectEnabled.value = methodsResult.find(m => m.payment_method === 'razorpay_smart_collect')?.enabled ?? false
+    bankTransferEnabled.value = methodsResult.find(m => m.payment_method === 'bank_transfer')?.enabled ?? false
   }
   catch (error: any) {
     textziError.value = extractErrorMessage(error, 'Could not load your Textzi Wallet.')
   }
   finally {
     textziLoading.value = false
+  }
+  if (bankTransferEnabled.value)
+    loadBankTransferData()
+}
+
+// --- Manual bank-transfer top-up request ---------------------------------------------------
+
+type BankDetails = { bank_account_holder_name: string | null, bank_account_number: string | null, bank_ifsc: string | null, bank_name: string | null }
+type BankTransferRequest = {
+  id: string
+  transfer_date: string
+  mode: string
+  amount: number
+  utr_number: string
+  notes: string | null
+  status: string
+  credited_amount: number | null
+  admin_note: string | null
+  reviewed_at: string | null
+  created_at: string
+}
+
+const bankDetails = ref<BankDetails | null>(null)
+const bankTransferRequests = ref<BankTransferRequest[]>([])
+const bankTransferForm = ref({ transfer_date: '', mode: 'neft', amount: null as number | null, utr_number: '', notes: '' })
+const bankTransferReceipt = ref<File | null>(null)
+const bankTransferSubmitting = ref(false)
+const bankTransferError = ref('')
+const bankTransferSuccess = ref('')
+
+const statusColor: Record<string, string> = { pending: 'warning', approved: 'success', rejected: 'error' }
+
+async function loadBankTransferData() {
+  try {
+    const [details, requests] = await Promise.all([
+      $api<BankDetails>('/v1/wallet/textzi/bank-details'),
+      $api<BankTransferRequest[]>('/v1/wallet/textzi/bank-transfer-requests'),
+    ])
+    bankDetails.value = details
+    bankTransferRequests.value = requests
+  }
+  catch (error: any) {
+    bankTransferError.value = extractErrorMessage(error, 'Could not load bank transfer details.')
+  }
+}
+
+async function submitBankTransferRequest() {
+  bankTransferError.value = ''
+  bankTransferSuccess.value = ''
+  if (!bankTransferForm.value.transfer_date || !bankTransferForm.value.amount || !bankTransferForm.value.utr_number.trim() || !bankTransferReceipt.value) {
+    bankTransferError.value = 'Fill in the transfer date, amount, UTR number, and attach a receipt.'
+    return
+  }
+  bankTransferSubmitting.value = true
+  try {
+    const formData = new FormData()
+    formData.append('transfer_date', bankTransferForm.value.transfer_date)
+    formData.append('mode', bankTransferForm.value.mode)
+    formData.append('amount', String(bankTransferForm.value.amount))
+    formData.append('utr_number', bankTransferForm.value.utr_number.trim())
+    if (bankTransferForm.value.notes.trim())
+      formData.append('notes', bankTransferForm.value.notes.trim())
+    formData.append('receipt', bankTransferReceipt.value)
+    const created = await $api<BankTransferRequest>('/v1/wallet/textzi/bank-transfer-requests', { method: 'POST', body: formData })
+    bankTransferRequests.value.unshift(created)
+    bankTransferForm.value = { transfer_date: '', mode: 'neft', amount: null, utr_number: '', notes: '' }
+    bankTransferReceipt.value = null
+    bankTransferSuccess.value = 'Request submitted -- we\'ll verify it against our bank statement and credit your wallet shortly.'
+  }
+  catch (error: any) {
+    bankTransferError.value = extractErrorMessage(error, 'Could not submit this request.')
+  }
+  finally {
+    bankTransferSubmitting.value = false
   }
 }
 
@@ -156,7 +234,7 @@ onMounted(() => {
 
       <VRow>
         <VCol cols="12" md="5">
-          <VCard>
+          <VCard class="mb-6">
             <VCardText>
               <p class="text-caption text-medium-emphasis mb-1">
                 Balance
@@ -164,8 +242,19 @@ onMounted(() => {
               <p class="text-h4 mb-4">
                 {{ textziWallet ? inr(textziWallet.balance) : '—' }}
               </p>
+              <p class="text-body-2 text-medium-emphasis mb-0">
+                Spendable on SMS credit top-up, WhatsApp subscription, or CRM subscription — each spend requires a one-time code sent to your mobile or email.
+              </p>
+            </VCardText>
+          </VCard>
+
+          <VCard v-if="smartCollectEnabled" class="mb-6">
+            <VCardText>
+              <h2 class="text-h6 mb-1">
+                Instant bank transfer (Smart Collect)
+              </h2>
               <p class="text-body-2 text-medium-emphasis mb-4">
-                Funded by bank transfer (IMPS, NEFT, or RTGS only) via Razorpay Smart Collect. Spendable on SMS credit top-up, WhatsApp subscription, or CRM subscription — each spend requires a one-time code sent to your mobile or email.
+                Get a dedicated account number and transfer any amount via IMPS, NEFT, or RTGS — credited automatically, usually within a few minutes.
               </p>
 
               <template v-if="!virtualAccount">
@@ -216,6 +305,140 @@ onMounted(() => {
                   Remove this account
                 </VBtn>
               </template>
+            </VCardText>
+          </VCard>
+
+          <VCard v-if="bankTransferEnabled">
+            <VCardText>
+              <h2 class="text-h6 mb-1">
+                Pay by bank transfer
+              </h2>
+              <p class="text-body-2 text-medium-emphasis mb-4">
+                Send a transfer from your own bank to the account below, then submit the details for us to verify and credit your wallet.
+              </p>
+
+              <template v-if="bankDetails && bankDetails.bank_account_number">
+                <div class="d-flex flex-column ga-3 mb-4">
+                  <div>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      Account holder name
+                    </p>
+                    <span class="text-body-1">{{ bankDetails.bank_account_holder_name }}</span>
+                  </div>
+                  <div>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      Bank name
+                    </p>
+                    <span class="text-body-1">{{ bankDetails.bank_name }}</span>
+                  </div>
+                  <div>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      Account number
+                    </p>
+                    <div class="d-flex align-center ga-2">
+                      <span class="text-body-1">{{ bankDetails.bank_account_number }}</span>
+                      <VBtn icon="tabler-copy" size="x-small" variant="text" @click="copyValue(bankDetails.bank_account_number!, 'bank-account')" />
+                      <span v-if="copied === 'bank-account'" class="text-caption text-success">Copied</span>
+                    </div>
+                  </div>
+                  <div>
+                    <p class="text-caption text-medium-emphasis mb-0">
+                      IFSC
+                    </p>
+                    <div class="d-flex align-center ga-2">
+                      <span class="text-body-1">{{ bankDetails.bank_ifsc }}</span>
+                      <VBtn icon="tabler-copy" size="x-small" variant="text" @click="copyValue(bankDetails.bank_ifsc!, 'bank-ifsc')" />
+                      <span v-if="copied === 'bank-ifsc'" class="text-caption text-success">Copied</span>
+                    </div>
+                  </div>
+                </div>
+
+                <VDivider class="mb-4" />
+
+                <VAlert v-if="bankTransferError" type="error" variant="tonal" density="compact" class="mb-4" closable @click:close="bankTransferError = ''">
+                  {{ bankTransferError }}
+                </VAlert>
+                <VAlert v-if="bankTransferSuccess" type="success" variant="tonal" density="compact" class="mb-4" closable @click:close="bankTransferSuccess = ''">
+                  {{ bankTransferSuccess }}
+                </VAlert>
+
+                <h3 class="text-body-1 font-weight-medium mb-3">
+                  Submit a transfer request
+                </h3>
+                <VRow dense>
+                  <VCol cols="12" sm="6">
+                    <AppTextField v-model="bankTransferForm.transfer_date" type="date" label="Transfer date" />
+                  </VCol>
+                  <VCol cols="12" sm="6">
+                    <VSelect
+                      v-model="bankTransferForm.mode"
+                      label="Mode"
+                      :items="[{ title: 'NEFT', value: 'neft' }, { title: 'IMPS', value: 'imps' }, { title: 'RTGS', value: 'rtgs' }, { title: 'UPI', value: 'upi' }]"
+                    />
+                  </VCol>
+                  <VCol cols="12" sm="6">
+                    <AppTextField v-model.number="bankTransferForm.amount" type="number" label="Amount sent (₹)" />
+                  </VCol>
+                  <VCol cols="12" sm="6">
+                    <AppTextField v-model="bankTransferForm.utr_number" label="UTR / reference number" />
+                  </VCol>
+                  <VCol cols="12">
+                    <AppTextField v-model="bankTransferForm.notes" label="Notes (optional)" />
+                  </VCol>
+                  <VCol cols="12">
+                    <VFileInput
+                      v-model="bankTransferReceipt"
+                      label="Transfer receipt (PDF, JPG, or PNG)"
+                      accept=".pdf,.jpg,.jpeg,.png"
+                      prepend-icon=""
+                      prepend-inner-icon="tabler-paperclip"
+                    />
+                  </VCol>
+                  <VCol cols="12">
+                    <VBtn :loading="bankTransferSubmitting" @click="submitBankTransferRequest">
+                      Submit for verification
+                    </VBtn>
+                  </VCol>
+                </VRow>
+
+                <VDivider class="my-4" />
+
+                <h3 class="text-body-1 font-weight-medium mb-3">
+                  Your requests
+                </h3>
+                <VTable density="compact">
+                  <thead>
+                    <tr>
+                      <th>Date</th>
+                      <th>Mode</th>
+                      <th>Amount</th>
+                      <th>Status</th>
+                      <th>Credited</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr v-for="req in bankTransferRequests" :key="req.id">
+                      <td>{{ req.transfer_date }}</td>
+                      <td class="text-uppercase">
+                        {{ req.mode }}
+                      </td>
+                      <td>{{ inr(req.amount) }}</td>
+                      <td>
+                        <VChip :color="statusColor[req.status]" size="small">
+                          {{ req.status }}
+                        </VChip>
+                      </td>
+                      <td>{{ req.credited_amount != null ? inr(req.credited_amount) : '—' }}</td>
+                    </tr>
+                  </tbody>
+                </VTable>
+                <p v-if="!bankTransferRequests.length" class="text-medium-emphasis text-center pa-4 mb-0">
+                  No requests yet.
+                </p>
+              </template>
+              <p v-else class="text-medium-emphasis mb-0">
+                Bank transfer details haven't been configured yet — contact support.
+              </p>
             </VCardText>
           </VCard>
         </VCol>

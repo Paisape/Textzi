@@ -411,15 +411,43 @@ class RazorpayVirtualAccount(Base):
 
 class PlatformPaymentMethodConfig(Base):
     """Admin-editable, per-method kill switch for wallet/subscription payment -- same enabled-flag
-    shape and purpose as ChannelFeeConfig.enabled (checked before either Razorpay Checkout or
-    Smart Collect is offered anywhere, frontend or backend). flat_fee_paise only applies to
-    "razorpay_smart_collect" -- deducted from every bank transfer before crediting TextziWallet,
-    admin-configurable rather than hardcoded since it's meant to track Razorpay's own real cost
-    (or a margin on top), not a fixed product constant."""
+    shape and purpose as ChannelFeeConfig.enabled (checked before either Razorpay Checkout,
+    Smart Collect, or manual bank transfer is offered anywhere, frontend or backend).
+    flat_fee_paise only applies to "razorpay_smart_collect" -- deducted from every bank transfer
+    before crediting TextziWallet, admin-configurable rather than hardcoded since it's meant to
+    track Razorpay's own real cost (or a margin on top), not a fixed product constant.
+    "bank_transfer" (Addendum 15) leaves flat_fee_paise at 0/unused -- a manually-verified transfer
+    has no automated fee deduction; the admin enters the exact credited amount at approval time."""
     __tablename__ = "platform_payment_method_configs"
-    payment_method: Mapped[str] = mapped_column(String(30), primary_key=True)  # "razorpay_checkout" | "razorpay_smart_collect"
+    payment_method: Mapped[str] = mapped_column(String(30), primary_key=True)  # "razorpay_checkout" | "razorpay_smart_collect" | "bank_transfer"
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     flat_fee_paise: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class BankTransferTopupRequest(Base):
+    """A customer's self-reported "I sent a bank transfer" claim, manually verified by an admin
+    against the real bank statement before crediting TextziWallet -- the manual alternative to
+    Smart Collect's automated webhook crediting, for when a customer/admin prefers not to use (or
+    hasn't set up) Razorpay virtual accounts. amount is what the customer claims they sent;
+    credited_amount (set only at approval) is what an admin actually verified and credited --
+    deliberately separate fields, since a partial/mismatched transfer shouldn't force a
+    reject-and-resubmit cycle when the admin can just credit the real, verified amount."""
+    __tablename__ = "bank_transfer_topup_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    submitted_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    transfer_date: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    mode: Mapped[str] = mapped_column(String(10))  # "imps" | "upi" | "neft" | "rtgs"
+    amount: Mapped[float] = mapped_column(Numeric(14, 2))
+    utr_number: Mapped[str] = mapped_column(String(40))
+    receipt_path: Mapped[str] = mapped_column(String(500))
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # "pending" | "approved" | "rejected"
+    credited_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    admin_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    reviewed_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class PlatformWabaSettings(Base):
@@ -1219,6 +1247,14 @@ class PlatformGeneralSettings(Base):
     company_phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     support_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     public_api_base_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    # Textzi's own real bank account -- shown read-only to customers on the Wallet page as the
+    # manual bank-transfer alternative to Smart Collect (Addendum 15). Not a secret (an account
+    # number/IFSC alone can only receive money, never move it out), so stored plain like every
+    # other field on this row.
+    bank_account_holder_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    bank_account_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    bank_ifsc: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    bank_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
 
 
 class PlatformMessage(Base):
