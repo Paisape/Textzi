@@ -1,4 +1,25 @@
 User-agent: *
 Allow: /
+Allow: /about
+Allow: /knowledge-base
+Allow: /terms-of-service
+Allow: /privacy-policy
+Allow: /refund-policy
+Allow: /login
+Allow: /register
+Disallow: /admin-*
+Disallow: /platform-*
+Disallow: /dashboard
+Disallow: /inbox
+Disallow: /webchat-inbox
+Disallow: /crm*
+Disallow: /channels*
+Disallow: /wallet
+Disallow: /profile*
+Disallow: /account-security
+Disallow: /invoices
+Disallow: /onboarding
+Disallow: /complete-profile
+Disallow: /team
 
 Sitemap: https://textzi.in/sitemap.xml
