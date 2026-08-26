@@ -193,6 +193,16 @@ function animateKpis() {
   requestAnimationFrame(tick)
 }
 
+// Textzi's own webchat widget, embedded on its own landing page -- eating its own dog food the
+// same way Addendum 5's own reasoning already established for the WhatsApp/CRM App Review videos
+// ("Textzi acting as its own first customer"). The widget key isn't a secret (same reasoning as
+// every other widget embed) so it's fine hardcoded here rather than fetched from an endpoint.
+// Injected/removed on mount/unmount rather than living in index.html, since that file is shared
+// by the whole SPA -- this way the bubble only ever appears on the actual marketing page, never
+// on a logged-in dashboard screen.
+const TEXTZI_WEBCHAT_WIDGET_KEY = '35e05759-ac22-4102-acad-3bf4c3eb0c71'
+let webchatScriptEl: HTMLScriptElement | null = null
+
 onMounted(() => {
   loadRateCards()
   loadTestimonials()
@@ -206,6 +216,18 @@ onMounted(() => {
     }, { threshold: 0.4 })
     kpiObserver.observe(kpiSectionEl.value)
   }
+
+  const apiBase = import.meta.env.VITE_API_BASE_URL || '/api'
+  const widgetScriptOrigin = apiBase.startsWith('http') ? apiBase : window.location.origin
+  webchatScriptEl = document.createElement('script')
+  webchatScriptEl.src = `${widgetScriptOrigin}/v1/public/webchat/widget.js`
+  webchatScriptEl.setAttribute('data-widget-key', TEXTZI_WEBCHAT_WIDGET_KEY)
+  webchatScriptEl.async = true
+  document.body.appendChild(webchatScriptEl)
+})
+
+onUnmounted(() => {
+  webchatScriptEl?.remove()
 })
 </script>
 
