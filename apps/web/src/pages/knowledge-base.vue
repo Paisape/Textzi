@@ -1,9 +1,20 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'Knowledge Base - Textzi',
+  meta: [
+    { name: 'description', content: 'Answers to common questions about DLT registration, WhatsApp Business API, billing, and using Textzi\'s SMS, WhatsApp, and CRM platform.' },
+    { property: 'og:title', content: 'Knowledge Base - Textzi' },
+    { property: 'og:url', content: 'https://textzi.in/knowledge-base' },
+  ],
 })
 
 type Faq = { q: string, a: string }

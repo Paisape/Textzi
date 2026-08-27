@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'Pricing - SMS, WhatsApp & CRM - Textzi',
+  meta: [
+    { name: 'description', content: 'Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in. CRM is priced per seat. Talk to us for a custom plan.' },
+    { property: 'og:title', content: 'Pricing - SMS, WhatsApp & CRM - Textzi' },
+    { property: 'og:description', content: 'Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in -- or talk to us for a custom plan.' },
+    { property: 'og:url', content: 'https://textzi.in/products/pricing' },
+  ],
 })
 
 type RateCardSlab = { id: string, min_amount: number, max_amount: number | null, price_per_sms: number }

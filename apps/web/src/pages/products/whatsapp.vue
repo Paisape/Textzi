@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'WhatsApp Business API - Messaging, Commerce & Support - Textzi',
+  meta: [
+    { name: 'description', content: 'Connect your official WhatsApp Business number, sell through your product catalog, and support customers -- all from one shared team inbox with templates, automation, and analytics built in.' },
+    { property: 'og:title', content: 'WhatsApp Business API - Messaging, Commerce & Support - Textzi' },
+    { property: 'og:description', content: 'Templates, catalog & commerce, and a shared team inbox on the official WhatsApp Cloud API.' },
+    { property: 'og:url', content: 'https://textzi.in/products/whatsapp' },
+  ],
 })
 
 const features = [

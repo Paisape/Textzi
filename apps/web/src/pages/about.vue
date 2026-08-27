@@ -1,9 +1,20 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'About Textzi',
+  meta: [
+    { name: 'description', content: 'Textzi is a business messaging platform built for Indian businesses, owned and managed by Paisape Techfin Private Limited.' },
+    { property: 'og:title', content: 'About Textzi' },
+    { property: 'og:url', content: 'https://textzi.in/about' },
+  ],
 })
 </script>
 

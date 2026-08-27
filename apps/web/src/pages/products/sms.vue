@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'DLT-Compliant Bulk & Transactional SMS - Textzi',
+  meta: [
+    { name: 'description', content: 'Send OTPs, alerts, and campaigns across India with full TRAI/DLT compliance handled for you -- Entity ID, Sender Headers, and template approval, all in one dashboard.' },
+    { property: 'og:title', content: 'DLT-Compliant Bulk & Transactional SMS - Textzi' },
+    { property: 'og:description', content: 'DLT-compliant bulk & transactional SMS across India, pay-as-you-go.' },
+    { property: 'og:url', content: 'https://textzi.in/products/sms' },
+  ],
 })
 
 const features = [

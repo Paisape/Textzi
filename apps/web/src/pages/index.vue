@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'Textzi - WhatsApp & SMS Business Messaging',
+  meta: [
+    { name: 'description', content: 'Textzi is a DLT-compliant SMS and WhatsApp Business platform for Indian businesses -- send messages, manage a shared team inbox, and run a lightweight CRM from one place.' },
+    { property: 'og:title', content: 'Textzi - WhatsApp & SMS Business Messaging' },
+    { property: 'og:description', content: 'DLT-compliant SMS and WhatsApp Business messaging, a shared team inbox, and a lightweight CRM for Indian businesses.' },
+    { property: 'og:url', content: 'https://textzi.in/' },
+  ],
 })
 
 const channelCards = [

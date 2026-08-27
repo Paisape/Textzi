@@ -1,9 +1,21 @@
 <script setup lang="ts">
+import { useHead } from '@unhead/vue'
+
 definePage({
   meta: {
     layout: 'blank',
     public: true,
   },
+})
+
+useHead({
+  title: 'CRM for Indian SMEs - Pipeline, Helpdesk & Quotes - Textzi',
+  meta: [
+    { name: 'description', content: 'Pipeline, helpdesk, quotes, and live chat -- in one place, connected to the WhatsApp conversations you\'re already having. A complete CRM built for Indian SMEs.' },
+    { property: 'og:title', content: 'CRM for Indian SMEs - Pipeline, Helpdesk & Quotes - Textzi' },
+    { property: 'og:description', content: 'Pipelines, helpdesk, GST quotes, and live chat -- connected to your WhatsApp conversations.' },
+    { property: 'og:url', content: 'https://textzi.in/products/crm' },
+  ],
 })
 
 const features = [
