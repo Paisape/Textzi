@@ -214,8 +214,11 @@ async function confirmSchedule() {
   }
 }
 
+const busyCampaignId = ref<string | null>(null)
+
 async function unscheduleCampaign(campaign: Campaign) {
   loadError.value = ''
+  busyCampaignId.value = campaign.id
   try {
     const updated = await $api<Campaign>(`/v1/waba/campaigns/${campaign.id}/unschedule`, { method: 'POST' })
     const i = campaigns.value.findIndex(c => c.id === updated.id)
@@ -225,15 +228,22 @@ async function unscheduleCampaign(campaign: Campaign) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not unschedule this campaign.')
   }
+  finally {
+    busyCampaignId.value = null
+  }
 }
 
 async function deleteCampaign(campaign: Campaign) {
+  busyCampaignId.value = campaign.id
   try {
     await $api(`/v1/waba/campaigns/${campaign.id}`, { method: 'DELETE' })
     campaigns.value = campaigns.value.filter(c => c.id !== campaign.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this campaign.')
+  }
+  finally {
+    busyCampaignId.value = null
   }
 }
 
@@ -297,15 +307,15 @@ onMounted(loadAll)
               <td>{{ campaign.sent_count }} sent, {{ campaign.failed_count }} failed / {{ campaign.total_recipients }}</td>
               <td>
                 <template v-if="campaign.status === 'draft'">
-                  <VBtn size="small" variant="tonal" :loading="sending === campaign.id" @click="sendCampaign(campaign)">
+                  <VBtn size="small" variant="tonal" :loading="sending === campaign.id" :disabled="busyCampaignId === campaign.id" @click="sendCampaign(campaign)">
                     Send now
                   </VBtn>
-                  <VBtn size="small" variant="text" @click="openScheduleDialog(campaign)">
+                  <VBtn size="small" variant="text" :disabled="busyCampaignId === campaign.id" @click="openScheduleDialog(campaign)">
                     Schedule
                   </VBtn>
-                  <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteCampaign(campaign)" />
+                  <VBtn size="small" variant="text" icon="tabler-trash" :loading="busyCampaignId === campaign.id" :disabled="busyCampaignId === campaign.id" @click="deleteCampaign(campaign)" />
                 </template>
-                <VBtn v-else-if="campaign.status === 'scheduled'" size="small" variant="text" @click="unscheduleCampaign(campaign)">
+                <VBtn v-else-if="campaign.status === 'scheduled'" size="small" variant="text" :loading="busyCampaignId === campaign.id" :disabled="busyCampaignId === campaign.id" @click="unscheduleCampaign(campaign)">
                   Unschedule
                 </VBtn>
               </td>

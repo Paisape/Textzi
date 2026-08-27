@@ -178,13 +178,19 @@ async function saveReport() {
   }
 }
 
+const busySavedId = ref<string | null>(null)
+
 async function toggleSchedule(report: SavedReport, schedule: 'weekly' | 'monthly' | null) {
+  busySavedId.value = report.id
   try {
     const updated = await $api<SavedReport>(`/v1/crm/reports/saved/${report.id}`, { method: 'PATCH', body: { schedule } })
     report.schedule = updated.schedule
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this report\'s schedule.')
+  }
+  finally {
+    busySavedId.value = null
   }
 }
 
@@ -213,12 +219,16 @@ async function loadSaved(report: SavedReport) {
 }
 
 async function deleteSaved(report: SavedReport) {
+  busySavedId.value = report.id
   try {
     await $api(`/v1/crm/reports/saved/${report.id}`, { method: 'DELETE' })
     savedReports.value = savedReports.value.filter(r => r.id !== report.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this report.')
+  }
+  finally {
+    busySavedId.value = null
   }
 }
 
@@ -401,16 +411,17 @@ onMounted(async () => {
 
     <VCard title="My saved reports">
       <VList v-if="savedReports.length" density="compact">
-        <VListItem v-for="report in savedReports" :key="report.id" @click="loadSaved(report)">
+        <VListItem v-for="report in savedReports" :key="report.id" :disabled="busySavedId === report.id" @click="loadSaved(report)">
           <VListItemTitle>{{ report.name }}</VListItemTitle>
           <VListItemSubtitle>{{ report.object_type }} · grouped by {{ report.group_by }}</VListItemSubtitle>
           <template #append>
             <VSelect
               :model-value="report.schedule" :items="[{ title: 'No email', value: null }, { title: 'Email weekly', value: 'weekly' }, { title: 'Email monthly', value: 'monthly' }]"
               density="compact" hide-details variant="plain" style="max-width: 150px;" class="me-2"
+              :disabled="busySavedId === report.id"
               @click.stop @update:model-value="(v: 'weekly' | 'monthly' | null) => toggleSchedule(report, v)"
             />
-            <VBtn icon="tabler-trash" variant="text" size="small" @click.stop="deleteSaved(report)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busySavedId === report.id" :disabled="busySavedId === report.id" @click.stop="deleteSaved(report)" />
           </template>
         </VListItem>
       </VList>

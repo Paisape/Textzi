@@ -145,13 +145,19 @@ async function save() {
   }
 }
 
+const deletingId = ref<string | null>(null)
+
 async function remove(company: Company) {
+  deletingId.value = company.id
   try {
     await $api(`/v1/crm/companies/${company.id}`, { method: 'DELETE' })
     companies.value = companies.value.filter(c => c.id !== company.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this company.')
+  }
+  finally {
+    deletingId.value = null
   }
 }
 
@@ -222,8 +228,8 @@ onMounted(loadAll)
           <td>{{ company.open_deal_count }} · {{ inr(company.open_deal_value) }}</td>
           <td>{{ inr(company.won_deal_value) }}</td>
           <td class="text-end">
-            <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEdit(company)" />
-            <VBtn icon="tabler-trash" size="small" variant="text" @click="remove(company)" />
+            <VBtn icon="tabler-pencil" size="small" variant="text" :disabled="deletingId === company.id" @click="openEdit(company)" />
+            <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingId === company.id" :disabled="deletingId === company.id" @click="remove(company)" />
           </td>
         </tr>
       </tbody>

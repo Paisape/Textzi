@@ -119,7 +119,10 @@ async function saveRule() {
   }
 }
 
+const busyRuleId = ref<string | null>(null)
+
 async function deleteRule(rule: RoutingRule) {
+  busyRuleId.value = rule.id
   try {
     await $api(`/v1/crm/routing-rules/${rule.id}`, { method: 'DELETE' })
     routingRules.value = routingRules.value.filter(r => r.id !== rule.id)
@@ -127,15 +130,22 @@ async function deleteRule(rule: RoutingRule) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this rule.')
   }
+  finally {
+    busyRuleId.value = null
+  }
 }
 
 async function toggleRuleActive(rule: RoutingRule) {
+  busyRuleId.value = rule.id
   try {
     const updated = await $api<RoutingRule>(`/v1/crm/routing-rules/${rule.id}`, { method: 'PATCH', body: { active: !rule.active } })
     rule.active = updated.active
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this rule.')
+  }
+  finally {
+    busyRuleId.value = null
   }
 }
 
@@ -196,7 +206,10 @@ async function saveSequence() {
   }
 }
 
+const busySequenceId = ref<string | null>(null)
+
 async function deleteSequence(sequence: Sequence) {
+  busySequenceId.value = sequence.id
   try {
     await $api(`/v1/crm/sequences/${sequence.id}`, { method: 'DELETE' })
     sequences.value = sequences.value.filter(s => s.id !== sequence.id)
@@ -204,15 +217,22 @@ async function deleteSequence(sequence: Sequence) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this sequence.')
   }
+  finally {
+    busySequenceId.value = null
+  }
 }
 
 async function toggleSequenceActive(sequence: Sequence) {
+  busySequenceId.value = sequence.id
   try {
     const updated = await $api<Sequence>(`/v1/crm/sequences/${sequence.id}`, { method: 'PATCH', body: { active: !sequence.active } })
     sequence.active = updated.active
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this sequence.')
+  }
+  finally {
+    busySequenceId.value = null
   }
 }
 
@@ -302,10 +322,10 @@ onMounted(loadAll)
               <td>{{ rule.trigger_type }} = {{ triggerValueLabel(rule) }}</td>
               <td>{{ userName(rule.assign_to_user_id) }}</td>
               <td>
-                <VSwitch :model-value="rule.active" density="compact" hide-details @update:model-value="toggleRuleActive(rule)" />
+                <VSwitch :model-value="rule.active" density="compact" hide-details :disabled="busyRuleId === rule.id" @update:model-value="toggleRuleActive(rule)" />
               </td>
               <td class="text-end">
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteRule(rule)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="busyRuleId === rule.id" :disabled="busyRuleId === rule.id" @click="deleteRule(rule)" />
               </td>
             </tr>
           </tbody>
@@ -331,12 +351,13 @@ onMounted(loadAll)
               <template #append>
                 <VSwitch
                   :model-value="sequence.active" label="Active" density="compact" hide-details class="me-2"
+                  :disabled="busySequenceId === sequence.id"
                   @update:model-value="toggleSequenceActive(sequence)"
                 />
-                <VBtn size="small" variant="tonal" class="me-2" @click="openEnroll(sequence)">
+                <VBtn size="small" variant="tonal" class="me-2" :disabled="busySequenceId === sequence.id" @click="openEnroll(sequence)">
                   Enroll lead
                 </VBtn>
-                <VBtn icon="tabler-trash" variant="text" size="small" @click="deleteSequence(sequence)" />
+                <VBtn icon="tabler-trash" variant="text" size="small" :loading="busySequenceId === sequence.id" :disabled="busySequenceId === sequence.id" @click="deleteSequence(sequence)" />
               </template>
             </VCardItem>
             <VCardText>

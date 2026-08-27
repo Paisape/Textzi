@@ -237,7 +237,10 @@ async function saveProduct() {
   }
 }
 
+const togglingProductId = ref<string | null>(null)
+
 async function toggleProductActive(product: Product) {
+  togglingProductId.value = product.id
   try {
     const updated = await $api<Product>(`/v1/crm/quotes/products/${product.id}`, { method: 'PATCH', body: { active: !product.active } })
     product.active = updated.active
@@ -245,15 +248,24 @@ async function toggleProductActive(product: Product) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this product.')
   }
+  finally {
+    togglingProductId.value = null
+  }
 }
 
+const deletingProductId = ref<string | null>(null)
+
 async function deleteProduct(product: Product) {
+  deletingProductId.value = product.id
   try {
     await $api(`/v1/crm/quotes/products/${product.id}`, { method: 'DELETE' })
     products.value = products.value.filter(p => p.id !== product.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this product.')
+  }
+  finally {
+    deletingProductId.value = null
   }
 }
 
@@ -321,13 +333,19 @@ async function saveDocumentTemplate() {
   }
 }
 
+const deletingDocumentTemplateId = ref<string | null>(null)
+
 async function deleteDocumentTemplate(template: DocumentTemplate) {
+  deletingDocumentTemplateId.value = template.id
   try {
     await $api(`/v1/crm/document-templates/${template.id}`, { method: 'DELETE' })
     documentTemplates.value = documentTemplates.value.filter(t => t.id !== template.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this document template.')
+  }
+  finally {
+    deletingDocumentTemplateId.value = null
   }
 }
 
@@ -467,13 +485,19 @@ async function saveGroup() {
   }
 }
 
+const deletingGroupId = ref<string | null>(null)
+
 async function deleteGroup(group: TicketGroup) {
+  deletingGroupId.value = group.id
   try {
     await $api(`/v1/waba/ticket-groups/${group.id}`, { method: 'DELETE' })
     ticketGroups.value = ticketGroups.value.filter(g => g.id !== group.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this group.')
+  }
+  finally {
+    deletingGroupId.value = null
   }
 }
 
@@ -534,13 +558,19 @@ async function saveCanned() {
   }
 }
 
+const deletingCannedId = ref<string | null>(null)
+
 async function deleteCanned(item: CannedResponse) {
+  deletingCannedId.value = item.id
   try {
     await $api(`/v1/waba/canned-responses/${item.id}`, { method: 'DELETE' })
     cannedResponses.value = cannedResponses.value.filter(c => c.id !== item.id)
   }
   catch (error: any) {
     cannedError.value = extractErrorMessage(error, 'Could not delete this canned response.')
+  }
+  finally {
+    deletingCannedId.value = null
   }
 }
 
@@ -609,13 +639,19 @@ async function saveCustomField() {
   }
 }
 
+const deletingFieldId = ref<string | null>(null)
+
 async function deleteCustomField(field: CustomField) {
+  deletingFieldId.value = field.id
   try {
     await $api(`/v1/crm/custom-fields/${field.id}`, { method: 'DELETE' })
     customFields.value = customFields.value.filter(f => f.id !== field.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this field.')
+  }
+  finally {
+    deletingFieldId.value = null
   }
 }
 
@@ -656,7 +692,10 @@ async function saveScoringRule() {
   }
 }
 
+const busyScoringRuleId = ref<string | null>(null)
+
 async function toggleScoringRuleActive(rule: ScoringRule) {
+  busyScoringRuleId.value = rule.id
   try {
     const updated = await $api<ScoringRule>(`/v1/crm/scoring-rules/${rule.id}`, { method: 'PATCH', body: { active: !rule.active } })
     rule.active = updated.active
@@ -664,15 +703,22 @@ async function toggleScoringRuleActive(rule: ScoringRule) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this scoring rule.')
   }
+  finally {
+    busyScoringRuleId.value = null
+  }
 }
 
 async function deleteScoringRule(rule: ScoringRule) {
+  busyScoringRuleId.value = rule.id
   try {
     await $api(`/v1/crm/scoring-rules/${rule.id}`, { method: 'DELETE' })
     scoringRules.value = scoringRules.value.filter(r => r.id !== rule.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this scoring rule.')
+  }
+  finally {
+    busyScoringRuleId.value = null
   }
 }
 
@@ -741,13 +787,19 @@ async function saveTerritory() {
   }
 }
 
+const deletingTerritoryId = ref<string | null>(null)
+
 async function deleteTerritory(territory: Territory) {
+  deletingTerritoryId.value = territory.id
   try {
     await $api(`/v1/crm/territories/${territory.id}`, { method: 'DELETE' })
     territories.value = territories.value.filter(t => t.id !== territory.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this territory.')
+  }
+  finally {
+    deletingTerritoryId.value = null
   }
 }
 
@@ -831,13 +883,19 @@ function inr(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
 }
 
+const deletingTargetId = ref<string | null>(null)
+
 async function deleteTarget(target: SalesTarget) {
+  deletingTargetId.value = target.id
   try {
     await $api(`/v1/crm/sales-targets/${target.id}`, { method: 'DELETE' })
     salesTargets.value = salesTargets.value.filter(t => t.id !== target.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this sales target.')
+  }
+  finally {
+    deletingTargetId.value = null
   }
 }
 
@@ -1380,7 +1438,7 @@ onMounted(() => {
               <td>{{ group.name }}</td>
               <td>{{ group.member_user_ids.length }}</td>
               <td class="text-end">
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteGroup(group)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingGroupId === group.id" :disabled="deletingGroupId === group.id" @click="deleteGroup(group)" />
               </td>
             </tr>
           </tbody>
@@ -1417,8 +1475,8 @@ onMounted(() => {
                 {{ item.body }}
               </td>
               <td class="text-end">
-                <VBtn size="small" variant="text" icon="tabler-pencil" @click="openCannedDialog(item)" />
-                <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteCanned(item)" />
+                <VBtn size="small" variant="text" icon="tabler-pencil" :disabled="deletingCannedId === item.id" @click="openCannedDialog(item)" />
+                <VBtn size="small" variant="text" icon="tabler-trash" :loading="deletingCannedId === item.id" :disabled="deletingCannedId === item.id" @click="deleteCanned(item)" />
               </td>
             </tr>
           </tbody>
@@ -1460,7 +1518,7 @@ onMounted(() => {
               </td>
               <td>{{ field.required ? 'Yes' : 'No' }}</td>
               <td class="text-end">
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteCustomField(field)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingFieldId === field.id" :disabled="deletingFieldId === field.id" @click="deleteCustomField(field)" />
               </td>
             </tr>
           </tbody>
@@ -1494,10 +1552,10 @@ onMounted(() => {
               <td>{{ rule.condition_type }} = {{ rule.condition_value }}</td>
               <td>{{ rule.points }}</td>
               <td>
-                <VSwitch :model-value="rule.active" density="compact" hide-details @update:model-value="toggleScoringRuleActive(rule)" />
+                <VSwitch :model-value="rule.active" density="compact" hide-details :disabled="busyScoringRuleId === rule.id" @update:model-value="toggleScoringRuleActive(rule)" />
               </td>
               <td class="text-end">
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteScoringRule(rule)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="busyScoringRuleId === rule.id" :disabled="busyScoringRuleId === rule.id" @click="deleteScoringRule(rule)" />
               </td>
             </tr>
           </tbody>
@@ -1532,8 +1590,8 @@ onMounted(() => {
               <td>{{ territory.pincodes.join(', ') }}</td>
               <td>{{ ownerName(territory.owner_user_id) }}</td>
               <td class="text-end">
-                <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditTerritoryDialog(territory)" />
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteTerritory(territory)" />
+                <VBtn icon="tabler-pencil" size="small" variant="text" :disabled="deletingTerritoryId === territory.id" @click="openEditTerritoryDialog(territory)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingTerritoryId === territory.id" :disabled="deletingTerritoryId === territory.id" @click="deleteTerritory(territory)" />
               </td>
             </tr>
           </tbody>
@@ -1570,8 +1628,8 @@ onMounted(() => {
                 {{ inr(target.actual_value) }}
               </td>
               <td class="text-end">
-                <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditTargetDialog(target)" />
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteTarget(target)" />
+                <VBtn icon="tabler-pencil" size="small" variant="text" :disabled="deletingTargetId === target.id" @click="openEditTargetDialog(target)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingTargetId === target.id" :disabled="deletingTargetId === target.id" @click="deleteTarget(target)" />
               </td>
             </tr>
           </tbody>
@@ -1797,11 +1855,11 @@ onMounted(() => {
               <td>{{ product.hsn_code || '—' }}</td>
               <td>{{ inr(product.unit_price) }}</td>
               <td>
-                <VSwitch :model-value="product.active" density="compact" hide-details @update:model-value="toggleProductActive(product)" />
+                <VSwitch :model-value="product.active" density="compact" hide-details :disabled="togglingProductId === product.id" @update:model-value="toggleProductActive(product)" />
               </td>
               <td class="text-end">
-                <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditProductDialog(product)" />
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteProduct(product)" />
+                <VBtn icon="tabler-pencil" size="small" variant="text" :disabled="deletingProductId === product.id" @click="openEditProductDialog(product)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingProductId === product.id" :disabled="deletingProductId === product.id" @click="deleteProduct(product)" />
               </td>
             </tr>
           </tbody>
@@ -1834,8 +1892,8 @@ onMounted(() => {
                 {{ template.applies_to }}
               </td>
               <td class="text-end">
-                <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditDocumentDialog(template)" />
-                <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteDocumentTemplate(template)" />
+                <VBtn icon="tabler-pencil" size="small" variant="text" :disabled="deletingDocumentTemplateId === template.id" @click="openEditDocumentDialog(template)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingDocumentTemplateId === template.id" :disabled="deletingDocumentTemplateId === template.id" @click="deleteDocumentTemplate(template)" />
               </td>
             </tr>
           </tbody>

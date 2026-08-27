@@ -110,7 +110,11 @@ async function uploadFile(event: Event) {
   }
 }
 
+const downloadingAttachmentId = ref<string | null>(null)
+const deletingAttachmentId = ref<string | null>(null)
+
 async function downloadAttachment(attachment: Attachment) {
+  downloadingAttachmentId.value = attachment.id
   try {
     const blob = await $api<Blob, 'blob'>(`/v1/crm/attachments/${attachment.id}/download`, { responseType: 'blob' })
     const url = URL.createObjectURL(blob)
@@ -123,15 +127,22 @@ async function downloadAttachment(attachment: Attachment) {
   catch (error: any) {
     attachmentError.value = extractErrorMessage(error, 'Could not download this file.')
   }
+  finally {
+    downloadingAttachmentId.value = null
+  }
 }
 
 async function deleteAttachment(attachment: Attachment) {
+  deletingAttachmentId.value = attachment.id
   try {
     await $api(`/v1/crm/attachments/${attachment.id}`, { method: 'DELETE' })
     attachments.value = attachments.value.filter(a => a.id !== attachment.id)
   }
   catch (error: any) {
     attachmentError.value = extractErrorMessage(error, 'Could not delete this file.')
+  }
+  finally {
+    deletingAttachmentId.value = null
   }
 }
 
@@ -562,8 +573,8 @@ onMounted(load)
             <VListItemTitle>{{ attachment.filename }}</VListItemTitle>
             <VListItemSubtitle>{{ new Date(attachment.created_at).toLocaleDateString('en-IN') }}</VListItemSubtitle>
             <template #append>
-              <VBtn icon="tabler-download" size="small" variant="text" @click="downloadAttachment(attachment)" />
-              <VBtn icon="tabler-trash" size="small" variant="text" @click="deleteAttachment(attachment)" />
+              <VBtn icon="tabler-download" size="small" variant="text" :loading="downloadingAttachmentId === attachment.id" :disabled="downloadingAttachmentId === attachment.id || deletingAttachmentId === attachment.id" @click="downloadAttachment(attachment)" />
+              <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingAttachmentId === attachment.id" :disabled="downloadingAttachmentId === attachment.id || deletingAttachmentId === attachment.id" @click="deleteAttachment(attachment)" />
             </template>
           </VListItem>
         </VList>

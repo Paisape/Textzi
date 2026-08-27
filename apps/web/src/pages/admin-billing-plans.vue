@@ -40,7 +40,10 @@ async function loadPlans() {
 
 const filteredPlans = computed(() => channelFilter.value === 'all' ? plans.value : plans.value.filter(p => p.channel === channelFilter.value))
 
+const busyPlanId = ref<string | null>(null)
+
 async function toggleActive(plan: Plan) {
+  busyPlanId.value = plan.id
   try {
     const updated = await stepUp.withStepUp(() => $api<Plan>(`/v1/admin/billing-plans/${plan.id}`, {
       method: 'PUT',
@@ -51,15 +54,22 @@ async function toggleActive(plan: Plan) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this plan.')
   }
+  finally {
+    busyPlanId.value = null
+  }
 }
 
 async function deletePlan(plan: Plan) {
+  busyPlanId.value = plan.id
   try {
     await stepUp.withStepUp(() => $api(`/v1/admin/billing-plans/${plan.id}`, { method: 'DELETE' }))
     await loadPlans()
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this plan.')
+  }
+  finally {
+    busyPlanId.value = null
   }
 }
 
@@ -150,10 +160,10 @@ onMounted(loadPlans)
           <td>{{ plan.message_limit ?? '—' }}</td>
           <td>{{ plan.user_limit ?? '—' }}</td>
           <td>
-            <VSwitch :model-value="plan.active" density="compact" hide-details @update:model-value="toggleActive(plan)" />
+            <VSwitch :model-value="plan.active" density="compact" hide-details :disabled="busyPlanId === plan.id" @update:model-value="toggleActive(plan)" />
           </td>
           <td>
-            <VBtn size="small" variant="text" icon="tabler-trash" @click="deletePlan(plan)" />
+            <VBtn size="small" variant="text" icon="tabler-trash" :loading="busyPlanId === plan.id" :disabled="busyPlanId === plan.id" @click="deletePlan(plan)" />
           </td>
         </tr>
       </tbody>

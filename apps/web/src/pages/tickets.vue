@@ -345,13 +345,24 @@ async function saveSubject() {
 
 // --- Labels ------------------------------------------------------------------------------------
 
+const togglingLabelId = ref<string | null>(null)
+
 async function toggleLabel(label: Label) {
-  if (!selected.value)
+  if (!selected.value || togglingLabelId.value)
     return
-  const attached = selected.value.labels.some(l => l.id === label.id)
-  const method = attached ? 'DELETE' : 'POST'
-  const updated = await $api<Ticket>(`/v1/waba/conversations/${selected.value.id}/labels/${label.id}`, { method })
-  selected.value.labels = updated.labels
+  togglingLabelId.value = label.id
+  try {
+    const attached = selected.value.labels.some(l => l.id === label.id)
+    const method = attached ? 'DELETE' : 'POST'
+    const updated = await $api<Ticket>(`/v1/waba/conversations/${selected.value.id}/labels/${label.id}`, { method })
+    selected.value.labels = updated.labels
+  }
+  catch (error: any) {
+    threadError.value = extractErrorMessage(error, 'Could not update this label.')
+  }
+  finally {
+    togglingLabelId.value = null
+  }
 }
 
 // --- CC (email tickets only) --------------------------------------------------------------------
@@ -557,15 +568,18 @@ onMounted(() => {
           >
             Resolution: {{ dueLabel(selected.resolution_due_at, false) }}
           </VChip>
-          <VChip v-for="label in selected.labels" :key="label.id" size="small" :color="label.color" variant="tonal" closable @click:close="toggleLabel(label)">
+          <VChip
+            v-for="label in selected.labels" :key="label.id" size="small" :color="label.color" variant="tonal"
+            :closable="!togglingLabelId" @click:close="toggleLabel(label)"
+          >
             {{ label.name }}
           </VChip>
           <VMenu v-if="availableLabels.length">
             <template #activator="{ props: menuProps }">
-              <VBtn size="x-small" variant="text" icon="tabler-tag-plus" v-bind="menuProps" />
+              <VBtn size="x-small" variant="text" icon="tabler-tag-plus" :loading="!!togglingLabelId" v-bind="menuProps" />
             </template>
             <VList density="compact">
-              <VListItem v-for="label in availableLabels" :key="label.id" @click="toggleLabel(label)">
+              <VListItem v-for="label in availableLabels" :key="label.id" :disabled="!!togglingLabelId" @click="toggleLabel(label)">
                 <template #prepend>
                   <VIcon icon="tabler-circle-filled" size="10" :color="label.color" />
                 </template>

@@ -121,13 +121,19 @@ async function save() {
   }
 }
 
+const deletingId = ref<string | null>(null)
+
 async function remove(pipeline: Pipeline) {
+  deletingId.value = pipeline.id
   try {
     await $api(`/v1/crm/pipelines/${pipeline.id}`, { method: 'DELETE' })
     pipelines.value = pipelines.value.filter(p => p.id !== pipeline.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this pipeline — it may still have deals assigned to it.')
+  }
+  finally {
+    deletingId.value = null
   }
 }
 
@@ -162,8 +168,8 @@ onMounted(loadAll)
         <VCardItem>
           <VCardTitle>{{ pipeline.name }}</VCardTitle>
           <template #append>
-            <VBtn icon="tabler-pencil" variant="text" size="small" @click="openEdit(pipeline)" />
-            <VBtn icon="tabler-trash" variant="text" size="small" color="error" @click="remove(pipeline)" />
+            <VBtn icon="tabler-pencil" variant="text" size="small" :disabled="deletingId === pipeline.id" @click="openEdit(pipeline)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" color="error" :loading="deletingId === pipeline.id" :disabled="deletingId === pipeline.id" @click="remove(pipeline)" />
           </template>
         </VCardItem>
         <VCardText>

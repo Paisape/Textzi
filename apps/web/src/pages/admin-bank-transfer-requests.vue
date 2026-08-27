@@ -90,8 +90,11 @@ async function confirmApprove() {
   }
 }
 
+const rejectingId = ref<string | null>(null)
+
 async function reject(request: BankTransferRequest) {
   const note = window.prompt('Reason for rejecting this request (optional):') || undefined
+  rejectingId.value = request.id
   try {
     const updated = await $api<BankTransferRequest>(`/v1/admin/textzi-wallet/requests/${request.id}`, {
       method: 'PATCH',
@@ -107,6 +110,9 @@ async function reject(request: BankTransferRequest) {
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not reject this request.')
+  }
+  finally {
+    rejectingId.value = null
   }
 }
 
@@ -197,10 +203,10 @@ onMounted(load)
             <td>{{ req.credited_amount != null ? `₹${req.credited_amount.toLocaleString('en-IN')}` : '—' }}</td>
             <td>
               <div v-if="req.status === 'pending'" class="d-flex ga-2">
-                <VBtn size="small" color="success" variant="tonal" @click="openApprove(req)">
+                <VBtn size="small" color="success" variant="tonal" :disabled="rejectingId === req.id" @click="openApprove(req)">
                   Approve
                 </VBtn>
-                <VBtn size="small" color="error" variant="tonal" @click="reject(req)">
+                <VBtn size="small" color="error" variant="tonal" :loading="rejectingId === req.id" :disabled="rejectingId === req.id" @click="reject(req)">
                   Reject
                 </VBtn>
               </div>

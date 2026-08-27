@@ -59,7 +59,10 @@ function actionValueLabel(rule: Rule): string {
   return conversationLabels.value.find(l => l.id === rule.action_value)?.name || rule.action_value
 }
 
+const busyRuleId = ref<string | null>(null)
+
 async function toggleActive(rule: Rule) {
+  busyRuleId.value = rule.id
   try {
     const updated = await $api<Rule>(`/v1/waba/automation-rules/${rule.id}`, {
       method: 'PUT',
@@ -70,15 +73,22 @@ async function toggleActive(rule: Rule) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this rule.')
   }
+  finally {
+    busyRuleId.value = null
+  }
 }
 
 async function deleteRule(rule: Rule) {
+  busyRuleId.value = rule.id
   try {
     await $api(`/v1/waba/automation-rules/${rule.id}`, { method: 'DELETE' })
     rules.value = rules.value.filter(r => r.id !== rule.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this rule.')
+  }
+  finally {
+    busyRuleId.value = null
   }
 }
 
@@ -180,10 +190,10 @@ onMounted(loadAll)
           <td>{{ rule.action_type }}: {{ actionValueLabel(rule) }}</td>
           <td>{{ rule.priority }}</td>
           <td>
-            <VSwitch :model-value="rule.active" density="compact" hide-details @update:model-value="toggleActive(rule)" />
+            <VSwitch :model-value="rule.active" density="compact" hide-details :disabled="busyRuleId === rule.id" @update:model-value="toggleActive(rule)" />
           </td>
           <td>
-            <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteRule(rule)" />
+            <VBtn size="small" variant="text" icon="tabler-trash" :loading="busyRuleId === rule.id" :disabled="busyRuleId === rule.id" @click="deleteRule(rule)" />
           </td>
         </tr>
       </tbody>

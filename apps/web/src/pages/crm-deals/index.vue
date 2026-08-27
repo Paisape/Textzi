@@ -182,14 +182,20 @@ async function saveDeal() {
 const lostDialog = ref(false)
 const lostDeal = ref<Deal | null>(null)
 const lostReason = ref('')
+const markingWonId = ref<string | null>(null)
+const confirmingLost = ref(false)
 
 async function markWon(deal: Deal) {
+  markingWonId.value = deal.id
   try {
     const updated = await $api<Deal>(`/v1/crm/deals/${deal.id}/status`, { method: 'PATCH', body: { status: 'won' } })
     Object.assign(deal, updated)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not mark this deal as won.')
+  }
+  finally {
+    markingWonId.value = null
   }
 }
 
@@ -202,6 +208,7 @@ function openLostDialog(deal: Deal) {
 async function confirmLost() {
   if (!lostDeal.value)
     return
+  confirmingLost.value = true
   try {
     const updated = await $api<Deal>(`/v1/crm/deals/${lostDeal.value.id}/status`, { method: 'PATCH', body: { status: 'lost', lost_reason: lostReason.value } })
     Object.assign(lostDeal.value, updated)
@@ -209,6 +216,9 @@ async function confirmLost() {
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not mark this deal as lost.')
+  }
+  finally {
+    confirmingLost.value = false
   }
 }
 
@@ -354,10 +364,12 @@ function exportCsv() {
 
 const saveViewDialog = ref(false)
 const saveViewName = ref('')
+const savingView = ref(false)
 
 async function saveCurrentView() {
   if (!saveViewName.value.trim())
     return
+  savingView.value = true
   try {
     const created = await $api<SavedView>('/v1/crm/saved-views', { method: 'POST', body: { applies_to: 'deal', name: saveViewName.value.trim(), filters: { showClosed: showClosed.value } } })
     savedViews.value.push(created)
@@ -366,6 +378,9 @@ async function saveCurrentView() {
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not save this view.')
+  }
+  finally {
+    savingView.value = false
   }
 }
 
@@ -501,10 +516,25 @@ onMounted(loadAll)
                 <VBtn size="x-small" variant="text" @click="openDealDialog(deal)">
                   Edit deal
                 </VBtn>
-                <VBtn v-if="deal.status === 'open'" size="x-small" variant="text" color="success" @click="markWon(deal)">
+                <VBtn
+                  v-if="deal.status === 'open'"
+                  size="x-small"
+                  variant="text"
+                  color="success"
+                  :loading="markingWonId === deal.id"
+                  :disabled="markingWonId === deal.id"
+                  @click="markWon(deal)"
+                >
                   Won
                 </VBtn>
-                <VBtn v-if="deal.status === 'open'" size="x-small" variant="text" color="error" @click="openLostDialog(deal)">
+                <VBtn
+                  v-if="deal.status === 'open'"
+                  size="x-small"
+                  variant="text"
+                  color="error"
+                  :disabled="markingWonId === deal.id"
+                  @click="openLostDialog(deal)"
+                >
                   Lost
                 </VBtn>
               </div>
@@ -648,10 +678,10 @@ onMounted(loadAll)
       </VCardText>
       <VCardActions>
         <VSpacer />
-        <VBtn variant="text" @click="dealDialog = false">
+        <VBtn variant="text" :disabled="dealSaving" @click="dealDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :loading="dealSaving" @click="saveDeal">
+        <VBtn color="primary" :loading="dealSaving" :disabled="dealSaving" @click="saveDeal">
           Save
         </VBtn>
       </VCardActions>
@@ -668,10 +698,10 @@ onMounted(loadAll)
       </VCardText>
       <VCardActions>
         <VSpacer />
-        <VBtn variant="text" @click="lostDialog = false">
+        <VBtn variant="text" :disabled="confirmingLost" @click="lostDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="error" @click="confirmLost">
+        <VBtn color="error" :loading="confirmingLost" :disabled="confirmingLost" @click="confirmLost">
           Mark lost
         </VBtn>
       </VCardActions>
@@ -741,10 +771,10 @@ onMounted(loadAll)
       </VCardText>
       <VCardActions>
         <VSpacer />
-        <VBtn variant="text" @click="saveViewDialog = false">
+        <VBtn variant="text" :disabled="savingView" @click="saveViewDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :disabled="!saveViewName.trim()" @click="saveCurrentView">
+        <VBtn color="primary" :loading="savingView" :disabled="!saveViewName.trim() || savingView" @click="saveCurrentView">
           Save
         </VBtn>
       </VCardActions>

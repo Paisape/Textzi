@@ -52,14 +52,25 @@ function formatDate(value: string | null) {
   return value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
 }
 
+const exportingCsv = ref(false)
+
 async function exportCsv() {
-  const blob = await $api<Blob>('/v1/waba/contacts/export', { responseType: 'blob' })
-  const url = URL.createObjectURL(blob)
-  const link = document.createElement('a')
-  link.href = url
-  link.download = 'contacts.csv'
-  link.click()
-  URL.revokeObjectURL(url)
+  exportingCsv.value = true
+  try {
+    const blob = await $api<Blob>('/v1/waba/contacts/export', { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'contacts.csv'
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not export contacts.')
+  }
+  finally {
+    exportingCsv.value = false
+  }
 }
 
 const importDialog = ref(false)
@@ -101,7 +112,7 @@ onMounted(load)
       <VBtn variant="tonal" prepend-icon="tabler-upload" @click="importDialog = true">
         Import CSV
       </VBtn>
-      <VBtn variant="tonal" prepend-icon="tabler-download" @click="exportCsv">
+      <VBtn variant="tonal" prepend-icon="tabler-download" :loading="exportingCsv" :disabled="exportingCsv" @click="exportCsv">
         Export CSV
       </VBtn>
     </div>

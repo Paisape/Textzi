@@ -134,7 +134,10 @@ function isOverdue(task: Task) {
 
 const typeIcon: Record<string, string> = { call: 'tabler-phone', meeting: 'tabler-users', follow_up: 'tabler-clock', other: 'tabler-note' }
 
+const busyTaskId = ref<string | null>(null)
+
 async function toggleDone(task: Task) {
+  busyTaskId.value = task.id
   try {
     const updated = await $api<Task>(`/v1/crm/tasks/${task.id}`, { method: 'PATCH', body: { done: !task.done } })
     Object.assign(task, updated)
@@ -142,15 +145,22 @@ async function toggleDone(task: Task) {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not update this task.')
   }
+  finally {
+    busyTaskId.value = null
+  }
 }
 
 async function removeTask(task: Task) {
+  busyTaskId.value = task.id
   try {
     await $api(`/v1/crm/tasks/${task.id}`, { method: 'DELETE' })
     tasks.value = tasks.value.filter(t => t.id !== task.id)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this task.')
+  }
+  finally {
+    busyTaskId.value = null
   }
 }
 
@@ -282,7 +292,7 @@ onMounted(loadAll)
       <VList v-if="overdueOrToday.length" density="compact">
         <VListItem v-for="task in overdueOrToday" :key="task.id">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle :class="isOverdue(task) ? 'text-error' : ''">
             <VIcon :icon="typeIcon[task.type]" size="16" class="me-1" />
@@ -299,7 +309,7 @@ onMounted(loadAll)
             </VChip>
           </VListItemSubtitle>
           <template #append>
-            <VBtn icon="tabler-trash" variant="text" size="small" @click="removeTask(task)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click="removeTask(task)" />
           </template>
         </VListItem>
       </VList>
@@ -315,7 +325,7 @@ onMounted(loadAll)
       <VList v-if="upcoming.length" density="compact">
         <VListItem v-for="task in upcoming" :key="task.id">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle>
             <VIcon :icon="typeIcon[task.type]" size="16" class="me-1" />
@@ -332,7 +342,7 @@ onMounted(loadAll)
             </VChip>
           </VListItemSubtitle>
           <template #append>
-            <VBtn icon="tabler-trash" variant="text" size="small" @click="removeTask(task)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click="removeTask(task)" />
           </template>
         </VListItem>
       </VList>
@@ -351,7 +361,7 @@ onMounted(loadAll)
       <VList v-if="doneList.length" density="compact">
         <VListItem v-for="task in doneList" :key="task.id">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle class="text-decoration-line-through text-medium-emphasis">
             {{ task.title }}

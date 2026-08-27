@@ -283,10 +283,13 @@ async function saveDeal() {
 const lostDialog = ref(false)
 const lostReason = ref('')
 const converting = ref(false)
+const markingWon = ref(false)
+const confirmingLost = ref(false)
 
 async function markWon() {
   if (!detail.value)
     return
+  markingWon.value = true
   try {
     const updated = await $api<Deal>(`/v1/crm/deals/${detail.value.deal.id}/status`, { method: 'PATCH', body: { status: 'won' } })
     Object.assign(detail.value.deal, updated)
@@ -294,11 +297,15 @@ async function markWon() {
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not mark this deal as won.')
   }
+  finally {
+    markingWon.value = false
+  }
 }
 
 async function confirmLost() {
   if (!detail.value)
     return
+  confirmingLost.value = true
   try {
     const updated = await $api<Deal>(`/v1/crm/deals/${detail.value.deal.id}/status`, { method: 'PATCH', body: { status: 'lost', lost_reason: lostReason.value } })
     Object.assign(detail.value.deal, updated)
@@ -306,6 +313,9 @@ async function confirmLost() {
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not mark this deal as lost.')
+  }
+  finally {
+    confirmingLost.value = false
   }
 }
 
@@ -609,17 +619,17 @@ onMounted(load)
             @update:model-value="(v: string) => generateDocument(v)"
           />
           <template v-if="detail.deal.status === 'open'">
-            <VBtn color="success" variant="tonal" block @click="markWon">
+            <VBtn color="success" variant="tonal" block :loading="markingWon" :disabled="markingWon" @click="markWon">
               Mark won
             </VBtn>
-            <VBtn color="error" variant="tonal" block @click="lostDialog = true">
+            <VBtn color="error" variant="tonal" block :disabled="markingWon" @click="lostDialog = true">
               Mark lost
             </VBtn>
-            <VBtn color="primary" block :loading="converting" @click="convertToCustomer">
+            <VBtn color="primary" block :loading="converting" :disabled="converting" @click="convertToCustomer">
               Convert to customer
             </VBtn>
           </template>
-          <VBtn color="error" variant="text" block :loading="deleting" @click="deleteDeal">
+          <VBtn color="error" variant="text" block :loading="deleting" :disabled="deleting" @click="deleteDeal">
             Delete deal
           </VBtn>
         </VCardText>
@@ -690,10 +700,10 @@ onMounted(load)
       </VCardText>
       <VCardActions>
         <VSpacer />
-        <VBtn variant="text" @click="lostDialog = false">
+        <VBtn variant="text" :disabled="confirmingLost" @click="lostDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="error" @click="confirmLost">
+        <VBtn color="error" :loading="confirmingLost" :disabled="confirmingLost" @click="confirmLost">
           Mark lost
         </VBtn>
       </VCardActions>

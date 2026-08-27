@@ -630,6 +630,7 @@ const newLabelDialog = ref(false)
 const newLabelScope = ref<'conversation' | 'contact'>('conversation')
 const newLabelName = ref('')
 const newLabelError = ref('')
+const creatingLabel = ref(false)
 
 function openNewLabelDialog(scope: 'conversation' | 'contact') {
   newLabelScope.value = scope
@@ -641,6 +642,7 @@ function openNewLabelDialog(scope: 'conversation' | 'contact') {
 async function createLabel() {
   if (!newLabelName.value.trim())
     return
+  creatingLabel.value = true
   try {
     const label = await $api<Label>('/v1/waba/labels', { method: 'POST', body: { scope: newLabelScope.value, name: newLabelName.value.trim() } })
     labels.value.push(label)
@@ -654,6 +656,9 @@ async function createLabel() {
   }
   catch (error: any) {
     newLabelError.value = extractErrorMessage(error, 'Could not create this label.')
+  }
+  finally {
+    creatingLabel.value = false
   }
 }
 
@@ -1937,10 +1942,10 @@ watch(statusFilter, loadConversations)
         <AppTextField v-model="newLabelName" label="Label name" @keydown.enter="createLabel" />
       </VCardText>
       <VCardText class="d-flex justify-end ga-3 pt-0">
-        <VBtn variant="text" @click="newLabelDialog = false">
+        <VBtn variant="text" :disabled="creatingLabel" @click="newLabelDialog = false">
           Cancel
         </VBtn>
-        <VBtn @click="createLabel">
+        <VBtn :loading="creatingLabel" :disabled="creatingLabel" @click="createLabel">
           Create
         </VBtn>
       </VCardText>

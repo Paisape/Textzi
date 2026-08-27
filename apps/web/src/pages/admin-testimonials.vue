@@ -57,8 +57,11 @@ async function load() {
   }
 }
 
+const busyId = ref<string | null>(null)
+
 async function setStatus(id: string, status: 'approved' | 'rejected') {
   actionError.value = ''
+  busyId.value = id
   try {
     await stepUp.withStepUp(() => $api(`/v1/admin/testimonials/${id}/status`, { method: 'PATCH', body: { status } }))
     await load()
@@ -66,16 +69,23 @@ async function setStatus(id: string, status: 'approved' | 'rejected') {
   catch (error: any) {
     actionError.value = extractErrorMessage(error, 'Could not update this testimonial.')
   }
+  finally {
+    busyId.value = null
+  }
 }
 
 async function remove(id: string) {
   actionError.value = ''
+  busyId.value = id
   try {
     await stepUp.withStepUp(() => $api(`/v1/admin/testimonials/${id}`, { method: 'DELETE' }))
     await load()
   }
   catch (error: any) {
     actionError.value = extractErrorMessage(error, 'Could not delete this testimonial.')
+  }
+  finally {
+    busyId.value = null
   }
 }
 
@@ -192,13 +202,13 @@ onMounted(load)
               </VChip>
             </td>
             <td class="text-no-wrap">
-              <VBtn v-if="row.status !== 'approved'" size="small" variant="tonal" color="success" class="me-2" @click="setStatus(row.id, 'approved')">
+              <VBtn v-if="row.status !== 'approved'" size="small" variant="tonal" color="success" class="me-2" :loading="busyId === row.id" :disabled="busyId === row.id" @click="setStatus(row.id, 'approved')">
                 Approve
               </VBtn>
-              <VBtn v-if="row.status !== 'rejected'" size="small" variant="tonal" color="warning" class="me-2" @click="setStatus(row.id, 'rejected')">
+              <VBtn v-if="row.status !== 'rejected'" size="small" variant="tonal" color="warning" class="me-2" :loading="busyId === row.id" :disabled="busyId === row.id" @click="setStatus(row.id, 'rejected')">
                 Reject
               </VBtn>
-              <VBtn size="small" variant="text" color="error" @click="remove(row.id)">
+              <VBtn size="small" variant="text" color="error" :loading="busyId === row.id" :disabled="busyId === row.id" @click="remove(row.id)">
                 Delete
               </VBtn>
             </td>

@@ -51,13 +51,19 @@ function statusColor(status: string) {
   return 'warning'
 }
 
+const deletingTemplate = ref<string | null>(null)
+
 async function deleteTemplate(name: string) {
+  deletingTemplate.value = name
   try {
     await $api(`/v1/waba/templates/${name}`, { method: 'DELETE' })
     templates.value = templates.value.filter(t => t.name !== name)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not delete this template.')
+  }
+  finally {
+    deletingTemplate.value = null
   }
 }
 
@@ -221,7 +227,7 @@ onMounted(loadTemplates)
             {{ template.body }}
           </td>
           <td>
-            <VBtn size="small" variant="text" icon="tabler-trash" @click="deleteTemplate(template.name)" />
+            <VBtn size="small" variant="text" icon="tabler-trash" :loading="deletingTemplate === template.name" :disabled="deletingTemplate === template.name" @click="deleteTemplate(template.name)" />
           </td>
         </tr>
       </tbody>

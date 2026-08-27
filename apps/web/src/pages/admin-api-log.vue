@@ -371,6 +371,7 @@ onMounted(() => load())
                     v-if="row.message_id"
                     size="small"
                     variant="text"
+                    :disabled="telemetryLoading"
                     @click="onViewTelemetry(row)"
                   >
                     View
@@ -463,6 +464,7 @@ onMounted(() => load())
                   <VBtn
                     size="small"
                     variant="text"
+                    :disabled="platformTelemetryLoading"
                     @click="onViewPlatformTelemetry(row)"
                   >
                     View
