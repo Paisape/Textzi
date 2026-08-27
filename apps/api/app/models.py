@@ -264,12 +264,19 @@ class PeId(Base):
     value: Mapped[str] = mapped_column(String(64))
     operator: Mapped[str] = mapped_column(String(80))
     certificate_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    # Proof the customer submitted a PE-TM chain mapping request from their own DLT operator
-    # login, selecting Textzi as their Telemarketer -- only meaningful for self-service (a
-    # customer bringing their own already-registered PE has to link it to Textzi themselves);
-    # the full-service DltOnboardingRequest flow doesn't need this since Textzi's own team
-    # handles the mapping directly as part of doing the whole registration.
+    # Legacy proof-of-upload path from when this was a required file upload -- kept nullable so
+    # existing rows that have one aren't touched; no longer written by new submissions (see
+    # pe_tm_mapping_confirmed below).
     pe_tm_mapping_path: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Self-declared confirmation the customer submitted a PE-TM chain mapping request from their
+    # own DLT operator login, selecting Textzi as their Telemarketer -- only meaningful for
+    # self-service (a customer bringing their own already-registered PE has to link it to Textzi
+    # themselves); the full-service DltOnboardingRequest flow doesn't need this since Textzi's own
+    # team handles the mapping directly as part of doing the whole registration. A plain Yes/No
+    # confirmation, not a document upload -- Textzi has no way to verify this from its own side
+    # regardless (the mapping happens entirely on the operator's own portal), so a self-declaration
+    # carries the same practical weight as an uploaded screenshot would.
+    pe_tm_mapping_confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
     status: Mapped[Status] = mapped_column(Enum(Status), default=Status.pending)
     __table_args__ = (UniqueConstraint("entity_id", "value", name="uq_entity_pe"),)
 

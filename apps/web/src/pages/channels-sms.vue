@@ -316,7 +316,7 @@ const ssOperator = ref('')
 const ssHeaderId = ref('')
 const ssHeaderValue = ref('')
 const ssCertificate = ref<File | File[] | null>(null)
-const ssPeTmMapping = ref<File | File[] | null>(null)
+const ssPeTmMappingConfirmed = ref<boolean | null>(null)
 const ssSubmitting = ref(false)
 const ssError = ref('')
 
@@ -329,13 +329,12 @@ function firstFile(value: File | File[] | null): File | null {
 async function onSubmitSelfService() {
   ssError.value = ''
   const certificate = firstFile(ssCertificate.value)
-  const peTmMapping = firstFile(ssPeTmMapping.value)
   if (!ssValue.value.trim() || !ssOperator.value.trim() || !ssHeaderId.value.trim() || !ssHeaderValue.value.trim() || !certificate) {
     ssError.value = 'Fill in every field and upload your PE certificate.'
     return
   }
-  if (!peTmMapping) {
-    ssError.value = 'Upload the PE-TM chain mapping confirmation.'
+  if (ssPeTmMappingConfirmed.value !== true) {
+    ssError.value = 'Confirm you\'ve submitted the PE-TM chain mapping request before continuing.'
     return
   }
   ssSubmitting.value = true
@@ -346,9 +345,9 @@ async function onSubmitSelfService() {
     form.set('header_id', ssHeaderId.value.trim())
     form.set('header_value', ssHeaderValue.value.trim())
     form.set('certificate', certificate)
-    form.set('pe_tm_mapping', peTmMapping)
+    form.set('pe_tm_mapping_confirmed', 'true')
     await $api('/v1/channels/sms/dlt/self-service', { method: 'POST', body: form })
-    ssValue.value = ''; ssOperator.value = ''; ssHeaderId.value = ''; ssHeaderValue.value = ''; ssCertificate.value = null; ssPeTmMapping.value = null
+    ssValue.value = ''; ssOperator.value = ''; ssHeaderId.value = ''; ssHeaderValue.value = ''; ssCertificate.value = null; ssPeTmMappingConfirmed.value = null
     await refreshAll()
   }
   catch (error: any) {
@@ -1417,11 +1416,11 @@ onMounted(async () => {
                           />
                         </VCol>
                         <VCol cols="12">
-                          <VFileInput
-                            v-model="ssPeTmMapping"
+                          <AppSelect
+                            v-model="ssPeTmMappingConfirmed"
                             label="PE-TM chain mapping confirmation"
-                            accept=".pdf,.jpg,.jpeg,.png"
-                            prepend-icon="tabler-link"
+                            placeholder="Have you submitted the PE-TM chain mapping request?"
+                            :items="[{ title: 'Yes', value: true }, { title: 'No', value: false }]"
                           />
                         </VCol>
                         <VCol cols="12">

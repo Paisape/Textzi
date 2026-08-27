@@ -269,25 +269,28 @@ def submit_self_service_dlt(
     header_id: str = Form(...),
     header_value: str = Form(...),
     certificate: UploadFile = File(...),
-    pe_tm_mapping: UploadFile = File(...),
+    pe_tm_mapping_confirmed: bool = Form(...),
     user: User = Depends(require_user),
     db: Session = Depends(get_db),
 ):
     """A customer who already has their own DLT registration self-declares it here, uploads
     the PE certificate as proof, and it's approved immediately -- no admin review, matching how
     admin-created DLT assets already go active on creation without an approval step. Also
-    requires proof of the PE-TM chain mapping request (see PeId.pe_tm_mapping_path) -- since
-    Textzi never touches their DLT registration in this flow, linking it to Textzi's own
-    Telemarketer ID is something only the customer can do, from their own operator login."""
+    requires confirming the PE-TM chain mapping request (see PeId.pe_tm_mapping_confirmed) --
+    since Textzi never touches their DLT registration in this flow, linking it to Textzi's own
+    Telemarketer ID is something only the customer can do, from their own operator login. A plain
+    Yes/No confirmation rather than a document upload -- Textzi has no way to verify this itself
+    either way (the mapping happens entirely on the operator's own portal)."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not pe_tm_mapping_confirmed:
+        raise HTTPException(status_code=422, detail="Confirm you've submitted the PE-TM chain mapping request before continuing")
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == pe_value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
     stored_path, _ = save_upload(certificate, f"pe-certificates/{entity.id}")
-    mapping_path, _ = save_upload(pe_tm_mapping, f"pe-certificates/{entity.id}")
-    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_path=mapping_path, status=Status.active)
+    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_confirmed=True, status=Status.active)
     db.add(pe); db.flush()
     header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.active)
     db.add(header)
