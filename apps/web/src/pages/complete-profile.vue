@@ -13,6 +13,12 @@ definePage({
 const router = useRouter()
 const authStore = useAuthStore()
 
+function onLogout() {
+  authStore.clear()
+  useCookie('accessToken').value = null
+  router.push('/login')
+}
+
 type CompanyProfile = {
   organization_id: string
   company_name: string
@@ -56,6 +62,12 @@ const mobileValidator = (v: string) => /^[1-9][0-9]{9,14}$/.test(v) || 'Enter a 
 const refForm = ref()
 const errorMessage = ref('')
 const submitting = ref(false)
+const errorAlertEl = ref<{ $el: HTMLElement } | null>(null)
+
+function showError(message: string) {
+  errorMessage.value = message
+  nextTick(() => errorAlertEl.value?.$el?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+}
 
 async function loadProfile() {
   loading.value = true
@@ -89,7 +101,7 @@ async function onSubmit() {
 
   const certificate = firstFile(gstCertificate.value)
   if (!noGstin.value && !hasExistingCertificate.value && !certificate) {
-    errorMessage.value = 'Upload your GST certificate, or check "I don\'t have a GSTIN" if you\'re not GST-registered.'
+    showError('Upload your GST certificate, or check "I don\'t have a GSTIN" if you\'re not GST-registered.')
     return
   }
 
@@ -111,7 +123,7 @@ async function onSubmit() {
     router.push('/dashboard')
   }
   catch (error: any) {
-    errorMessage.value = extractErrorMessage(error, 'Could not save your company profile. Please try again.')
+    showError(extractErrorMessage(error, 'Could not save your company profile. Please try again.'))
   }
   finally {
     submitting.value = false
@@ -135,13 +147,23 @@ async function onSubmit() {
       max-width="560"
       class="ma-4 pa-6 w-100"
     >
-      <VCardText>
-        <h4 class="text-h4 mb-1">
-          Complete your profile
-        </h4>
-        <p class="mb-0">
-          Before you continue, confirm your company details -- this only takes a minute.
-        </p>
+      <VCardText class="d-flex align-start justify-space-between gap-4">
+        <div>
+          <h4 class="text-h4 mb-1">
+            Complete your profile
+          </h4>
+          <p class="mb-0">
+            Before you continue, confirm your company details -- this only takes a minute.
+          </p>
+        </div>
+        <VBtn
+          variant="text"
+          size="small"
+          class="flex-shrink-0"
+          @click="onLogout"
+        >
+          Log out
+        </VBtn>
       </VCardText>
 
       <VCardText v-if="loading">
@@ -163,6 +185,7 @@ async function onSubmit() {
       <VCardText v-else>
         <VAlert
           v-if="errorMessage"
+          ref="errorAlertEl"
           type="error"
           variant="tonal"
           density="compact"

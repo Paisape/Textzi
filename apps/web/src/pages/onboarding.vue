@@ -79,6 +79,16 @@ async function onSubmit() {
     router.push('/dashboard')
   }
   catch (error: any) {
+    // A 409 here specifically means this account's organization was already created -- most often
+    // because an earlier submission actually succeeded server-side but the response never reached
+    // the browser (slow network, tab closed, double-click), leaving this form showing again with
+    // nothing left to submit. The right move is forward, not another attempt at a form the backend
+    // will keep rejecting -- the router guard (plugins/1.router/index.ts) already knows how to send
+    // an onboarded-but-not-yet-profile-completed account to the right next screen.
+    if (error?.response?.status === 409) {
+      router.push('/dashboard')
+      return
+    }
     errorMessage.value = extractErrorMessage(error, 'Could not set up your organization. Please try again.')
   }
   finally {
