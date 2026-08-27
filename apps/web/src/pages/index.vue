@@ -98,12 +98,25 @@ async function loadTestimonials() {
   }
 }
 
-const supportChannels = [
-  { icon: 'tabler-message-circle-2', label: 'Live Chat', to: '/#contact' },
-  { icon: 'tabler-phone', label: 'Phone Support', to: '/#contact' },
-  { icon: 'tabler-mail', label: 'Email Support', to: '/#contact' },
-  { icon: 'tabler-book-2', label: 'Knowledge Base', to: '/knowledge-base' },
-]
+type CompanyInfo = { company_name: string, company_address: string, company_phone: string, support_email: string }
+
+const companyInfo = ref<CompanyInfo | null>(null)
+
+async function loadCompanyInfo() {
+  try {
+    companyInfo.value = await $api<CompanyInfo>('/v1/public/company-info')
+  }
+  catch {
+    companyInfo.value = null
+  }
+}
+
+function openLiveChat() {
+  // The webchat widget script (webchat_widget_js.py) mounts its own bubble button with this id --
+  // clicking it programmatically opens the exact same panel a visitor gets by clicking it directly,
+  // rather than this page maintaining a second, separate "open the widget" mechanism.
+  document.getElementById('textzi-widget-bubble')?.click()
+}
 
 const contactForm = reactive({ name: '', email: '', phone: '', company: '', message: '' })
 const contactSubmitting = ref(false)
@@ -228,6 +241,7 @@ let webchatScriptEl: HTMLScriptElement | null = null
 onMounted(() => {
   loadRateCards()
   loadTestimonials()
+  loadCompanyInfo()
 
   if (kpiSectionEl.value && !prefersReducedMotion) {
     const kpiObserver = new IntersectionObserver(([entry]) => {
@@ -459,7 +473,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             Channels
           </VChip>
@@ -528,7 +542,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             Why Textzi
           </VChip>
@@ -614,7 +628,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             How It Works
           </VChip>
@@ -663,7 +677,7 @@ onUnmounted(() => {
               color="primary"
               variant="tonal"
               size="small"
-              class="mb-3"
+              class="mb-3 section-eyebrow"
             >
               Built for India
             </VChip>
@@ -731,7 +745,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             Pricing
           </VChip>
@@ -969,7 +983,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             Testimonials
           </VChip>
@@ -1039,7 +1053,7 @@ onUnmounted(() => {
               color="primary"
               variant="tonal"
               size="small"
-              class="mb-3"
+              class="mb-3 section-eyebrow"
             >
               Support
             </VChip>
@@ -1047,16 +1061,32 @@ onUnmounted(() => {
               We're Here to Help You Succeed
             </h2>
             <p class="text-medium-emphasis mb-6">
-              Our dedicated support team is available round the clock to help you with setup, troubleshooting, and optimising your campaigns for maximum impact.
+              Reach us directly, or start a chat right now — same team, same platform you'll be using.
             </p>
             <VRow>
-              <VCol
-                v-for="channel in supportChannels"
-                :key="channel.label"
-                cols="6"
-              >
-                <RouterLink
-                  :to="channel.to"
+              <VCol cols="6">
+                <button
+                  type="button"
+                  class="d-flex align-center gap-3 support-channel-link"
+                  @click="openLiveChat"
+                >
+                  <VAvatar
+                    color="primary"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-message-circle-2"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <span class="font-weight-medium">Live Chat</span>
+                </button>
+              </VCol>
+              <VCol cols="6">
+                <a
+                  v-if="companyInfo?.company_phone"
+                  :href="`tel:${companyInfo.company_phone}`"
                   class="d-flex align-center gap-3 support-channel-link"
                 >
                   <VAvatar
@@ -1065,11 +1095,64 @@ onUnmounted(() => {
                     size="36"
                   >
                     <VIcon
-                      :icon="channel.icon"
+                      icon="tabler-phone"
                       size="18"
                     />
                   </VAvatar>
-                  <span class="font-weight-medium">{{ channel.label }}</span>
+                  <span class="font-weight-medium">{{ companyInfo.company_phone }}</span>
+                </a>
+                <RouterLink
+                  v-else
+                  to="/#contact"
+                  class="d-flex align-center gap-3 support-channel-link"
+                >
+                  <VAvatar
+                    color="primary"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-phone"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <span class="font-weight-medium">Contact Sales</span>
+                </RouterLink>
+              </VCol>
+              <VCol cols="6">
+                <a
+                  :href="`mailto:${companyInfo?.support_email ?? 'support@textzi.in'}`"
+                  class="d-flex align-center gap-3 support-channel-link"
+                >
+                  <VAvatar
+                    color="primary"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-mail"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <span class="font-weight-medium">Email Support</span>
+                </a>
+              </VCol>
+              <VCol cols="6">
+                <RouterLink
+                  to="/knowledge-base"
+                  class="d-flex align-center gap-3 support-channel-link"
+                >
+                  <VAvatar
+                    color="primary"
+                    variant="tonal"
+                    size="36"
+                  >
+                    <VIcon
+                      icon="tabler-book-2"
+                      size="18"
+                    />
+                  </VAvatar>
+                  <span class="font-weight-medium">Knowledge Base</span>
                 </RouterLink>
               </VCol>
             </VRow>
@@ -1092,10 +1175,10 @@ onUnmounted(() => {
                   class="mb-4"
                 />
                 <div class="text-h6 font-weight-bold">
-                  24/7 Support Available
+                  {{ companyInfo?.company_name ?? 'Textzi' }} Support
                 </div>
                 <div class="text-medium-emphasis">
-                  Real people, real answers, any time you need them.
+                  {{ companyInfo?.company_address || 'Real people, real answers.' }}
                 </div>
               </VCardText>
             </VCard>
@@ -1156,7 +1239,7 @@ onUnmounted(() => {
             color="primary"
             variant="tonal"
             size="small"
-            class="mb-3"
+            class="mb-3 section-eyebrow"
           >
             Contact
           </VChip>
@@ -1326,6 +1409,12 @@ onUnmounted(() => {
   color: inherit;
   text-decoration: none;
   border-radius: 8px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
   transition: color 0.15s ease;
 
   &:hover {
@@ -1453,6 +1542,13 @@ onUnmounted(() => {
   max-inline-size: 640px;
   margin-inline: auto;
   margin-block-end: 3rem;
+}
+
+.section-eyebrow {
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  font-size: 0.6875rem;
 }
 
 .channel-card-link {

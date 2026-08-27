@@ -142,6 +142,7 @@ WIDGET_JS = r"""
   document.body.appendChild(root);
 
   var bubble = document.createElement('button');
+  bubble.id = 'textzi-widget-bubble';
   bubble.textContent = 'Chat';
   bubble.style.cssText = 'border:0;border-radius:999px;padding:14px 20px;color:#fff;font-size:15px;cursor:pointer;box-shadow:0 4px 12px rgba(0,0,0,.2);';
   root.appendChild(bubble);

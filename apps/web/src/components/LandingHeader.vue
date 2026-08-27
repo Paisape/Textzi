@@ -6,9 +6,9 @@ const headerScrolled = ref(false)
 const mobileChannelsOpen = ref(false)
 
 const channelLinks = [
-  { to: '/products/sms', label: 'SMS' },
-  { to: '/products/whatsapp', label: 'WhatsApp' },
-  { to: '/products/crm', label: 'CRM' },
+  { to: '/products/sms', label: 'SMS', desc: 'DLT-compliant bulk & transactional', icon: 'tabler-messages', color: 'info' },
+  { to: '/products/whatsapp', label: 'WhatsApp', desc: 'Business API, catalog & inbox', icon: 'tabler-brand-whatsapp', color: 'success' },
+  { to: '/products/crm', label: 'CRM', desc: 'Pipeline, helpdesk & quotes', icon: 'tabler-users-group', color: 'primary' },
 ]
 
 function onWindowScroll() {
@@ -59,13 +59,33 @@ onUnmounted(() => {
               />
             </a>
           </template>
-          <VList density="compact">
+          <VList class="channel-menu-list">
             <VListItem
               v-for="channel in channelLinks"
               :key="channel.to"
               :to="channel.to"
-              :title="channel.label"
-            />
+              class="channel-menu-item"
+            >
+              <template #prepend>
+                <VAvatar
+                  :color="channel.color"
+                  variant="tonal"
+                  size="36"
+                  rounded="lg"
+                >
+                  <VIcon
+                    :icon="channel.icon"
+                    size="18"
+                  />
+                </VAvatar>
+              </template>
+              <VListItemTitle class="font-weight-medium">
+                {{ channel.label }}
+              </VListItemTitle>
+              <VListItemSubtitle>
+                {{ channel.desc }}
+              </VListItemSubtitle>
+            </VListItem>
           </VList>
         </VMenu>
         <RouterLink to="/products/pricing">
@@ -179,12 +199,14 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: 10;
-  background: rgb(var(--v-theme-surface));
+  background: rgba(var(--v-theme-surface), 0.85);
+  backdrop-filter: blur(10px);
   border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
-  transition: box-shadow 0.3s ease;
+  transition: box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
 .landing-header-scrolled {
+  border-block-end-color: transparent;
   box-shadow: 0 4px 20px rgba(var(--v-theme-on-surface), 0.08);
 }
 
@@ -257,5 +279,14 @@ onUnmounted(() => {
   border: none;
   padding: 0;
   text-align: start;
+}
+
+.channel-menu-list {
+  min-inline-size: 260px;
+  padding-block: 8px;
+}
+
+.channel-menu-item {
+  padding-block: 10px;
 }
 </style>
