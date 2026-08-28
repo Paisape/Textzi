@@ -80,6 +80,13 @@ const createError = ref('')
 const creating = ref(false)
 const form = ref({ channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null as number | null, user_limit: null as number | null, active: true })
 
+// CRM plans are monthly/quarterly only (no yearly tier) -- reset period if a channel switch
+// leaves it on a value that channel no longer offers.
+watch(() => form.value.channel, (channel) => {
+  if (channel === 'crm' && form.value.period === 'yearly')
+    form.value.period = 'monthly'
+})
+
 function openCreateDialog() {
   form.value = { channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null, user_limit: null, active: true }
   createError.value = ''
@@ -190,7 +197,9 @@ onMounted(loadPlans)
         <VSelect
           v-model="form.period"
           label="Billing period"
-          :items="[{ title: 'Monthly', value: 'monthly' }, { title: 'Quarterly', value: 'quarterly' }, { title: 'Yearly', value: 'yearly' }]"
+          :items="form.channel === 'crm'
+            ? [{ title: 'Monthly', value: 'monthly' }, { title: 'Quarterly', value: 'quarterly' }]
+            : [{ title: 'Monthly', value: 'monthly' }, { title: 'Quarterly', value: 'quarterly' }, { title: 'Yearly', value: 'yearly' }]"
           class="mb-3"
         />
         <AppTextField v-model.number="form.price" type="number" label="Price (pre-tax, ₹)" class="mb-3" />

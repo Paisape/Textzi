@@ -548,8 +548,17 @@ def list_billing_plans(channel: str | None = None, db: Session = Depends(get_db)
     return [_billing_plan_out(p) for p in plans]
 
 
+def _validate_billing_plan_period(channel: str, period: str) -> None:
+    # CRM is monthly/quarterly only -- unlike WABA, it has no yearly tier (per the original
+    # billing design). Enforced here, not just in the admin UI's own dropdown, since the UI
+    # filtering alone doesn't stop a direct API call from creating an invalid plan.
+    if channel == "crm" and period == "yearly":
+        raise HTTPException(status_code=422, detail="CRM plans don't support a yearly billing period")
+
+
 @router.post("/billing-plans", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def create_billing_plan(payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
+    _validate_billing_plan_period(payload.channel, payload.period)
     plan = BillingPlan(
         channel=payload.channel, name=payload.name, period=payload.period, price=payload.price,
         message_limit=payload.message_limit, user_limit=payload.user_limit, active=payload.active,
@@ -561,6 +570,7 @@ def create_billing_plan(payload: BillingPlanCreateRequest, db: Session = Depends
 
 @router.put("/billing-plans/{plan_id}", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def update_billing_plan(plan_id: str, payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
+    _validate_billing_plan_period(payload.channel, payload.period)
     plan = db.get(BillingPlan, plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Plan not found")
