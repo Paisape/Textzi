@@ -59,9 +59,43 @@ onMounted(() => {
       eyebrow="WhatsApp Business API"
       title="WhatsApp Messaging, Commerce & Support in One Inbox"
       subtitle="Connect your official WhatsApp Business number, sell through your product catalog, and support customers — all from one shared team inbox with templates, automation, and analytics built in."
-      icon="tabler-brand-whatsapp"
-      icon-color="success"
-    />
+    >
+      <template #mockup>
+        <VCard class="wa-mockup-card" elevation="16" rounded="lg">
+          <div class="wa-mockup-header">
+            <VAvatar color="success" variant="tonal" size="32">
+              <VIcon icon="tabler-brand-whatsapp" size="16" />
+            </VAvatar>
+            <div>
+              <div class="text-body-2 font-weight-medium">
+                Ananya Textiles
+              </div>
+              <div class="text-caption text-medium-emphasis">
+                Online
+              </div>
+            </div>
+          </div>
+          <div class="wa-mockup-body">
+            <div class="wa-bubble wa-bubble-in">
+              Hi, do you have the blue saree in stock?
+            </div>
+            <div class="wa-bubble wa-bubble-out">
+              <div class="wa-template-label">
+                <VIcon icon="tabler-template" size="12" />
+                Product Catalog
+              </div>
+              Yes! Here's our latest collection — tap to browse and order.
+              <div class="wa-bubble-meta">
+                10:42 <VIcon icon="tabler-checks" size="14" color="info" />
+              </div>
+            </div>
+            <div class="wa-bubble wa-bubble-in">
+              Perfect, sending payment now
+            </div>
+          </div>
+        </VCard>
+      </template>
+    </LandingChannelHero>
 
     <section class="section-py">
       <VContainer>
@@ -224,5 +258,67 @@ onMounted(() => {
   background: rgb(var(--v-theme-primary));
   color: white;
   text-align: center;
+}
+
+.wa-mockup-card {
+  max-inline-size: 400px;
+  margin-inline: auto;
+  overflow: hidden;
+}
+
+.wa-mockup-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.wa-mockup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: rgba(var(--v-theme-success), 0.04);
+}
+
+.wa-bubble {
+  max-inline-size: 82%;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 0.8125rem;
+  line-height: 1.4;
+}
+
+.wa-bubble-in {
+  align-self: flex-start;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: 0 1px 2px rgba(var(--v-theme-on-surface), 0.08);
+}
+
+.wa-bubble-out {
+  align-self: flex-end;
+  background: rgba(var(--v-theme-success), 0.16);
+}
+
+.wa-template-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  color: rgb(var(--v-theme-success));
+  margin-block-end: 4px;
+}
+
+.wa-bubble-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  margin-block-start: 4px;
+  font-size: 0.6875rem;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
 }
 </style>

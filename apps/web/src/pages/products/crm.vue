@@ -43,9 +43,54 @@ const useCases = [
       eyebrow="CRM"
       title="A Complete CRM Built for Indian SMEs"
       subtitle="Pipeline, helpdesk, quotes, and live chat — in one place, connected to the WhatsApp conversations you're already having. Not a bolted-on contact list."
-      icon="tabler-users-group"
-      icon-color="primary"
-    />
+    >
+      <template #mockup>
+        <VCard class="crm-mockup-card" elevation="16" rounded="lg">
+          <div class="crm-mockup-titlebar">
+            <VIcon icon="tabler-chart-funnel" size="16" color="primary" />
+            <span class="text-body-2 font-weight-medium">Pipeline</span>
+          </div>
+          <div class="crm-mockup-body">
+            <div class="crm-stage">
+              <div class="crm-stage-label">
+                Proposal Sent
+              </div>
+              <VCard variant="outlined" class="crm-deal-card">
+                <VCardText class="py-3">
+                  <div class="d-flex align-center justify-space-between mb-1">
+                    <span class="text-body-2 font-weight-medium">Ananya Textiles</span>
+                    <VChip color="primary" size="x-small" variant="tonal">
+                      ₹85,000
+                    </VChip>
+                  </div>
+                  <div class="text-caption text-medium-emphasis">
+                    60% probability · Closes Fri
+                  </div>
+                </VCardText>
+              </VCard>
+            </div>
+            <div class="crm-stage">
+              <div class="crm-stage-label">
+                Won
+              </div>
+              <VCard variant="outlined" class="crm-deal-card crm-deal-card-won">
+                <VCardText class="py-3 d-flex align-center gap-2">
+                  <VIcon icon="tabler-circle-check-filled" color="success" size="18" />
+                  <div>
+                    <div class="text-body-2 font-weight-medium">
+                      Rahul Verma
+                    </div>
+                    <div class="text-caption text-medium-emphasis">
+                      ₹1,20,000 · GST invoice sent
+                    </div>
+                  </div>
+                </VCardText>
+              </VCard>
+            </div>
+          </div>
+        </VCard>
+      </template>
+    </LandingChannelHero>
 
     <section class="section-py">
       <VContainer>
@@ -195,5 +240,41 @@ const useCases = [
   background: rgb(var(--v-theme-primary));
   color: white;
   text-align: center;
+}
+
+.crm-mockup-card {
+  max-inline-size: 400px;
+  margin-inline: auto;
+  overflow: hidden;
+}
+
+.crm-mockup-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.crm-mockup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px;
+}
+
+.crm-stage-label {
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgba(var(--v-theme-on-surface), var(--v-medium-emphasis-opacity));
+  margin-block-end: 8px;
+}
+
+.crm-deal-card-won {
+  background: rgba(var(--v-theme-success), 0.06);
+  border-color: rgba(var(--v-theme-success), 0.3);
 }
 </style>

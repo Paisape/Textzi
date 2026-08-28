@@ -797,7 +797,7 @@ onUnmounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">SMS</span>
                   <VChip
-                    color="info"
+                    variant="tonal"
                     size="small"
                   >
                     Pay per SMS
@@ -863,7 +863,7 @@ onUnmounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">WhatsApp</span>
                   <VChip
-                    color="success"
+                    variant="tonal"
                     size="small"
                   >
                     Pay per message
@@ -1467,6 +1467,16 @@ onUnmounted(() => {
   max-inline-size: 440px;
   margin-inline: auto;
   padding-block-end: 72px;
+}
+
+// The webchat widget's bubble is fixed at 20px from the viewport bottom (roughly a 90px
+// footprint including its own size) -- on a short mobile screen the hero's own content can be
+// taller than the viewport, so the mockup's bottom edge renders right where the bubble sits on
+// first paint, before any scrolling. Extra clearance here keeps them from visually overlapping.
+@media (max-width: 600px) {
+  .hero-mockup {
+    margin-block-end: 96px;
+  }
 }
 
 .hero-mockup-card {

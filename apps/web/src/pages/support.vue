@@ -157,7 +157,7 @@ onUnmounted(() => {
 
         <div
           v-if="!loading && !messages.length && !loadError"
-          class="text-center text-medium-emphasis py-8"
+          class="support-empty-state text-center text-medium-emphasis"
         >
           <VIcon
             icon="tabler-headset"
@@ -223,6 +223,16 @@ onUnmounted(() => {
 .support-thread {
   block-size: 420px;
   overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+}
+
+.support-empty-state {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
 }
 
 .support-message {

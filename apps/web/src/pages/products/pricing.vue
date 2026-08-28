@@ -96,7 +96,7 @@ onMounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">SMS</span>
                   <VChip
-                    color="info"
+                    variant="tonal"
                     size="small"
                   >
                     Pay per SMS
@@ -161,7 +161,7 @@ onMounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">WhatsApp</span>
                   <VChip
-                    color="success"
+                    variant="tonal"
                     size="small"
                   >
                     Pay per message
@@ -226,7 +226,7 @@ onMounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">CRM</span>
                   <VChip
-                    color="primary"
+                    variant="tonal"
                     size="small"
                   >
                     Per seat

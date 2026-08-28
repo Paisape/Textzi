@@ -1,13 +1,9 @@
 <script setup lang="ts">
-withDefaults(defineProps<{
+defineProps<{
   eyebrow: string
   title: string
   subtitle: string
-  icon: string
-  iconColor?: string
-}>(), {
-  iconColor: 'primary',
-})
+}>()
 </script>
 
 <template>
@@ -17,10 +13,10 @@ withDefaults(defineProps<{
       <VRow align="center">
         <VCol
           cols="12"
-          md="7"
+          md="6"
         >
           <VChip
-            :color="iconColor"
+            color="primary"
             variant="tonal"
             class="mb-4"
             size="small"
@@ -45,7 +41,7 @@ withDefaults(defineProps<{
             <VBtn
               size="large"
               variant="outlined"
-              to="/pricing"
+              to="/products/pricing"
             >
               View Pricing
             </VBtn>
@@ -53,20 +49,9 @@ withDefaults(defineProps<{
         </VCol>
         <VCol
           cols="12"
-          md="5"
-          class="text-center"
+          md="6"
         >
-          <VAvatar
-            :color="iconColor"
-            variant="tonal"
-            size="140"
-            class="channel-hero-icon"
-          >
-            <VIcon
-              :icon="icon"
-              size="72"
-            />
-          </VAvatar>
+          <slot name="mockup" />
         </VCol>
       </VRow>
     </VContainer>
@@ -110,7 +95,7 @@ withDefaults(defineProps<{
   max-inline-size: 34rem;
 }
 
-.channel-hero-icon {
-  box-shadow: 0 20px 50px rgba(var(--v-theme-primary), 0.2);
+.channel-hero-section :deep(.hero-mockup) {
+  margin-inline: 0;
 }
 </style>

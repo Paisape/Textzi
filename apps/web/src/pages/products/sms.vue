@@ -66,9 +66,40 @@ onMounted(() => {
       eyebrow="SMS"
       title="DLT-Compliant Bulk & Transactional SMS"
       subtitle="Send OTPs, alerts, and campaigns across India with full TRAI/DLT compliance handled for you — Entity ID, Sender Headers, and template approval, all in one dashboard."
-      icon="tabler-messages"
-      icon-color="info"
-    />
+    >
+      <template #mockup>
+        <VCard class="sms-mockup-card" elevation="16" rounded="lg">
+          <div class="sms-mockup-titlebar">
+            <VIcon icon="tabler-message-2" size="16" color="primary" />
+            <span class="text-body-2 font-weight-medium">Send SMS</span>
+          </div>
+          <div class="sms-mockup-body">
+            <div class="sms-field">
+              <div class="text-caption text-medium-emphasis mb-1">
+                Template
+              </div>
+              <div class="sms-field-value">
+                ORDER_SHIPPED_DLT
+              </div>
+            </div>
+            <div class="sms-field">
+              <div class="text-caption text-medium-emphasis mb-1">
+                Preview
+              </div>
+              <div class="sms-preview-text">
+                Your order #4521 has shipped and will arrive by Thu. Track: txzi.in/t/4521 -Textzi
+              </div>
+            </div>
+            <div class="sms-mockup-row">
+              <VChip color="success" size="small" variant="tonal">
+                Delivered
+              </VChip>
+              <span class="text-caption text-medium-emphasis">1 credit</span>
+            </div>
+          </div>
+        </VCard>
+      </template>
+    </LandingChannelHero>
 
     <section class="section-py">
       <VContainer>
@@ -91,7 +122,7 @@ onMounted(() => {
             >
               <VCardText>
                 <VAvatar
-                  color="info"
+                  color="primary"
                   variant="tonal"
                   size="48"
                   rounded="lg"
@@ -129,7 +160,7 @@ onMounted(() => {
             >
               <VIcon
                 icon="tabler-circle-check-filled"
-                color="info"
+                color="primary"
               />
               <span>{{ point }}</span>
             </div>
@@ -146,7 +177,7 @@ onMounted(() => {
                 <div class="d-flex align-center justify-space-between mb-1">
                   <span class="text-h6 font-weight-bold">SMS Pricing</span>
                   <VChip
-                    color="info"
+                    color="primary"
                     size="small"
                   >
                     Pay per SMS
@@ -247,5 +278,50 @@ onMounted(() => {
   background: rgb(var(--v-theme-primary));
   color: white;
   text-align: center;
+}
+
+.sms-mockup-card {
+  max-inline-size: 400px;
+  margin-inline: auto;
+  overflow: hidden;
+}
+
+.sms-mockup-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 14px 16px;
+  border-block-end: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  background: rgba(var(--v-theme-on-surface), 0.03);
+}
+
+.sms-mockup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+}
+
+.sms-field-value {
+  font-family: monospace;
+  font-size: 0.8125rem;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  display: inline-block;
+}
+
+.sms-preview-text {
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(var(--v-theme-on-surface), 0.04);
+}
+
+.sms-mockup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 </style>
