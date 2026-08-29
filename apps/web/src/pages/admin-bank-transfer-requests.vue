@@ -84,21 +84,38 @@ async function confirmApprove() {
   }
   catch (error: any) {
     reviewError.value = extractErrorMessage(error, 'Could not approve this request.')
+    // Another admin/tab already reviewed this one -- refresh the list so this stale row stops
+    // showing Approve/Reject as if it were still actionable.
+    if (error?.response?.status === 422)
+      load()
   }
   finally {
     reviewSubmitting.value = false
   }
 }
 
-const rejectingId = ref<string | null>(null)
+const rejectDialog = ref(false)
+const rejectingRequest = ref<BankTransferRequest | null>(null)
+const rejectNote = ref('')
+const rejectSubmitting = ref(false)
+const rejectError = ref('')
 
-async function reject(request: BankTransferRequest) {
-  const note = window.prompt('Reason for rejecting this request (optional):') || undefined
-  rejectingId.value = request.id
+function openReject(request: BankTransferRequest) {
+  rejectingRequest.value = request
+  rejectNote.value = ''
+  rejectError.value = ''
+  rejectDialog.value = true
+}
+
+async function confirmReject() {
+  if (!rejectingRequest.value)
+    return
+  rejectSubmitting.value = true
+  rejectError.value = ''
   try {
-    const updated = await $api<BankTransferRequest>(`/v1/admin/textzi-wallet/requests/${request.id}`, {
+    const updated = await $api<BankTransferRequest>(`/v1/admin/textzi-wallet/requests/${rejectingRequest.value.id}`, {
       method: 'PATCH',
-      body: { status: 'rejected', admin_note: note || null },
+      body: { status: 'rejected', admin_note: rejectNote.value || null },
     })
     const index = requests.value.findIndex(r => r.id === updated.id)
     if (index !== -1) {
@@ -107,12 +124,15 @@ async function reject(request: BankTransferRequest) {
       else
         requests.value[index] = updated
     }
+    rejectDialog.value = false
   }
   catch (error: any) {
-    loadError.value = extractErrorMessage(error, 'Could not reject this request.')
+    rejectError.value = extractErrorMessage(error, 'Could not reject this request.')
+    if (error?.response?.status === 422)
+      load()
   }
   finally {
-    rejectingId.value = null
+    rejectSubmitting.value = false
   }
 }
 
@@ -165,7 +185,7 @@ onMounted(load)
 
     <VProgressLinear v-if="loading" indeterminate color="primary" class="mb-4" />
 
-    <VCard v-if="requests.length">
+    <VCard v-if="requests.length" class="admin-bank-transfer-card">
       <VTable>
         <thead>
           <tr>
@@ -177,7 +197,7 @@ onMounted(load)
             <th>Receipt</th>
             <th>Status</th>
             <th>Credited</th>
-            <th />
+            <th class="admin-bank-transfer-actions-col" />
           </tr>
         </thead>
         <tbody>
@@ -200,12 +220,12 @@ onMounted(load)
               </VChip>
             </td>
             <td>{{ req.credited_amount != null ? `₹${req.credited_amount.toLocaleString('en-IN')}` : '—' }}</td>
-            <td>
+            <td class="admin-bank-transfer-actions-col">
               <div v-if="req.status === 'pending'" class="d-flex ga-2">
                 <VBtn size="small" color="success" variant="tonal" :disabled="rejectingId === req.id" @click="openApprove(req)">
                   Approve
                 </VBtn>
-                <VBtn size="small" color="error" variant="tonal" :loading="rejectingId === req.id" :disabled="rejectingId === req.id" @click="reject(req)">
+                <VBtn size="small" color="error" variant="tonal" @click="openReject(req)">
                   Reject
                 </VBtn>
               </div>
@@ -252,4 +272,48 @@ onMounted(load)
       </VCardText>
     </VCard>
   </VDialog>
+
+  <VDialog v-model="rejectDialog" max-width="440">
+    <VCard v-if="rejectingRequest">
+      <VCardTitle>Reject bank transfer request</VCardTitle>
+      <VCardText>
+        <VAlert v-if="rejectError" type="error" variant="tonal" density="compact" class="mb-4">
+          {{ rejectError }}
+        </VAlert>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          Customer claimed ₹{{ rejectingRequest.amount.toLocaleString('en-IN') }} via {{ rejectingRequest.mode.toUpperCase() }}
+          (UTR {{ rejectingRequest.utr_number }}). This will not credit their wallet.
+        </p>
+        <AppTextField
+          v-model="rejectNote"
+          label="Reason (optional, shown to the customer)"
+        />
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="rejectDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="error" :loading="rejectSubmitting" @click="confirmReject">
+          Reject request
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
 </template>
+
+<style scoped>
+/* Vuetify's own .v-table__wrapper already scrolls horizontally when the table is wider than its
+   card, but relying on an admin to notice a scrollbar exists is fragile (confirmed: an idle
+   overlay scrollbar is easy to miss entirely). Pin the actions column to the right edge instead,
+   so Approve/Reject are always reachable regardless of scroll position -- the standard pattern
+   for wide admin tables with an actions column. */
+.admin-bank-transfer-card :deep(.v-table__wrapper) {
+  overflow-x: auto;
+}
+.admin-bank-transfer-actions-col {
+  position: sticky;
+  inset-inline-end: 0;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: -4px 0 6px -4px rgba(0, 0, 0, 0.2);
+}
+</style>

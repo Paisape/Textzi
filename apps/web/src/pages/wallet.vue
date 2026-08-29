@@ -406,30 +406,41 @@ onMounted(() => {
                 <h3 class="text-body-1 font-weight-medium mb-3">
                   Your requests
                 </h3>
-                <VTable density="compact">
+                <VTable density="compact" class="bank-transfer-history-table">
                   <thead>
                     <tr>
                       <th>Date</th>
                       <th>Mode</th>
                       <th>Amount</th>
                       <th>Status</th>
-                      <th>Credited</th>
+                      <th class="bank-transfer-credited-col">
+                        Credited
+                      </th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr v-for="req in bankTransferRequests" :key="req.id">
-                      <td>{{ req.transfer_date }}</td>
-                      <td class="text-uppercase">
-                        {{ req.mode }}
-                      </td>
-                      <td>{{ inr(req.amount) }}</td>
-                      <td>
-                        <VChip :color="statusColor[req.status]" size="small">
-                          {{ req.status }}
-                        </VChip>
-                      </td>
-                      <td>{{ req.credited_amount != null ? inr(req.credited_amount) : '—' }}</td>
-                    </tr>
+                    <template v-for="req in bankTransferRequests" :key="req.id">
+                      <tr>
+                        <td>{{ req.transfer_date }}</td>
+                        <td class="text-uppercase">
+                          {{ req.mode }}
+                        </td>
+                        <td>{{ inr(req.amount) }}</td>
+                        <td>
+                          <VChip :color="statusColor[req.status]" size="small">
+                            {{ req.status }}
+                          </VChip>
+                        </td>
+                        <td class="bank-transfer-credited-col">
+                          {{ req.credited_amount != null ? inr(req.credited_amount) : '—' }}
+                        </td>
+                      </tr>
+                      <tr v-if="req.status === 'rejected' && req.admin_note">
+                        <td colspan="5" class="text-caption text-medium-emphasis pb-2">
+                          Reason: {{ req.admin_note }}
+                        </td>
+                      </tr>
+                    </template>
                   </tbody>
                 </VTable>
                 <p v-if="!bankTransferRequests.length" class="text-medium-emphasis text-center pa-4 mb-0">
@@ -497,3 +508,18 @@ onMounted(() => {
     </VCard>
   </VDialog>
 </template>
+
+<style scoped>
+.bank-transfer-history-table :deep(.v-table__wrapper) {
+  overflow-x: auto;
+}
+/* The credited amount (vs. what the customer claimed) is the one number this table exists to
+   show -- pin it to the right edge so it's never the column that silently scrolls out of view at
+   normal desktop widths (confirmed: relying on the scrollbar being noticed is unreliable). */
+.bank-transfer-credited-col {
+  position: sticky;
+  inset-inline-end: 0;
+  background: rgb(var(--v-theme-surface));
+  box-shadow: -4px 0 6px -4px rgba(0, 0, 0, 0.2);
+}
+</style>
