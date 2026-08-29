@@ -17,7 +17,7 @@ from .services import GST_RATE, DomainError, credit_wallet, payment_method_confi
 
 router = APIRouter(prefix="/v1/wallet", tags=["wallet"])
 
-_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect")
+_PAYMENT_METHODS = ("razorpay_checkout", "razorpay_smart_collect", "bank_transfer")
 
 
 @router.get("/payment-methods", response_model=list[PaymentMethodConfigOut])
