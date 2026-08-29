@@ -966,7 +966,14 @@ def debit_platform_wallet(db: Session, amount: float, type: str, reference: str 
 def resolve_channel_fees(db: Session, channel: str = "sms") -> ChannelFeeConfig:
     fees = db.get(ChannelFeeConfig, channel)
     if not fees:
-        raise DomainError(f"No fee configuration exists for channel '{channel}'")
+        # Every caller (channels.py's status/subscription/DLT-quote endpoints) surfaces this
+        # DomainError's own message verbatim to the customer via extractErrorMessage's "prefer the
+        # backend's own string" convention -- the old message ("No fee configuration exists for
+        # channel 'sms'") was an internal ops-configuration detail, not something a customer should
+        # ever see as if it were their own problem. This is a real, if rare, admin setup gap (a
+        # ChannelFeeConfig row was never seeded for this channel), so the message stays accurate
+        # about the channel being unavailable without exposing the internal cause.
+        raise DomainError(f"{channel.upper()} is not available yet. Please contact support.")
     return fees
 
 

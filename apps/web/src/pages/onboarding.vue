@@ -52,6 +52,7 @@ const mobileValidator = (v: string) => /^[1-9][0-9]{9,14}$/.test(v) || 'Enter a 
 const refForm = ref()
 const errorMessage = ref('')
 const submitting = ref(false)
+const successMessage = ref('')
 
 async function onSubmit() {
   const { valid } = await refForm.value.validate()
@@ -76,6 +77,11 @@ async function onSubmit() {
         contact_mobile: form.value.contactMobile,
       },
     })
+    // A brief, visible confirmation before navigating -- the very next screen
+    // (/complete-profile, via the router guard) is another form that looks structurally similar
+    // to this one, so without this a user has no clear signal their submission actually worked.
+    successMessage.value = 'Organisation created! Taking you to the next step...'
+    await new Promise(resolve => setTimeout(resolve, 900))
     router.push('/dashboard')
   }
   catch (error: any) {
@@ -124,6 +130,15 @@ async function onSubmit() {
 
       <VCardText>
         <VAlert
+          v-if="successMessage"
+          type="success"
+          variant="tonal"
+          density="compact"
+          class="mb-4"
+        >
+          {{ successMessage }}
+        </VAlert>
+        <VAlert
           v-if="errorMessage"
           type="error"
           variant="tonal"
@@ -133,6 +148,7 @@ async function onSubmit() {
           {{ errorMessage }}
         </VAlert>
         <VForm
+          v-if="!successMessage"
           ref="refForm"
           @submit.prevent="onSubmit"
         >
