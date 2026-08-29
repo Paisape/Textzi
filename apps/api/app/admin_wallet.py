@@ -70,7 +70,11 @@ def download_bank_transfer_receipt(request_id: str, db: Session = Depends(get_db
     if not row:
         raise HTTPException(status_code=404, detail="Request not found")
     ext = os.path.splitext(row.receipt_path)[1]
-    return FileResponse(row.receipt_path, filename=f"receipt-{row.utr_number}{ext}")
+    media_type = {".pdf": "application/pdf", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png"}.get(ext.lower())
+    # No `filename=` -- that forces Content-Disposition: attachment (a download), but the admin
+    # review UI's "View" link expects an inline preview, matching every other document-preview
+    # endpoint in this codebase (e.g. the DLT document viewer).
+    return FileResponse(row.receipt_path, media_type=media_type)
 
 
 @router.patch("/requests/{request_id}", response_model=BankTransferTopupRequestAdminOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])

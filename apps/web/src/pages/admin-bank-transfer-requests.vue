@@ -120,11 +120,10 @@ async function downloadReceipt(request: BankTransferRequest) {
   try {
     const blob = await $api<Blob, 'blob'>(`/v1/admin/textzi-wallet/requests/${request.id}/receipt`, { responseType: 'blob' })
     const url = URL.createObjectURL(blob)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = `receipt-${request.utr_number}`
-    link.click()
-    URL.revokeObjectURL(url)
+    // Preview inline (new tab) rather than forcing a save-as dialog -- an admin reviewing a
+    // receipt against the bank statement wants to look at it immediately, not download-then-open.
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not download this receipt.')

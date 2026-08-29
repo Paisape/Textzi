@@ -20,7 +20,7 @@ from .database import get_db
 from .email_service import render_email, send_email
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BankTransferTopupRequest, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
     PageView, PlatformPaymentMethodConfig, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
 )
@@ -2390,6 +2390,13 @@ def get_admin_notifications(db: Session = Depends(get_db)):
         notifications.append(AdminAlertOut(
             id="profile-change-pending", severity="info", title=f"{pending_profile_changes} profile change request{'s' if pending_profile_changes != 1 else ''} awaiting review",
             description="Customers are waiting on a profile/company detail change to be approved.", link="/profile-change-requests",
+        ))
+
+    pending_bank_transfers = db.scalar(select(func.count()).select_from(BankTransferTopupRequest).where(BankTransferTopupRequest.status == "pending")) or 0
+    if pending_bank_transfers:
+        notifications.append(AdminAlertOut(
+            id="bank-transfer-pending", severity="info", title=f"{pending_bank_transfers} bank transfer request{'s' if pending_bank_transfers != 1 else ''} awaiting review",
+            description="Customers are waiting on a manual bank-transfer top-up to be verified and credited.", link="/admin-bank-transfer-requests",
         ))
 
     platform_wallet = db.get(PlatformWallet, "platform")
