@@ -187,7 +187,50 @@ function scrollToFeatures() {
 
 // Reveal-on-scroll: fades/slides an element in the first time it enters the viewport.
 // `v-reveal="index"` staggers a group by index; plain `v-reveal` fires immediately on entry.
+//
+// IntersectionObserver alone isn't reliable enough for this: confirmed via a real repro (a fast
+// wheel-scroll or an instant scrollTo/hash-link jump covering thousands of pixels in one or two
+// frames) that a large fraction of elements NEVER get an isIntersecting:true callback at all --
+// not a timing race, a genuinely missed threshold crossing, even with threshold:0 and a 200px
+// rootMargin. Browsers don't guarantee a callback for every element a fast scroll passes over.
+// The robust fix is a belt-and-braces sweep: track every not-yet-revealed element in a Set, and
+// on every scroll/resize (debounced via rAF), directly check getBoundingClientRect for anything
+// still pending and reveal it if it's on screen or already scrolled past. The IntersectionObserver
+// stays as the primary, lower-overhead path for the common case (normal scroll speed); the sweep
+// is the guaranteed fallback for the cases it misses.
 const prefersReducedMotion = typeof window !== 'undefined' && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const pendingReveals = new Map<HTMLElement, { delay: number, observer: IntersectionObserver }>()
+let sweepScheduled = false
+
+function revealEl(el: HTMLElement, delay: number, observer: IntersectionObserver) {
+  if (!pendingReveals.has(el))
+    return
+  pendingReveals.delete(el)
+  observer.disconnect()
+  setTimeout(() => el.classList.add('reveal-active'), delay)
+}
+
+function sweepPendingReveals() {
+  sweepScheduled = false
+  for (const [el, { delay, observer }] of pendingReveals) {
+    const rect = el.getBoundingClientRect()
+    if (rect.top < window.innerHeight)
+      revealEl(el, delay, observer)
+  }
+}
+
+function scheduleSweep() {
+  if (sweepScheduled)
+    return
+  sweepScheduled = true
+  requestAnimationFrame(sweepPendingReveals)
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('scroll', scheduleSweep, { passive: true })
+  window.addEventListener('resize', scheduleSweep, { passive: true })
+}
+
 const vReveal = {
   mounted(el: HTMLElement, binding: { value?: number }) {
     if (prefersReducedMotion)
@@ -195,12 +238,12 @@ const vReveal = {
     el.classList.add('reveal-init')
     const delay = (binding.value || 0) * 90
     const observer = new IntersectionObserver(([entry]) => {
-      if (entry.isIntersecting) {
-        setTimeout(() => el.classList.add('reveal-active'), delay)
-        observer.unobserve(el)
-      }
-    }, { threshold: 0.15 })
+      if (entry.isIntersecting)
+        revealEl(el, delay, observer)
+    }, { threshold: 0, rootMargin: '200px 0px' })
     observer.observe(el)
+    pendingReveals.set(el, { delay, observer })
+    scheduleSweep()
   },
 }
 

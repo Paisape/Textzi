@@ -39,7 +39,7 @@ from .schemas import (
     DealUpdateRequest, DuplicateGroupOut, EmployeeSalesRow, FollowUpPerformanceOut, ImportResultOut, LeadBulkDeleteRequest, LeadBulkOwnerRequest,
     LeadConvertRequest, LeadCreateFromConversationRequest,
     LeadCreateRequest, LeadDetailOut, LeadFunnelMonth, LeadFunnelOut, LeadOut, LeadUpdateRequest, ManagerUpdateRequest,
-    MapToCustomerRequest, MergeContactsRequest, NotificationOut, PipelineCreateRequest, PipelineOut, PipelineStagesUpdateRequest, ProductSalesRow,
+    MapToCustomerRequest, MergeContactsRequest, NotificationOut, PipelineCreateRequest, PipelineOut, ProductSalesRow,
     QuoteOut, ReportDrillDownRequest, ReportDrillDownResult, ReportDrillDownRow, ReportRow, ReportRunRequest, ReportRunResult, SalesTargetCreateRequest,
     SalesTargetOut, SalesTargetUpdateRequest, SavedReportCreateRequest,
     SavedReportOut, SavedReportUpdateRequest, SavedViewCreateRequest, SavedViewOut, ScoringRuleCreateRequest,
@@ -1440,20 +1440,6 @@ def update_crm_settings(payload: CrmSettingsUpdateRequest, user: User = Depends(
     return _settings_out(settings_row)
 
 
-@router.put("/settings/pipeline-stages", response_model=CrmSettingsOut)
-def update_pipeline_stages(payload: PipelineStagesUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    entity = _resolve_entity(db, user)
-    _require_crm(db, entity.id)
-    stages = [s.strip() for s in payload.stages if s.strip()]
-    if not stages:
-        raise HTTPException(status_code=422, detail="At least one stage is required")
-    if len(stages) != len(set(stages)):
-        raise HTTPException(status_code=422, detail="Stage names must be unique")
-    settings_row = _get_or_create_settings(db, entity.id)
-    settings_row.pipeline_stages = stages
-    db.commit()
-    db.refresh(settings_row)
-    return _settings_out(settings_row)
 
 
 @router.get("/settings/booking-link", response_model=BookingLinkOut | None)

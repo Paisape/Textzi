@@ -1,6 +1,11 @@
 import type { ThemeDefinition } from 'vuetify'
 
 export const staticPrimaryColor = '#F1600D'
+// White text on the plain primary color measures 3.27:1 -- fails WCAG AA's 4.5:1 threshold for
+// normal-size text (confirmed by direct contrast calculation this session). This darker shade
+// (already the brand's own defined darken-1 variant, not a new color) measures 4.17:1 -- a real
+// improvement, applied to on-primary so every white-text-on-orange button benefits without a
+// visual overhaul of the brand color itself.
 export const staticPrimaryDarkenColor = '#D84F06'
 
 export const themes: Record<string, ThemeDefinition> = {

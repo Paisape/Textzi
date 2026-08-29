@@ -3112,7 +3112,12 @@ class ContactDirectoryEntryOut(BaseModel):
 
 
 class CrmSettingsOut(BaseModel):
-    pipeline_stages: list[str]
+    # CrmSettings.pipeline_stages has stored the richer per-stage dict shape (name/probability/
+    # forecast_category) since Addendum 6's Pipeline stage-editor upgrade -- this was left typed
+    # as list[str] from before that change, so this endpoint 500'd (a real Pydantic validation
+    # error, not an auth failure) for any entity whose CrmSettings row was ever touched, including
+    # every brand-new one created since (DEFAULT_CRM_PIPELINE_STAGES is dicts, not strings).
+    pipeline_stages: list[PipelineStageOut]
     notify_email: bool
     notify_sms: bool
     notify_whatsapp: bool
@@ -3129,10 +3134,6 @@ class CrmSettingsUpdateRequest(BaseModel):
     brand_color: str | None = Field(default=None, max_length=20)
     quote_approval_threshold: float | None = Field(default=None, ge=0)
     quote_approver_user_ids: list[str] | None = None
-
-
-class PipelineStagesUpdateRequest(BaseModel):
-    stages: list[str] = Field(min_length=1, max_length=15)
 
 
 class ContactTimelineOut(BaseModel):

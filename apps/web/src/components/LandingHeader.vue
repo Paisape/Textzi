@@ -118,6 +118,8 @@ onUnmounted(() => {
         icon
         variant="text"
         class="d-md-none"
+        :aria-label="mobileNavOpen ? 'Close menu' : 'Open menu'"
+        :aria-expanded="mobileNavOpen"
         @click="mobileNavOpen = !mobileNavOpen"
       >
         <VIcon icon="tabler-menu-2" />

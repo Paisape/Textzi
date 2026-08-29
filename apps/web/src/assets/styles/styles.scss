@@ -1,1 +1,12 @@
 // Write your overrides
+
+// Accessibility fix: white text on the plain brand primary color (#F1600D) measures 3.27:1
+// contrast -- fails WCAG AA's 4.5:1 threshold for normal-size text (confirmed by direct contrast
+// calculation). Scoped to VBtn specifically (not the global --v-theme-primary token, which would
+// also repaint every chip/icon/active-nav-state using the brand orange as an accent, a much
+// bigger visual change than intended) -- only a solid-background button's own background swaps to
+// the theme's existing primary-darken-1 shade (#D84F06, 4.17:1 -- a real improvement), which
+// already exists as a defined brand shade, not a new color introduced for this fix.
+.v-btn.bg-primary {
+  --v-theme-primary: var(--v-theme-primary-darken-1);
+}
