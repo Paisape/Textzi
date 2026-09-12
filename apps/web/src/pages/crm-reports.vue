@@ -44,6 +44,15 @@ const extended = ref<ExtendedReports | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+const periodDays = ref<number | null>(null)
+
+const PERIOD_OPTIONS = [
+  { title: 'All time', value: null },
+  { title: 'Last 7 days', value: 7 },
+  { title: 'Last 30 days', value: 30 },
+  { title: 'Last 90 days', value: 90 },
+  { title: 'Last 12 months', value: 365 },
+]
 
 function inr(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
@@ -56,9 +65,14 @@ async function load() {
   try {
     if (!pipelines.value.length)
       pipelines.value = await $api<Pipeline[]>('/v1/crm/pipelines')
+    const params: Record<string, string | number> = {}
+    if (pipelineId.value)
+      params.pipeline_id = pipelineId.value
+    if (periodDays.value)
+      params.days = periodDays.value
     const [reportsResult, extendedResult] = await Promise.all([
-      $api<Reports>('/v1/crm/reports', { params: pipelineId.value ? { pipeline_id: pipelineId.value } : {} }),
-      $api<ExtendedReports>('/v1/crm/reports/extended'),
+      $api<Reports>('/v1/crm/reports', { params }),
+      $api<ExtendedReports>('/v1/crm/reports/extended', { params: periodDays.value ? { days: periodDays.value } : {} }),
     ])
     reports.value = reportsResult
     extended.value = extendedResult
@@ -94,7 +108,7 @@ const leadFunnelChartData = computed(() => ({
 const chartOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } } }
 const doughnutOptions = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'bottom' as const } } }
 
-watch(pipelineId, load)
+watch([pipelineId, periodDays], load)
 onMounted(load)
 </script>
 
@@ -103,13 +117,23 @@ onMounted(load)
     <h1 class="text-h4">
       CRM Reports
     </h1>
-    <VSelect
-      v-if="pipelines.length > 1"
-      v-model="pipelineId"
-      :items="[{ title: 'All pipelines', value: null }, ...pipelines.map(p => ({ title: p.name, value: p.id }))]"
-      density="compact" variant="outlined" style="max-width: 220px;"
-    />
+    <div class="d-flex ga-3 flex-wrap">
+      <VSelect
+        v-if="pipelines.length > 1"
+        v-model="pipelineId"
+        :items="[{ title: 'All pipelines', value: null }, ...pipelines.map(p => ({ title: p.name, value: p.id }))]"
+        density="compact" variant="outlined" style="max-width: 220px;"
+      />
+      <VSelect
+        v-model="periodDays"
+        :items="PERIOD_OPTIONS"
+        density="compact" variant="outlined" style="max-width: 180px;"
+      />
+    </div>
   </div>
+  <p class="text-caption text-medium-emphasis mb-4">
+    Won/Lost, lead, and sales-by-employee/product figures reflect the selected period. Open pipeline, forecast, outstanding, and follow-up figures are always current, since they describe what's true right now, not a period total.
+  </p>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
     Upgrade to the CRM plan to use leads, tickets, and customers.

@@ -1618,17 +1618,26 @@ def update_deal_pipeline(deal_id: str, pipeline_id: str, stage: str | None = Non
 # --- CRM reports (Phase 1) -----------------------------------------------------------------------
 
 @router.get("/reports", response_model=CrmReportsOut)
-def get_crm_reports(pipeline_id: str | None = None, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def get_crm_reports(pipeline_id: str | None = None, days: int | None = None, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """days=None (default) is genuinely all-time, matching this endpoint's original behavior
+    exactly -- no existing caller breaks. When set, it scopes won_deals/lost_deals/leads/the
+    funnel chart to deals/leads *created* in that window (Deal has no updated_at/won_at column,
+    so "won in the last N days" can only honestly mean "created in the last N days AND currently
+    won" -- same documented limitation as crm_home's own deals_won). open_deals/forecast/
+    open_value are deliberately NEVER date-filtered even when days is set -- pipeline value is a
+    snapshot of current state, not a period total, so filtering it by creation date would hide
+    real open deals from an older cohort for no honest reason."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     query = select(Deal).where(Deal.entity_id == entity.id)
     if pipeline_id:
         query = query.where(Deal.pipeline_id == pipeline_id)
     deals = db.scalars(query).all()
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 366))) if days else None
 
     open_deals = [d for d in deals if d.status == "open"]
-    won_deals = [d for d in deals if d.status == "won"]
-    lost_deals = [d for d in deals if d.status == "lost"]
+    won_deals = [d for d in deals if d.status == "won" and (since is None or d.created_at >= since)]
+    lost_deals = [d for d in deals if d.status == "lost" and (since is None or d.created_at >= since)]
 
     # Bucketed by (pipeline_id, stage), not stage name alone -- two pipelines can reuse a stage
     # name (e.g. both have "won"), and without the pipeline in the key their totals would get
@@ -1655,13 +1664,16 @@ def get_crm_reports(pipeline_id: str | None = None, user: User = Depends(require
     closed_count = len(won_deals) + len(lost_deals)
     win_rate = round(len(won_deals) / closed_count * 100, 1) if closed_count else None
 
-    leads = db.scalars(select(Lead).where(Lead.entity_id == entity.id)).all()
+    all_leads = db.scalars(select(Lead).where(Lead.entity_id == entity.id)).all()
+    leads = [l for l in all_leads if since is None or l.created_at >= since]
     converted_leads = [l for l in leads if l.status == "converted"]
     lead_conversion_rate = round(len(converted_leads) / len(leads) * 100, 1) if leads else None
 
     # Last 6 months of lead creation, oldest first -- backs the Reports page's lead-funnel line
-    # chart. Months with zero leads are included (not skipped) so the chart's x-axis stays evenly
-    # spaced.
+    # chart. Deliberately always a fixed 6-month trend regardless of the `days` filter above (a
+    # trend chart collapsing to one bucket when days<180 would be useless) -- reads all_leads, not
+    # the days-scoped `leads` used for the KPI tiles just above. Months with zero leads are
+    # included (not skipped) so the chart's x-axis stays evenly spaced.
     now = datetime.now(timezone.utc)
     month_keys = []
     for i in range(5, -1, -1):
@@ -1670,7 +1682,7 @@ def get_crm_reports(pipeline_id: str | None = None, user: User = Depends(require
         month = month_index % 12 + 1
         month_keys.append(f"{year:04d}-{month:02d}")
     monthly_counts = dict.fromkeys(month_keys, 0)
-    for lead in leads:
+    for lead in all_leads:
         key = lead.created_at.strftime("%Y-%m")
         if key in monthly_counts:
             monthly_counts[key] += 1
@@ -1685,16 +1697,23 @@ def get_crm_reports(pipeline_id: str | None = None, user: User = Depends(require
 
 
 @router.get("/reports/extended", response_model=CrmExtendedReportsOut)
-def get_crm_extended_reports(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def get_crm_extended_reports(days: int | None = None, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Sales by employee/product, quotes still awaiting conversion to an invoice ("outstanding"
     -- there's no payment-status field on Invoice, so this is the honest, supportable reading of
     "outstanding payments" given this schema: committed revenue not yet formally invoiced), and
     task/follow-up completion. A second endpoint rather than folding into get_crm_reports above
-    since it reads Quote/Task/User, not just Deal."""
+    since it reads Quote/Task/User, not just Deal. by_employee/by_product are days-scoped (created
+    in that window, same Deal-has-no-updated_at caveat as get_crm_reports); outstanding/follow_up
+    stay all-time -- both are current-state snapshots ("what's owed right now", "what's overdue
+    right now"), not period totals, so filtering them by days would hide real current obligations."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
+    since = datetime.now(timezone.utc) - timedelta(days=max(1, min(days, 366))) if days else None
 
-    won_deals = db.scalars(select(Deal).where(Deal.entity_id == entity.id, Deal.status == "won")).all()
+    won_query = select(Deal).where(Deal.entity_id == entity.id, Deal.status == "won")
+    if since:
+        won_query = won_query.where(Deal.created_at >= since)
+    won_deals = db.scalars(won_query).all()
     org_users = {u.id: u for u in db.scalars(select(User).where(User.organization_id == user.organization_id)).all()}
     by_employee_totals: dict[str, dict] = {}
     for deal in won_deals:
@@ -1713,11 +1732,12 @@ def get_crm_extended_reports(user: User = Depends(require_user), db: Session = D
     outstanding_count = 0
     outstanding_value = 0.0
     for quote in quotes:
-        if quote.status == "accepted":
+        if quote.status == "accepted" and (since is None or quote.created_at >= since):
             for item in quote.line_items:
                 row = by_product_totals.setdefault(item["description"], {"count": 0, "value": 0.0})
                 row["count"] += 1
                 row["value"] += item["quantity"] * item["unit_price"]
+        # outstanding is always all-time (see docstring) -- never date-filtered, even when days is set.
         if quote.status in ("sent", "accepted") and not quote.converted_invoice_id:
             outstanding_count += 1
             outstanding_value += sum(item["quantity"] * item["unit_price"] for item in quote.line_items)
