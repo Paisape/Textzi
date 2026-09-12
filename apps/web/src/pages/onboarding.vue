@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { VNodeRenderer } from '@layouts/components/VNodeRenderer'
 import { themeConfig } from '@themeConfig'
+import { useAuthStore } from '@/stores/auth'
 
 definePage({
   meta: {
@@ -9,6 +10,7 @@ definePage({
 })
 
 const router = useRouter()
+const authStore = useAuthStore()
 
 const INDUSTRY_OPTIONS = [
   'E-commerce & Retail',
@@ -82,6 +84,10 @@ async function onSubmit() {
     // to this one, so without this a user has no clear signal their submission actually worked.
     successMessage.value = 'Organisation created! Taking you to the next step...'
     await new Promise(resolve => setTimeout(resolve, 900))
+    // The auth store's cached profile still shows organization_id: null from before this request
+    // -- without a forced refresh, the router guard reads that stale value and bounces straight
+    // back to /onboarding (matching login.vue's own afterLogin() fix for the identical problem).
+    await authStore.load(true)
     router.push('/dashboard')
   }
   catch (error: any) {
@@ -92,6 +98,7 @@ async function onSubmit() {
     // will keep rejecting -- the router guard (plugins/1.router/index.ts) already knows how to send
     // an onboarded-but-not-yet-profile-completed account to the right next screen.
     if (error?.response?.status === 409) {
+      await authStore.load(true)
       router.push('/dashboard')
       return
     }
