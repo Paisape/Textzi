@@ -98,7 +98,7 @@ definePage({
             Manage
           </RouterLink>
           <RouterLink
-            to="/pricing"
+            to="/channels-whatsapp?tab=billing"
             class="font-weight-medium"
           >
             Pricing
@@ -145,7 +145,7 @@ definePage({
             Manage
           </RouterLink>
           <RouterLink
-            to="/pricing"
+            to="/channels-crm?tab=billing"
             class="font-weight-medium"
           >
             Pricing

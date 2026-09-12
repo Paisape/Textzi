@@ -307,6 +307,9 @@ onMounted(async () => {
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
     Upgrade to the CRM plan to use reports.
+    <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
+      View plans
+    </RouterLink>
   </VAlert>
   <VAlert v-else-if="loadError" type="error" variant="tonal" class="mb-4" closable @click:close="loadError = ''">
     {{ loadError }}

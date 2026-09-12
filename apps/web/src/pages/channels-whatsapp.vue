@@ -41,7 +41,12 @@ type BusinessProfile = {
   vertical: string | null
 }
 
-const activeTab = ref<'connect' | 'templates' | 'automation' | 'labels' | 'billing' | 'webhooks' | 'team'>('connect')
+const route = useRoute()
+type WabaSettingsTab = 'connect' | 'templates' | 'automation' | 'labels' | 'billing' | 'webhooks' | 'team'
+const VALID_TABS: WabaSettingsTab[] = ['connect', 'templates', 'automation', 'labels', 'billing', 'webhooks', 'team']
+const activeTab = ref<WabaSettingsTab>(
+  VALID_TABS.includes(route.query.tab as WabaSettingsTab) ? route.query.tab as WabaSettingsTab : 'connect',
+)
 
 const status = ref<WabaStatus | null>(null)
 const loadError = ref('')

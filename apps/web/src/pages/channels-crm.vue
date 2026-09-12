@@ -18,8 +18,10 @@ type CrmSettings = {
 }
 
 const route = useRoute()
-const activeTab = ref<'notifications' | 'branding' | 'company' | 'fields' | 'scoring' | 'territories' | 'targets' | 'team' | 'webform' | 'billing' | 'channels' | 'helpdesk' | 'approvals' | 'products' | 'documents'>(
-  route.query.tab === 'helpdesk' ? 'helpdesk' : 'notifications',
+type CrmSettingsTab = 'notifications' | 'branding' | 'company' | 'fields' | 'scoring' | 'territories' | 'targets' | 'team' | 'webform' | 'billing' | 'channels' | 'helpdesk' | 'approvals' | 'products' | 'documents'
+const VALID_TABS: CrmSettingsTab[] = ['notifications', 'branding', 'company', 'fields', 'scoring', 'territories', 'targets', 'team', 'webform', 'billing', 'channels', 'helpdesk', 'approvals', 'products', 'documents']
+const activeTab = ref<CrmSettingsTab>(
+  VALID_TABS.includes(route.query.tab as CrmSettingsTab) ? route.query.tab as CrmSettingsTab : 'notifications',
 )
 
 const settings = ref<CrmSettings | null>(null)

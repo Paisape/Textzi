@@ -84,7 +84,10 @@ async function openGrantDialog(channel: 'waba' | 'crm') {
   grantError.value = ''
   grantDialogOpen.value = true
   try {
-    grantPlans.value = await $api<PlanRow[]>('/v1/billing/plans', { params: { channel } })
+    // Admin listing, not the customer-facing /v1/billing/plans -- that one filters out hidden
+    // (visible_to_customers=false) plans like a custom "Unlimited" tier, which is exactly what
+    // this dialog needs to be able to grant.
+    grantPlans.value = (await $api<PlanRow[]>('/v1/admin/billing-plans', { params: { channel } })).filter(p => p.active)
   }
   catch (error: any) {
     grantError.value = extractErrorMessage(error, 'Could not load plans for this channel.')

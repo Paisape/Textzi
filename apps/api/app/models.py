@@ -753,6 +753,10 @@ class BillingPlan(Base):
     message_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     user_limit: Mapped[int | None] = mapped_column(Integer, nullable=True)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # False for a custom/negotiated tier (e.g. "Unlimited") that only ever reaches a customer via
+    # admin.grant_plan -- self-serve pricing pages never list it, and a customer can't buy it
+    # themselves even by guessing its id (list_plans/create_plan_order both filter on this).
+    visible_to_customers: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

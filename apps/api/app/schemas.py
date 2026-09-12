@@ -488,6 +488,7 @@ class BillingPlanOut(BaseModel):
     message_limit: int | None
     user_limit: int | None
     active: bool
+    visible_to_customers: bool
 
 
 class BillingPlanCreateRequest(BaseModel):
@@ -498,6 +499,7 @@ class BillingPlanCreateRequest(BaseModel):
     message_limit: int | None = Field(default=None, gt=0)
     user_limit: int | None = Field(default=None, gt=0)
     active: bool = True
+    visible_to_customers: bool = True
 
 
 class ChannelSubscriptionStatusOut(BaseModel):

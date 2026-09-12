@@ -113,6 +113,9 @@ onMounted(load)
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
     Upgrade to the CRM plan to use leads, tickets, and customers.
+    <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
+      View plans
+    </RouterLink>
   </VAlert>
   <VAlert v-else-if="loadError" type="error" variant="tonal" class="mb-4">
     {{ loadError }}

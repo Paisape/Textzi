@@ -37,6 +37,7 @@ def _plan_out(plan: BillingPlan) -> BillingPlanOut:
     return BillingPlanOut(
         id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price),
         message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active,
+        visible_to_customers=plan.visible_to_customers,
     )
 
 
@@ -51,7 +52,9 @@ def _resolve_entity(db: Session, user: User) -> Entity:
 def list_plans(channel: str, db: Session = Depends(get_db)):
     if channel not in ("waba", "crm"):
         raise HTTPException(status_code=422, detail="Unknown channel")
-    plans = db.scalars(select(BillingPlan).where(BillingPlan.channel == channel, BillingPlan.active.is_(True)).order_by(BillingPlan.price.asc())).all()
+    # Hidden (visible_to_customers=False) plans -- a custom/negotiated tier like "Unlimited" --
+    # never show up here; they only ever reach a customer via admin.grant_plan.
+    plans = db.scalars(select(BillingPlan).where(BillingPlan.channel == channel, BillingPlan.active.is_(True), BillingPlan.visible_to_customers.is_(True)).order_by(BillingPlan.price.asc())).all()
     return [_plan_out(p) for p in plans]
 
 
@@ -77,7 +80,7 @@ def create_plan_order(payload: PlanOrderRequest, user: User = Depends(require_us
     client, key_id = _razorpay_client(db)
     entity = _resolve_entity(db, user)
     plan = db.get(BillingPlan, payload.plan_id)
-    if not plan or not plan.active:
+    if not plan or not plan.active or not plan.visible_to_customers:
         raise HTTPException(status_code=404, detail="Plan not found")
     # plan.price is pre-tax (same convention as every other Razorpay flow in this codebase --
     # payments.create_order, channels.create_dlt_request_order) -- GST is added on top at
