@@ -45,7 +45,7 @@ const selectedTemplateId = ref<string | null>(null)
 const mobile = ref('')
 const variableValues = ref<Record<string, string>>({})
 const sendError = ref('')
-const sendResult = ref<{ status: string, route: string, balance: number, creditsCharged: number } | null>(null)
+const sendResult = ref<{ status: string, balance: number, creditsCharged: number } | null>(null)
 const sending = ref(false)
 
 const selectedTemplate = computed(() => templates.value.find(t => t.id === selectedTemplateId.value) ?? null)
@@ -204,7 +204,9 @@ async function onSend() {
   }
   sending.value = true
   try {
-    const result = await $api<{ status: string, message_id: string, route: string, balance: number, credits_charged: number }>('/v1/sms/compose', {
+    // Backend response_model is ApiSmsSendResponse, which deliberately omits route (internal
+    // provider routing detail, never shown to a customer) -- no `route` field is ever present.
+    const result = await $api<{ status: string, message_id: string, balance: number, credits_charged: number }>('/v1/sms/compose', {
       method: 'POST',
       body: {
         template: selectedTemplate.value.alias,
@@ -212,7 +214,7 @@ async function onSend() {
         variables: variableValues.value,
       },
     })
-    sendResult.value = { status: result.status, route: result.route, balance: result.balance, creditsCharged: result.credits_charged }
+    sendResult.value = { status: result.status, balance: result.balance, creditsCharged: result.credits_charged }
     mobile.value = ''
     initVariableValues()
     await loadMessages(true)
@@ -376,7 +378,7 @@ onMounted(load)
                     density="compact"
                     class="mb-4"
                   >
-                    Message {{ sendResult.status }} via route "{{ sendResult.route }}" — charged {{ sendResult.creditsCharged }} credit{{ sendResult.creditsCharged === 1 ? '' : 's' }}. SMS credits remaining: {{ sendResult.balance.toLocaleString('en-IN', { maximumFractionDigits: 2 }) }}
+                    Message {{ sendResult.status }} — charged {{ sendResult.creditsCharged }} credit{{ sendResult.creditsCharged === 1 ? '' : 's' }}. SMS credits remaining: {{ sendResult.balance.toLocaleString('en-IN', { maximumFractionDigits: 2 }) }}
                   </VAlert>
                   <VForm @submit.prevent="onSend">
                     <VSelect

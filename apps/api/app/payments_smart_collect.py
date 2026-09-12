@@ -467,7 +467,10 @@ def spend_wallet_on_sms_credit(payload: TextziWalletSpendSmsRequest, user: User 
     total = round(payload.amount + gst_amount, 2)
     try:
         debit_textzi_wallet(db, entity.id, total, transaction_type="spend_sms_credit")
-        sms_wallet = credit_wallet(db, entity.id, credits, transaction_type="recharge_textzi_wallet")
+        # Label describes what happened on THIS (SMS) ledger -- a credit funded by spending the
+        # Textzi Wallet, not "recharge_textzi_wallet" (misleading here: that's the debit_textzi_
+        # wallet call above's own event, on a different table entirely -- this row is SMS-side).
+        sms_wallet = credit_wallet(db, entity.id, credits, transaction_type="recharge_via_textzi_wallet")
         invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=payload.amount, gst_amount=gst_amount, reference="textzi_wallet", credits_purchased=round(credits, 2), price_per_sms=float(slab.price_per_sms))
         issue_invoice(db, invoice)
     except DomainError as exc:
