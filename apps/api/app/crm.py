@@ -147,14 +147,18 @@ def _get_or_create_default_pipeline(db: Session, entity_id: str) -> Pipeline:
     return pipeline
 
 
-def _pipeline_stages(pipeline: Pipeline) -> list[dict]:
-    # Pipelines created before per-stage probability/forecast_category existed stored `stages` as
-    # a flat list[str] -- normalize those on read instead of a one-off migration script, since a
-    # pipeline this old may still be edited/reordered by stage name alone.
-    stages = pipeline.stages
+def _normalize_stage_list(stages: list) -> list[dict]:
+    # Both Pipeline.stages and CrmSettings.pipeline_stages predate per-stage
+    # probability/forecast_category and may still hold a flat list[str] for any row created before
+    # that upgrade -- normalize on read instead of a one-off migration script, since a row this old
+    # may still be edited/reordered by stage name alone.
     if stages and isinstance(stages[0], str):
-        stages = [{"name": s, "probability": 50, "forecast_category": "pipeline"} for s in stages]
+        return [{"name": s, "probability": 50, "forecast_category": "pipeline"} for s in stages]
     return stages
+
+
+def _pipeline_stages(pipeline: Pipeline) -> list[dict]:
+    return _normalize_stage_list(pipeline.stages)
 
 
 def _pipeline_out(pipeline: Pipeline) -> PipelineOut:
@@ -188,7 +192,7 @@ def _get_or_create_settings(db: Session, entity_id: str) -> CrmSettings:
 
 def _settings_out(settings_row: CrmSettings) -> CrmSettingsOut:
     return CrmSettingsOut(
-        pipeline_stages=settings_row.pipeline_stages, notify_email=settings_row.notify_email,
+        pipeline_stages=_normalize_stage_list(settings_row.pipeline_stages), notify_email=settings_row.notify_email,
         notify_sms=settings_row.notify_sms, notify_whatsapp=settings_row.notify_whatsapp,
         logo_url="/v1/crm/settings/logo" if settings_row.logo_path else None, brand_color=settings_row.brand_color,
         quote_approval_threshold=float(settings_row.quote_approval_threshold) if settings_row.quote_approval_threshold is not None else None,
