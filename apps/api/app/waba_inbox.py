@@ -51,6 +51,15 @@ from .webchat_realtime import publish_to_visitor
 # WhatsApp-only and stay single-channel gated).
 router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"], dependencies=[Depends(require_channel_scope_any(["waba", "crm"]))])
 
+# get_conversation_media below deliberately has no Authorization header at all -- it's fetched by
+# a plain <img>/<video> tag, same reasoning as the /v1/waba/ws WebSocket (waba_realtime.py, whose
+# router also carries no such dependency). The router-level require_channel_scope_any above
+# demands that header before this route's own token-based auth ever runs, 422ing every media
+# fetch platform-wide -- confirmed via real QA testing, not theoretical. A second, gate-free
+# router at the same prefix keeps this one route reachable the way it was designed, while every
+# other route on this file stays covered by the real router above.
+media_router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"])
+
 
 def _labels_for(db: Session, assoc_model, key_column, key_value: str) -> list[LabelOut]:
     labels = db.scalars(select(Label).join(assoc_model, assoc_model.label_id == Label.id).where(key_column == key_value)).all()
@@ -707,7 +716,7 @@ def react_to_message(conversation_id: str, payload: ReactionRequest, user: User 
     return _message_out(message)
 
 
-@router.get("/media/{message_id}")
+@media_router.get("/media/{message_id}")
 def get_conversation_media(message_id: str, token: str, db: Session = Depends(get_db)):
     """Serves a previously stored WhatsApp media file (inbound-downloaded or outbound-sent copy)
     back to the browser. Authenticated via a token query param, not the usual Authorization

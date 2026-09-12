@@ -81,8 +81,15 @@ WIDGET_JS = r"""
           var container = document.createElement('div');
           container.style.display = 'none';
           document.body.appendChild(container);
+          // No `size` param: this platform's configured site key is a standard Managed-mode key
+          // (same one TurnstileWidget.vue renders with, no size override either) -- "invisible"
+          // is not a valid runtime value for that key type ("Invalid value for parameter 'size',
+          // expected 'compact', 'flexible', or 'normal'", confirmed via the real Turnstile JS
+          // error thrown in the browser), and the widget crashing on render meant every send
+          // silently fell back to the ~8s no-token timeout below instead of ever calling back.
+          // The container's own display:none is what actually keeps this invisible to the visitor.
           turnstileWidgetId = window.turnstile.render(container, {
-            sitekey: config.site_key, size: 'invisible', execution: 'execute',
+            sitekey: config.site_key, execution: 'execute',
             callback: function (token) { resolveTurnstilePending(token); },
             'error-callback': function () { resolveTurnstilePending(''); },
             'expired-callback': function () { resolveTurnstilePending(''); },
