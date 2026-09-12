@@ -95,6 +95,26 @@ def create_plan_order(payload: PlanOrderRequest, user: User = Depends(require_us
     return RazorpayOrderResponse(order_id=order["id"], key_id=key_id, amount_paise=amount_paise)
 
 
+def activate_subscription(db: Session, entity: Entity, plan: BillingPlan) -> ChannelSubscription:
+    """Extends/starts entity's ChannelSubscription for plan.channel. Shared by the real Razorpay
+    verify path below and admin.py's manual "grant plan" tool -- same period-extension rule
+    either way (a renewal on the same still-active plan extends from period_end, anything else
+    starts fresh from now), so a comp grant behaves identically to a paid one from
+    channel_active()'s point of view."""
+    now = datetime.now(timezone.utc)
+    subscription = db.get(ChannelSubscription, (entity.id, plan.channel))
+    if not subscription:
+        subscription = ChannelSubscription(entity_id=entity.id, channel=plan.channel)
+        db.add(subscription)
+    start_from = subscription.period_end if subscription.period_end and subscription.period_end > now and subscription.plan_id == plan.id else now
+    subscription.plan_id = plan.id
+    subscription.period_start = start_from if start_from == now else (subscription.period_start or now)
+    subscription.period_end = start_from + timedelta(days=PERIOD_DAYS[plan.period])
+    subscription.messages_used = 0 if start_from == now else subscription.messages_used
+    subscription.paid_at = now
+    return subscription
+
+
 @router.post("/razorpay/verify", response_model=ChannelSubscriptionStatusOut)
 def verify_plan_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     client, _ = _razorpay_client(db)
@@ -135,20 +155,7 @@ def verify_plan_payment(payload: RazorpayVerifyRequest, user: User = Depends(req
     if not plan:
         raise HTTPException(status_code=404, detail="This plan no longer exists")
 
-    now = datetime.now(timezone.utc)
-    subscription = db.get(ChannelSubscription, (entity.id, plan.channel))
-    if not subscription:
-        subscription = ChannelSubscription(entity_id=entity.id, channel=plan.channel)
-        db.add(subscription)
-    # A renewal on the same plan extends from the current period_end if it hasn't lapsed yet
-    # (buying early doesn't waste the remaining days); anything else (first purchase, a lapsed
-    # plan, or switching plans) starts a fresh period from now.
-    start_from = subscription.period_end if subscription.period_end and subscription.period_end > now and subscription.plan_id == plan.id else now
-    subscription.plan_id = plan.id
-    subscription.period_start = start_from if start_from == now else (subscription.period_start or now)
-    subscription.period_end = start_from + timedelta(days=PERIOD_DAYS[plan.period])
-    subscription.messages_used = 0 if start_from == now else subscription.messages_used
-    subscription.paid_at = now
+    subscription = activate_subscription(db, entity, plan)
 
     order.status = "paid"
     gst_amount = round(float(plan.price) * GST_RATE, 2)

@@ -27,6 +27,8 @@ type TemplateRow = { id: string, alias: string, dlt_template_id: string, categor
 type EntityRow = { id: string, name: string, status: string, pe_ids: PeIdRow[], templates: TemplateRow[] }
 type RechargeRow = { id: string, type: string, amount: number, reference: string | null, created_at: string }
 type PaymentRow = { id: string, provider: string, provider_order_id: string, amount: number, status: string, created_at: string }
+type PlanRow = { id: string, channel: string, name: string, period: string, price: number, message_limit: number | null, user_limit: number | null, active: boolean }
+type ChannelSubscriptionRow = { channel: string, plan: PlanRow | null, period_start: string | null, period_end: string | null, messages_used: number, seats_used: number }
 
 type OrgOverview = {
   organization_id: string
@@ -49,6 +51,7 @@ type OrgOverview = {
   invoices: InvoiceRow[]
   recharges: RechargeRow[]
   payments: PaymentRow[]
+  channel_subscriptions: ChannelSubscriptionRow[]
 }
 
 const PAYMENT_STATUS_COLORS: Record<string, string> = {
@@ -67,6 +70,49 @@ const togglingEntityId = ref<string | null>(null)
 const resendingMemberId = ref<string | null>(null)
 const syncingZoho = ref(false)
 const zohoSyncError = ref('')
+
+const grantDialogOpen = ref(false)
+const grantChannel = ref<'waba' | 'crm'>('waba')
+const grantPlans = ref<PlanRow[]>([])
+const grantPlanId = ref<string | null>(null)
+const grantSubmitting = ref(false)
+const grantError = ref('')
+
+async function openGrantDialog(channel: 'waba' | 'crm') {
+  grantChannel.value = channel
+  grantPlanId.value = null
+  grantError.value = ''
+  grantDialogOpen.value = true
+  try {
+    grantPlans.value = await $api<PlanRow[]>('/v1/billing/plans', { params: { channel } })
+  }
+  catch (error: any) {
+    grantError.value = extractErrorMessage(error, 'Could not load plans for this channel.')
+  }
+}
+
+async function confirmGrantPlan() {
+  if (!grantPlanId.value || !overview.value)
+    return
+  grantSubmitting.value = true
+  grantError.value = ''
+  try {
+    const updated = await $api<ChannelSubscriptionRow>(`/v1/admin/organizations/${overview.value.organization_id}/grant-plan`, {
+      method: 'POST',
+      body: { plan_id: grantPlanId.value },
+    })
+    const index = overview.value.channel_subscriptions.findIndex(c => c.channel === updated.channel)
+    if (index !== -1)
+      overview.value.channel_subscriptions[index] = updated
+    grantDialogOpen.value = false
+  }
+  catch (error: any) {
+    grantError.value = extractErrorMessage(error, 'Could not grant this plan.')
+  }
+  finally {
+    grantSubmitting.value = false
+  }
+}
 
 async function loadOverview() {
   loadError.value = ''
@@ -520,6 +566,45 @@ onMounted(loadOverview)
         </VWindowItem>
 
         <VWindowItem value="billing">
+          <VCard class="mb-6">
+            <VCardText>
+              <h6 class="text-h6 mb-4">
+                Channel Plans
+              </h6>
+              <VRow>
+                <VCol
+                  v-for="sub in overview.channel_subscriptions"
+                  :key="sub.channel"
+                  cols="12"
+                  md="6"
+                >
+                  <VCard variant="tonal">
+                    <VCardText>
+                      <div class="d-flex justify-space-between align-center mb-2">
+                        <span class="text-subtitle-1 text-uppercase">{{ sub.channel }}</span>
+                        <VChip
+                          :color="sub.plan && sub.period_end && new Date(sub.period_end) > new Date() ? 'success' : 'default'"
+                          size="small"
+                        >
+                          {{ sub.plan && sub.period_end && new Date(sub.period_end) > new Date() ? 'Active' : 'No active plan' }}
+                        </VChip>
+                      </div>
+                      <p v-if="sub.plan" class="text-body-2 mb-1">
+                        {{ sub.plan.name }} &mdash; ends {{ sub.period_end ? new Date(sub.period_end).toLocaleDateString('en-IN') : '—' }}
+                      </p>
+                      <p v-else class="text-body-2 text-medium-emphasis mb-1">
+                        No plan on file.
+                      </p>
+                      <VBtn size="small" variant="tonal" @click="openGrantDialog(sub.channel as 'waba' | 'crm')">
+                        Grant plan
+                      </VBtn>
+                    </VCardText>
+                  </VCard>
+                </VCol>
+              </VRow>
+            </VCardText>
+          </VCard>
+
           <VCard>
             <VTable>
               <thead>
@@ -720,4 +805,32 @@ onMounted(loadOverview)
       </VWindow>
     </VCol>
   </VRow>
+
+  <VDialog v-model="grantDialogOpen" max-width="440">
+    <VCard>
+      <VCardTitle>Grant {{ grantChannel.toUpperCase() }} plan</VCardTitle>
+      <VCardText>
+        <VAlert v-if="grantError" type="error" variant="tonal" density="compact" class="mb-4">
+          {{ grantError }}
+        </VAlert>
+        <p class="text-body-2 text-medium-emphasis mb-4">
+          Activates this plan immediately with no payment collected -- for comp access or support
+          cases. Logged to this customer's activity history.
+        </p>
+        <VSelect
+          v-model="grantPlanId"
+          :items="grantPlans.map(p => ({ title: `${p.name} (${p.period}, Rs.${p.price})`, value: p.id }))"
+          label="Plan"
+        />
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="grantDialogOpen = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="grantSubmitting" :disabled="!grantPlanId" @click="confirmGrantPlan">
+          Grant plan
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
 </template>

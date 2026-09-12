@@ -27,7 +27,7 @@ from .models import (
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaApiCallLogOut, AdminWabaWebhookLogOut,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
-    BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    AdminGrantPlanRequest, BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, ChannelSubscriptionStatusOut, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     PaymentMethodConfigOut, PaymentMethodConfigUpdate,
     DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
     MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
@@ -41,6 +41,7 @@ from .security import decode_access_token, decrypt_recipient_lenient, decrypt_se
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
 from . import archive_jobs
+from .channel_billing import activate_subscription
 from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
@@ -600,6 +601,35 @@ def delete_billing_plan(plan_id: str, db: Session = Depends(get_db)):
     db.delete(plan)
     db.commit()
     return {"deleted": True}
+
+
+@router.post("/organizations/{organization_id}/grant-plan", response_model=ChannelSubscriptionStatusOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def grant_plan(organization_id: str, payload: AdminGrantPlanRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Manually activates a WABA/CRM plan for a customer with no real payment -- for comp access,
+    support cases, or migrating a customer who paid outside Razorpay. Reuses
+    channel_billing.activate_subscription so the resulting ChannelSubscription row is
+    indistinguishable from a real purchase to channel_active()/check_message_quota()/
+    check_seat_quota() -- same period-extension rule, just no PaymentOrder/invoice created."""
+    org = db.get(Organization, organization_id)
+    if not org:
+        raise HTTPException(status_code=404, detail="Organization not found")
+    entity = db.scalar(select(Entity).where(Entity.organization_id == org.id))
+    if not entity:
+        raise HTTPException(status_code=404, detail="No entity found for this organization")
+    plan = db.get(BillingPlan, payload.plan_id)
+    if not plan or not plan.active:
+        raise HTTPException(status_code=404, detail="Plan not found")
+
+    subscription = activate_subscription(db, entity, plan)
+    log_activity(db, org.id, "channel_plan_granted", f"{plan.channel.upper()} plan '{plan.name}' granted by admin (no payment).", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    db.refresh(subscription)
+
+    seats_used = db.scalar(select(func.count()).select_from(User).where(User.organization_id == org.id)) or 0
+    return ChannelSubscriptionStatusOut(
+        channel=plan.channel, plan=_billing_plan_out(plan), period_start=subscription.period_start.isoformat(),
+        period_end=subscription.period_end.isoformat(), messages_used=subscription.messages_used, seats_used=seats_used,
+    )
 
 
 @router.get("/delivery-status-rules", response_model=list[DeliveryStatusCodeRuleOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -2475,6 +2505,23 @@ def get_organization_overview(organization_id: str, db: Session = Depends(get_db
         payment_rows = db.scalars(select(PaymentOrder).where(PaymentOrder.entity_id.in_(entity_ids)).order_by(PaymentOrder.created_at.desc())).all()
         payments = [PaymentDetailOut(id=p.id, provider=p.provider, provider_order_id=p.provider_order_id, amount=float(p.amount), status=p.status, created_at=p.created_at.isoformat()) for p in payment_rows]
 
+    # A customer org has exactly one entity today (multi-entity orgs aren't a real thing yet
+    # elsewhere in this codebase either), so this reads the first entity's channel state -- same
+    # assumption already made above for wallet_balance/messages_sent.
+    channel_subscriptions: list[ChannelSubscriptionStatusOut] = []
+    if entities:
+        entity = entities[0]
+        for channel in ("waba", "crm"):
+            subscription = db.get(ChannelSubscription, (entity.id, channel))
+            plan = db.get(BillingPlan, subscription.plan_id) if subscription and subscription.plan_id else None
+            channel_subscriptions.append(ChannelSubscriptionStatusOut(
+                channel=channel, plan=_billing_plan_out(plan) if plan else None,
+                period_start=subscription.period_start.isoformat() if subscription and subscription.period_start else None,
+                period_end=subscription.period_end.isoformat() if subscription and subscription.period_end else None,
+                messages_used=subscription.messages_used if subscription else 0,
+                seats_used=len(users),
+            ))
+
     return OrganizationOverviewResponse(
         organization_id=org.id, organization_name=org.name, gstin=org.gstin, pan=org.pan, industry=org.industry,
         address=org.address, zoho_contact_id=org.zoho_contact_id, created_at=org.created_at.isoformat(), entities=entity_details,
@@ -2487,4 +2534,5 @@ def get_organization_overview(organization_id: str, db: Session = Depends(get_db
         invoices=[_invoice_out(i) for i in invoices],
         recharges=recharges,
         payments=payments,
+        channel_subscriptions=channel_subscriptions,
     )

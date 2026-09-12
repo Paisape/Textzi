@@ -513,6 +513,10 @@ class PlanOrderRequest(BaseModel):
     plan_id: str
 
 
+class AdminGrantPlanRequest(BaseModel):
+    plan_id: str
+
+
 class UserAdminOut(BaseModel):
     id: str
     email: str
@@ -2217,6 +2221,7 @@ class OrganizationOverviewResponse(BaseModel):
     invoices: list[InvoiceOut]
     recharges: list[RechargeDetailOut]
     payments: list[PaymentDetailOut]
+    channel_subscriptions: list[ChannelSubscriptionStatusOut]
 
 
 # --- CRM (3rd channel) -----------------------------------------------------------------------
