@@ -51,7 +51,11 @@ def _build_order_out(order: WabaOrder, items: list[WabaOrderItem], contact_name:
         total_amount=float(order.total_amount) if order.total_amount is not None else None,
         currency=order.currency, created_at=order.created_at.isoformat(),
         status_updated_at=order.status_updated_at.isoformat() if order.status_updated_at else None,
-        payment_status=order.payment_status, payment_link_url=order.razorpay_payment_link_url, deal_id=order.deal_id,
+        # order.payment_status can be a real NULL in the DB (nullable column, relies on the model's
+        # Python-level default which only applies when a row is inserted through that one code
+        # path) -- fall back explicitly rather than passing None into a non-optional str field and
+        # 500ing the whole list for one bad row.
+        payment_status=order.payment_status or "none", payment_link_url=order.razorpay_payment_link_url, deal_id=order.deal_id,
         items=[
             {"product_retailer_id": i.product_retailer_id, "product_name": i.product_name, "quantity": i.quantity,
              "item_price": float(i.item_price) if i.item_price is not None else None, "currency": i.currency}

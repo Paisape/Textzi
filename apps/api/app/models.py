@@ -578,7 +578,7 @@ class WabaOrder(Base):
     # mechanism behind most competitors' "native payment" marketing (see Addendum 14).
     razorpay_payment_link_id: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
     razorpay_payment_link_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
-    payment_status: Mapped[str] = mapped_column(String(20), default="none")
+    payment_status: Mapped[str] = mapped_column(String(20), default="none", server_default="none", nullable=False)
     # CRM linkage (Addendum 14 Phase 4) -- an order can be attached to a Deal (auto-linked to the
     # contact's existing open deal, or created fresh) so its value/history shows up in the
     # pipeline, and a Quote/Invoice can be generated from its line items. Nullable: an order never
