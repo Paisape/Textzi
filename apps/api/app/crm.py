@@ -11,7 +11,7 @@ pipeline internals."""
 import csv
 import io
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
@@ -31,7 +31,7 @@ from .models import (
 )
 from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
-    CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut,
+    CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
     CustomerCreateRequest, CustomerDetailOut, CustomerOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
@@ -1736,6 +1736,87 @@ def get_crm_extended_reports(user: User = Depends(require_user), db: Session = D
         by_employee=by_employee, by_product=by_product, outstanding_count=outstanding_count,
         outstanding_value=round(outstanding_value, 2),
         follow_up=FollowUpPerformanceOut(total=len(tasks), done=len(done_tasks), overdue=len(overdue_tasks), done_rate=done_rate),
+    )
+
+
+@router.get("/home", response_model=CrmHomeOut)
+def get_crm_home(days: int = 30, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Landing-page summary for the CRM focused workspace (/crm) -- KPI tiles scoped to the last
+    `days` (matches reports.sms_analytics's own days:int=30 convention, not the report builder's
+    all-time reads), plus top/at-risk open deals, this user's own upcoming tasks (reusing
+    list_tasks's exact visibility clamp: everyone for the account owner, own-only for a restricted
+    teammate), and a recent-activity feed assembled from each table's own timestamps -- there's no
+    unified CRM event-log table (see DealStageEvent's own docstring: it only tracks deal-stage
+    time-in-stage, not a general activity feed), so this reads Lead/Deal/DealStageEvent/Quote
+    directly and merges them in Python, same "aggregate real rows, no new event-sourcing table"
+    convention the report builder already uses."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    days = max(1, min(days, 366))
+    now = datetime.now(timezone.utc)
+    since = now - timedelta(days=days)
+
+    leads_created = db.scalar(select(func.count()).select_from(Lead).where(Lead.entity_id == entity.id, Lead.created_at >= since)) or 0
+
+    deals_in_period = db.scalars(select(Deal).where(Deal.entity_id == entity.id, Deal.created_at >= since)).all()
+    deals_created = len(deals_in_period)
+    # Deal has no updated_at/won_at column (confirmed: status is a plain field, not stamped with
+    # when it changed), so "won in the last N days" can only honestly mean "created in the last N
+    # days AND currently won" -- a deal opened earlier and won this period is invisible here, same
+    # limitation get_crm_reports already has for its own all-time won/lost totals. Flagged rather
+    # than silently wrong; a real fix would need a won_at column, out of scope for this dashboard.
+    won_in_period = [d for d in deals_in_period if d.status == "won"]
+    deals_won = len(won_in_period)
+    deals_won_value = round(sum(float(d.value) if d.value else 0.0 for d in won_in_period), 2)
+
+    open_deals = db.scalars(select(Deal).where(Deal.entity_id == entity.id, Deal.status == "open")).all()
+    open_pipeline_value = round(sum(float(d.value) if d.value else 0.0 for d in open_deals), 2)
+    top_open_deals = sorted(open_deals, key=lambda d: float(d.value) if d.value else 0.0, reverse=True)[:5]
+    at_risk_deals = sorted(
+        [d for d in open_deals if d.expected_close_date and d.expected_close_date < now],
+        key=lambda d: d.expected_close_date,
+    )[:5]
+    contacts_by_id = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_({d.contact_id for d in (top_open_deals + at_risk_deals)}))).all()} if (top_open_deals or at_risk_deals) else {}
+
+    task_query = select(Task).where(Task.entity_id == entity.id, Task.done.is_(False))
+    if user.role != UserRole.enterprise_customer.value:
+        task_query = task_query.where(Task.assigned_user_id == user.id)
+    open_tasks = db.scalars(task_query).all()
+    tasks_overdue = sum(1 for t in open_tasks if t.due_at and t.due_at < now)
+    due_soon_cutoff = now + timedelta(days=7)
+    tasks_due_soon = sum(1 for t in open_tasks if t.due_at and now <= t.due_at <= due_soon_cutoff)
+    upcoming_tasks = sorted([t for t in open_tasks if t.due_at], key=lambda t: t.due_at)[:5]
+
+    recent_leads = db.scalars(select(Lead).where(Lead.entity_id == entity.id).order_by(Lead.created_at.desc()).limit(10)).all()
+    recent_deals = db.scalars(select(Deal).where(Deal.entity_id == entity.id).order_by(Deal.created_at.desc()).limit(10)).all()
+    recent_stage_events = db.scalars(
+        select(DealStageEvent).where(DealStageEvent.entity_id == entity.id).order_by(DealStageEvent.entered_at.desc()).limit(10),
+    ).all()
+    recent_quotes = db.scalars(select(Quote).where(Quote.entity_id == entity.id).order_by(Quote.created_at.desc()).limit(10)).all()
+
+    activity: list[CrmActivityItemOut] = []
+    for lead in recent_leads:
+        activity.append(CrmActivityItemOut(kind="lead_created", label=f"New lead: {lead.company_name or 'Untitled'}", at=lead.created_at.isoformat(), link_id=lead.id))
+    for deal in recent_deals:
+        activity.append(CrmActivityItemOut(kind="deal_created", label=f"New deal: {deal.name or 'Untitled'}", at=deal.created_at.isoformat(), link_id=deal.id))
+    for event in recent_stage_events:
+        if event.changed_by_user_id:  # skip the creation-time row every deal already gets (that's covered by deal_created above)
+            activity.append(CrmActivityItemOut(kind="deal_stage_changed", label=f"Deal moved to {event.stage}", at=event.entered_at.isoformat(), link_id=event.deal_id))
+    for quote in recent_quotes:
+        if quote.signed_at:
+            activity.append(CrmActivityItemOut(kind="quote_signed", label="Quote signed", at=quote.signed_at.isoformat(), link_id=quote.id))
+        elif quote.sent_at:
+            activity.append(CrmActivityItemOut(kind="quote_sent", label="Quote sent", at=quote.sent_at.isoformat(), link_id=quote.id))
+    activity.sort(key=lambda a: a.at, reverse=True)
+
+    return CrmHomeOut(
+        period_days=days, leads_created=leads_created, deals_won=deals_won, deals_won_value=deals_won_value,
+        deals_created=deals_created, open_pipeline_value=open_pipeline_value,
+        tasks_overdue=tasks_overdue, tasks_due_soon=tasks_due_soon,
+        top_open_deals=[_deal_out(d, contacts_by_id[d.contact_id]) for d in top_open_deals if d.contact_id in contacts_by_id],
+        upcoming_tasks=[_task_out(t) for t in upcoming_tasks],
+        recent_activity=activity[:15],
+        at_risk_deals=[_deal_out(d, contacts_by_id[d.contact_id]) for d in at_risk_deals if d.contact_id in contacts_by_id],
     )
 
 

@@ -8,7 +8,7 @@ definePage({
 
 const router = useRouter()
 
-onMounted(() => router.replace({ name: 'crm-leads' }))
+onMounted(() => router.replace({ name: 'crm-home' }))
 </script>
 
 <template>

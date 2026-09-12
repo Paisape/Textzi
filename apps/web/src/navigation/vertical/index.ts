@@ -41,6 +41,11 @@ export const WABA_NAV_ITEMS = [
 
 export const CRM_NAV_ITEMS = [
   {
+    title: 'Home',
+    to: { name: 'crm-home' },
+    icon: { icon: 'tabler-layout-dashboard' },
+  },
+  {
     title: 'Helpdesk',
     icon: { icon: 'tabler-headset' },
     children: [

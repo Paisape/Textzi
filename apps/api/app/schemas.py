@@ -2490,6 +2490,33 @@ class TaskOut(BaseModel):
     created_at: str
 
 
+class CrmActivityItemOut(BaseModel):
+    # A single row in the home dashboard's recent-activity feed -- deliberately assembled from
+    # several different tables' own timestamps (there's no unified CRM event-log table) rather
+    # than a new event-sourcing model, matching this codebase's existing "aggregate in Python from
+    # the real rows" convention (see crm.py's report-builder). kind names which table/event this
+    # came from so the frontend can pick an icon/label without string-matching the description.
+    kind: str  # "lead_created" | "deal_created" | "deal_stage_changed" | "quote_sent" | "quote_signed"
+    label: str
+    at: str
+    link_id: str | None = None
+
+
+class CrmHomeOut(BaseModel):
+    period_days: int
+    leads_created: int
+    deals_won: int
+    deals_won_value: float
+    deals_created: int
+    open_pipeline_value: float
+    tasks_overdue: int
+    tasks_due_soon: int
+    top_open_deals: list[DealOut]
+    upcoming_tasks: list[TaskOut]
+    recent_activity: list[CrmActivityItemOut]
+    at_risk_deals: list[DealOut]
+
+
 class TaskCreateRequest(BaseModel):
     contact_id: str
     deal_id: str | None = None
