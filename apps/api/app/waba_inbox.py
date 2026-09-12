@@ -1492,6 +1492,15 @@ def create_macro(payload: MacroCreateRequest, user: User = Depends(require_user)
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # A "reply" action with a value that doesn't resolve to a real, entity-owned CannedResponse
+    # used to save silently and then no-op forever at run time (run_macro's `if canned and ...`
+    # simply skips it, 200 OK, nothing sent) -- reject it here instead, at the one point someone
+    # can actually notice and fix it.
+    for action in payload.actions:
+        if action.type == "reply":
+            canned = db.get(CannedResponse, action.value) if action.value else None
+            if not canned or canned.entity_id != entity.id:
+                raise HTTPException(status_code=422, detail="Reply action must reference an existing canned response")
     macro = Macro(entity_id=entity.id, name=payload.name.strip(), actions=[a.model_dump() for a in payload.actions])
     db.add(macro)
     db.commit()

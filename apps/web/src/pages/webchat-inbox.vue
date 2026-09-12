@@ -32,6 +32,7 @@ type Thread = {
   created_at: string
 }
 type ThreadDetail = Thread & { messages: Message[] }
+type CannedResponse = { id: string, shortcut: string, body: string }
 type Telemetry = {
   current_url: string | null
   referrer: string | null
@@ -46,6 +47,16 @@ type Telemetry = {
 const threads = ref<Thread[]>([])
 const loading = ref(false)
 const loadError = ref('')
+const cannedResponses = ref<CannedResponse[]>([])
+
+async function loadCannedResponses() {
+  try {
+    cannedResponses.value = await $api<CannedResponse[]>('/v1/waba/canned-responses')
+  }
+  catch {
+    // Non-critical -- the composer just won't offer the picker if this fails.
+  }
+}
 
 function contactLabel(c: Contact) {
   return c.name || c.email || 'Website visitor'
@@ -130,8 +141,16 @@ function browserFromUserAgent(ua: string | null) {
 const replyBody = ref('')
 const sending = ref(false)
 const sendError = ref('')
+const cannedMenuOpen = ref(false)
 
 watch(selected, () => { replyBody.value = '' })
+
+function pickCanned(canned: CannedResponse) {
+  // TiptapEditor's v-model is HTML, not plain text (unlike inbox.vue/tickets.vue's plain
+  // textareas), so appending here rather than replacing avoids clobbering anything already typed.
+  replyBody.value = replyBody.value && replyBody.value !== '<p></p>' ? `${replyBody.value}<p>${canned.body}</p>` : `<p>${canned.body}</p>`
+  cannedMenuOpen.value = false
+}
 
 async function sendReply() {
   if (!selected.value || !replyBody.value.trim())
@@ -287,6 +306,7 @@ function connectSocket() {
 onMounted(() => {
   loadThreads()
   loadMacros()
+  loadCannedResponses()
   connectSocket()
 })
 
@@ -433,6 +453,17 @@ onBeforeUnmount(() => {
           <input ref="fileInput" type="file" hidden @change="onFileSelected">
           <div class="d-flex align-end ga-2">
             <VBtn icon="tabler-paperclip" variant="outlined" :loading="uploadingFile" @click="triggerFilePicker" />
+            <VMenu v-if="cannedResponses.length" v-model="cannedMenuOpen">
+              <template #activator="{ props: menuProps }">
+                <VBtn v-bind="menuProps" icon="tabler-message-2-bolt" variant="outlined" />
+              </template>
+              <VList density="compact">
+                <VListItem v-for="canned in cannedResponses" :key="canned.id" @click="pickCanned(canned)">
+                  <VListItemTitle>/{{ canned.shortcut }}</VListItemTitle>
+                  <VListItemSubtitle>{{ canned.body }}</VListItemSubtitle>
+                </VListItem>
+              </VList>
+            </VMenu>
             <VCard variant="outlined" class="flex-grow-1">
               <TiptapEditor v-model="replyBody" placeholder="Type a reply..." />
             </VCard>
