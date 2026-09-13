@@ -14,12 +14,13 @@ const router = useRouter()
 type Company = {
   id: string, name: string, gstin: string | null, industry: string | null, website: string | null, notes: string | null,
   owner_user_id: string | null, account_type: string | null, parent_company_id: string | null, phone: string | null,
-  address: string | null, employee_count: number | null, annual_revenue: number | null,
+  address: string | null, employee_count: number | null, annual_revenue: number | null, price_list_id: string | null,
   contact_count: number, open_deal_value: number, won_deal_value: number, open_deal_count: number, created_at: string,
 }
 type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null, title: string | null }
 type CompanySummary = { id: string, name: string }
 type AssignableUser = { id: string, full_name: string }
+type PriceList = { id: string, name: string, active: boolean }
 type CompanyDetail = { company: Company, contacts: CrmContact[], parent_company: CompanySummary | null, child_companies: CompanySummary[] }
 
 const ACCOUNT_TYPES = ['customer', 'partner', 'prospect', 'vendor']
@@ -28,8 +29,15 @@ const ACCOUNT_TYPE_COLORS: Record<string, string | undefined> = { customer: 'suc
 const detail = ref<CompanyDetail | null>(null)
 const allCompanies = ref<CompanySummary[]>([])
 const assignableUsers = ref<AssignableUser[]>([])
+const priceLists = ref<PriceList[]>([])
 const loading = ref(false)
 const loadError = ref('')
+
+function priceListName(priceListId: string | null) {
+  if (!priceListId)
+    return 'None (catalog price)'
+  return priceLists.value.find(p => p.id === priceListId)?.name || '—'
+}
 
 function inr(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
@@ -47,14 +55,16 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [detailResult, companiesResult, userResult] = await Promise.all([
+    const [detailResult, companiesResult, userResult, priceListResult] = await Promise.all([
       $api<CompanyDetail>(`/v1/crm/companies/${route.params.id}`),
       $api<Company[]>('/v1/crm/companies'),
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
+      $api<PriceList[]>('/v1/crm/quotes/price-lists'),
     ])
     detail.value = detailResult
     allCompanies.value = companiesResult.map(c => ({ id: c.id, name: c.name }))
     assignableUsers.value = userResult
+    priceLists.value = priceListResult
     addRecentlyViewed({ type: 'company', id: detailResult.company.id, label: detailResult.company.name, sublabel: detailResult.company.industry })
   }
   catch (error: any) {
@@ -71,7 +81,7 @@ const editDialog = ref(false)
 const form = reactive({
   name: '', gstin: '', industry: '', website: '', notes: '', owner_user_id: null as string | null,
   account_type: null as string | null, parent_company_id: null as string | null, phone: '', address: '',
-  employee_count: null as number | null, annual_revenue: null as number | null,
+  employee_count: null as number | null, annual_revenue: null as number | null, price_list_id: null as string | null,
 })
 const saving = ref(false)
 
@@ -91,6 +101,7 @@ function openEdit() {
   form.address = c.address || ''
   form.employee_count = c.employee_count
   form.annual_revenue = c.annual_revenue
+  form.price_list_id = c.price_list_id
   editDialog.value = true
 }
 
@@ -106,6 +117,7 @@ async function save() {
         website: form.website.trim() || null, notes: form.notes.trim() || null, owner_user_id: form.owner_user_id,
         account_type: form.account_type, parent_company_id: form.parent_company_id, phone: form.phone.trim() || null,
         address: form.address.trim() || null, employee_count: form.employee_count, annual_revenue: form.annual_revenue,
+        price_list_id: form.price_list_id,
       },
     })
     detail.value.company = updated
@@ -271,6 +283,14 @@ onMounted(load)
           </div>
           <div>
             <p class="text-caption text-medium-emphasis mb-1">
+              Price list
+            </p>
+            <p class="mb-0">
+              {{ priceListName(detail.company.price_list_id) }}
+            </p>
+          </div>
+          <div>
+            <p class="text-caption text-medium-emphasis mb-1">
               Created
             </p>
             <p class="mb-0">
@@ -312,6 +332,10 @@ onMounted(load)
         <VTextField v-model="form.website" label="Website" density="compact" />
         <VTextField v-model.number="form.employee_count" label="Employees" type="number" min="0" density="compact" />
         <VTextField v-model.number="form.annual_revenue" label="Annual revenue (INR)" type="number" min="0" density="compact" />
+        <VSelect
+          v-model="form.price_list_id" label="Price list (optional -- overrides quote prices for this account)" density="compact" clearable
+          :items="priceLists.filter(p => p.active).map(p => ({ title: p.name, value: p.id }))"
+        />
         <VTextarea v-model="form.address" label="Address" rows="2" density="compact" />
         <VTextarea v-model="form.notes" label="Notes" rows="3" density="compact" />
       </VCardText>

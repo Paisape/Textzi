@@ -254,18 +254,18 @@ async function syncCatalogNow() {
 
 // --- Shopify / WooCommerce -> Meta catalog sync ---------------------------------------------
 
-type StoreConnection = { connected: boolean, status: string | null, last_sync_status: string | null, last_sync_error: string | null, products_synced: number }
+type StoreConnection = { connected: boolean, status: string | null, last_sync_status: string | null, last_sync_error: string | null, products_synced: number, order_import_active: boolean, orders_imported: number }
 type ShopifyConnection = StoreConnection & { shop_domain: string | null }
 type WooConnection = StoreConnection & { store_url: string | null }
 
-const shopify = ref<ShopifyConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, shop_domain: null })
+const shopify = ref<ShopifyConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, order_import_active: false, orders_imported: 0, shop_domain: null })
 const shopifyError = ref('')
 const shopifyConnecting = ref(false)
 const shopifySyncing = ref(false)
 const shopifyDomainInput = ref('')
 const shopifyTokenInput = ref('')
 
-const woo = ref<WooConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, store_url: null })
+const woo = ref<WooConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, order_import_active: false, orders_imported: 0, store_url: null })
 const wooError = ref('')
 const wooConnecting = ref(false)
 const wooSyncing = ref(false)
@@ -325,7 +325,7 @@ async function disconnectShopify() {
   shopifyError.value = ''
   try {
     await $api('/v1/waba/shopify/connection', { method: 'DELETE' })
-    shopify.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, shop_domain: null }
+    shopify.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, order_import_active: false, orders_imported: 0, shop_domain: null }
   }
   catch (error: any) {
     shopifyError.value = extractErrorMessage(error, 'Could not disconnect Shopify.')
@@ -374,7 +374,7 @@ async function disconnectWoo() {
   wooError.value = ''
   try {
     await $api('/v1/waba/woocommerce/connection', { method: 'DELETE' })
-    woo.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, store_url: null }
+    woo.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, order_import_active: false, orders_imported: 0, store_url: null }
   }
   catch (error: any) {
     wooError.value = extractErrorMessage(error, 'Could not disconnect WooCommerce.')
@@ -834,7 +834,12 @@ watch(activeTab, tab => {
           </h2>
           <p class="text-body-2 text-medium-emphasis mb-3">
             Connect Shopify or WooCommerce and Textzi will keep your Meta catalog above updated
-            from your real store data automatically, once an hour.
+            from your real store data automatically, once an hour. A new order placed on your
+            store also creates a Deal in
+            <RouterLink :to="{ name: 'crm-deals' }">
+              CRM
+            </RouterLink>
+            the moment it comes in, if your store's own webhooks can reach this account's public URL.
           </p>
 
           <VAlert v-if="shopifyError" type="error" variant="tonal" density="compact" class="mb-3">
@@ -846,6 +851,12 @@ watch(activeTab, tab => {
             </VChip>
             <span class="text-caption text-medium-emphasis">
               {{ shopify.last_sync_status === 'failed' ? `Last sync failed: ${shopify.last_sync_error}` : `${shopify.products_synced} products synced` }}
+            </span>
+            <VChip v-if="shopify.order_import_active" size="small" variant="tonal" color="info">
+              Order import on -- {{ shopify.orders_imported }} imported
+            </VChip>
+            <span v-else class="text-caption text-medium-emphasis">
+              Order import off -- set Public API base URL in Platform Settings, then reconnect
             </span>
             <VBtn size="small" variant="tonal" :loading="shopifySyncing" @click="syncShopifyNow">
               Sync now
@@ -873,6 +884,12 @@ watch(activeTab, tab => {
             </VChip>
             <span class="text-caption text-medium-emphasis">
               {{ woo.last_sync_status === 'failed' ? `Last sync failed: ${woo.last_sync_error}` : `${woo.products_synced} products synced` }}
+            </span>
+            <VChip v-if="woo.order_import_active" size="small" variant="tonal" color="info">
+              Order import on -- {{ woo.orders_imported }} imported
+            </VChip>
+            <span v-else class="text-caption text-medium-emphasis">
+              Order import off -- set Public API base URL in Platform Settings, then reconnect
             </span>
             <VBtn size="small" variant="tonal" :loading="wooSyncing" @click="syncWooNow">
               Sync now

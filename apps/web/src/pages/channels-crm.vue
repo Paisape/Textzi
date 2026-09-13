@@ -170,14 +170,34 @@ async function saveApprovals() {
 
 // --- Products (CPQ price list) ---
 
-type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, description: string | null, active: boolean }
+type BundleItemLine = { component_product_id: string, quantity: number }
+type Product = {
+  id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null,
+  category: string | null, description: string | null, is_bundle: boolean,
+  bundle_items: { id: string, component_product_id: string, component_name: string, quantity: number }[], active: boolean
+}
 
 const products = ref<Product[]>([])
 const productDialog = ref(false)
-const productForm = reactive({ name: '', sku: '', hsn_code: '', unit_price: 0, tax_rate: null as number | null, category: '', description: '' })
+const productForm = reactive({
+  name: '', sku: '', hsn_code: '', unit_price: 0, tax_rate: null as number | null, category: '', description: '',
+  is_bundle: false, bundle_items: [] as BundleItemLine[],
+})
 const productSaving = ref(false)
 const productError = ref('')
 const editingProductId = ref<string | null>(null)
+
+const nonBundleProducts = computed(() => products.value.filter(p => !p.is_bundle && p.id !== editingProductId.value))
+
+function addBundleComponent() {
+  const first = nonBundleProducts.value.find(p => !productForm.bundle_items.some(bi => bi.component_product_id === p.id))
+  if (first)
+    productForm.bundle_items.push({ component_product_id: first.id, quantity: 1 })
+}
+
+function removeBundleComponent(index: number) {
+  productForm.bundle_items.splice(index, 1)
+}
 
 async function loadProducts() {
   try {
@@ -197,6 +217,8 @@ function openProductDialog() {
   productForm.tax_rate = null
   productForm.category = ''
   productForm.description = ''
+  productForm.is_bundle = false
+  productForm.bundle_items = []
   productError.value = ''
   productDialog.value = true
 }
@@ -210,6 +232,8 @@ function openEditProductDialog(product: Product) {
   productForm.tax_rate = product.tax_rate
   productForm.category = product.category || ''
   productForm.description = product.description || ''
+  productForm.is_bundle = product.is_bundle
+  productForm.bundle_items = product.bundle_items.map(bi => ({ component_product_id: bi.component_product_id, quantity: bi.quantity }))
   productError.value = ''
   productDialog.value = true
 }
@@ -217,21 +241,29 @@ function openEditProductDialog(product: Product) {
 async function saveProduct() {
   if (!productForm.name.trim())
     return
+  if (productForm.is_bundle && !productForm.bundle_items.length) {
+    productError.value = 'A bundle needs at least one component product.'
+    return
+  }
   productSaving.value = true
   productError.value = ''
   try {
-    const body = {
+    const body: Record<string, unknown> = {
       name: productForm.name.trim(), sku: productForm.sku.trim() || null, hsn_code: productForm.hsn_code.trim(),
-      unit_price: productForm.unit_price, tax_rate: productForm.tax_rate, category: productForm.category.trim() || null,
-      description: productForm.description.trim() || null,
+      unit_price: productForm.is_bundle ? 0 : productForm.unit_price, tax_rate: productForm.is_bundle ? null : productForm.tax_rate,
+      category: productForm.category.trim() || null, description: productForm.description.trim() || null,
     }
     if (editingProductId.value) {
+      if (productForm.is_bundle)
+        body.bundle_items = productForm.bundle_items
       const updated = await $api<Product>(`/v1/crm/quotes/products/${editingProductId.value}`, { method: 'PATCH', body })
       const index = products.value.findIndex(p => p.id === editingProductId.value)
       if (index !== -1)
         products.value[index] = updated
     }
     else {
+      body.is_bundle = productForm.is_bundle
+      body.bundle_items = productForm.bundle_items
       products.value.push(await $api<Product>('/v1/crm/quotes/products', { method: 'POST', body }))
     }
     productDialog.value = false
@@ -362,6 +394,131 @@ async function deleteDiscountRule(rule: DiscountRule) {
   }
   finally {
     deletingDiscountId.value = null
+  }
+}
+
+// --- Price lists (per-company override pricing) ---
+
+type PriceList = { id: string, name: string, active: boolean }
+type PriceListEntry = { id: string, product_id: string, product_name: string, unit_price: number }
+
+const priceLists = ref<PriceList[]>([])
+const priceListDialog = ref(false)
+const priceListForm = reactive({ name: '' })
+const priceListSaving = ref(false)
+const priceListError = ref('')
+const editingPriceListId = ref<string | null>(null)
+
+async function loadPriceLists() {
+  try {
+    priceLists.value = await $api<PriceList[]>('/v1/crm/quotes/price-lists')
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not load price lists.')
+  }
+}
+
+function openPriceListDialog() {
+  editingPriceListId.value = null
+  priceListForm.name = ''
+  priceListError.value = ''
+  priceListDialog.value = true
+}
+
+async function savePriceList() {
+  if (!priceListForm.name.trim())
+    return
+  priceListSaving.value = true
+  priceListError.value = ''
+  try {
+    const created = await $api<PriceList>('/v1/crm/quotes/price-lists', { method: 'POST', body: { name: priceListForm.name.trim() } })
+    priceLists.value.push(created)
+    priceListDialog.value = false
+  }
+  catch (error: any) {
+    priceListError.value = extractErrorMessage(error, 'Could not save this price list.')
+  }
+  finally {
+    priceListSaving.value = false
+  }
+}
+
+const deletingPriceListId = ref<string | null>(null)
+
+async function deletePriceList(priceList: PriceList) {
+  deletingPriceListId.value = priceList.id
+  try {
+    await $api(`/v1/crm/quotes/price-lists/${priceList.id}`, { method: 'DELETE' })
+    priceLists.value = priceLists.value.filter(p => p.id !== priceList.id)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not delete this price list -- it may still be assigned to a company.')
+  }
+  finally {
+    deletingPriceListId.value = null
+  }
+}
+
+// --- Price list entries dialog (per-product override prices within one price list) ---
+
+const priceListEntriesDialog = ref(false)
+const priceListEntriesFor = ref<PriceList | null>(null)
+const priceListEntries = ref<PriceListEntry[]>([])
+const priceListEntriesLoading = ref(false)
+const newEntryProductId = ref<string | null>(null)
+const newEntryPrice = ref(0)
+const entrySaving = ref(false)
+
+async function openPriceListEntries(priceList: PriceList) {
+  priceListEntriesFor.value = priceList
+  priceListEntriesDialog.value = true
+  priceListEntriesLoading.value = true
+  newEntryProductId.value = null
+  newEntryPrice.value = 0
+  try {
+    priceListEntries.value = await $api<PriceListEntry[]>(`/v1/crm/quotes/price-lists/${priceList.id}/entries`)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not load this price list\'s entries.')
+  }
+  finally {
+    priceListEntriesLoading.value = false
+  }
+}
+
+async function addPriceListEntry() {
+  if (!priceListEntriesFor.value || !newEntryProductId.value)
+    return
+  entrySaving.value = true
+  try {
+    const entry = await $api<PriceListEntry>(`/v1/crm/quotes/price-lists/${priceListEntriesFor.value.id}/entries`, {
+      method: 'PUT', body: { product_id: newEntryProductId.value, unit_price: newEntryPrice.value },
+    })
+    const index = priceListEntries.value.findIndex(e => e.product_id === entry.product_id)
+    if (index !== -1)
+      priceListEntries.value[index] = entry
+    else
+      priceListEntries.value.push(entry)
+    newEntryProductId.value = null
+    newEntryPrice.value = 0
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not save this price.')
+  }
+  finally {
+    entrySaving.value = false
+  }
+}
+
+async function removePriceListEntry(entry: PriceListEntry) {
+  if (!priceListEntriesFor.value)
+    return
+  try {
+    await $api(`/v1/crm/quotes/price-lists/${priceListEntriesFor.value.id}/entries/${entry.id}`, { method: 'DELETE' })
+    priceListEntries.value = priceListEntries.value.filter(e => e.id !== entry.id)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not remove this entry.')
   }
 }
 
@@ -1042,6 +1199,7 @@ async function loadExtras() {
   loadCannedResponses()
   loadProducts()
   loadDiscountRules()
+  loadPriceLists()
   loadDocumentTemplates()
 }
 
@@ -1943,6 +2101,7 @@ onMounted(() => {
               <th>HSN</th>
               <th>Price (INR)</th>
               <th>Tax rate</th>
+              <th>Type</th>
               <th>Active</th>
               <th />
             </tr>
@@ -1953,8 +2112,14 @@ onMounted(() => {
               <td>{{ product.sku || '—' }}</td>
               <td>{{ product.category || '—' }}</td>
               <td>{{ product.hsn_code || '—' }}</td>
-              <td>{{ inr(product.unit_price) }}</td>
-              <td>{{ product.tax_rate !== null ? `${(product.tax_rate * 100).toFixed(0)}%` : 'Default GST' }}</td>
+              <td>{{ product.is_bundle ? '—' : inr(product.unit_price) }}</td>
+              <td>{{ product.is_bundle ? '—' : (product.tax_rate !== null ? `${(product.tax_rate * 100).toFixed(0)}%` : 'Default GST') }}</td>
+              <td>
+                <VChip v-if="product.is_bundle" size="small" variant="tonal">
+                  Bundle ({{ product.bundle_items.length }})
+                </VChip>
+                <span v-else class="text-medium-emphasis">Item</span>
+              </td>
               <td>
                 <VSwitch :model-value="product.active" density="compact" hide-details :disabled="togglingProductId === product.id" @update:model-value="toggleProductActive(product)" />
               </td>
@@ -2011,6 +2176,44 @@ onMounted(() => {
         </VTable>
         <p v-if="!discountRules.length" class="text-medium-emphasis text-center pa-6">
           No discount rules yet.
+        </p>
+      </VCard>
+
+      <div class="d-flex align-center justify-space-between mb-3 mt-6">
+        <div>
+          <h3 class="text-h6 mb-1">
+            Price lists
+          </h3>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Custom per-product pricing for a specific customer segment -- assign a price list to a Company (on its detail page) and every quote for that account's deals uses these prices instead of the catalog price.
+          </p>
+        </div>
+        <VBtn color="primary" prepend-icon="tabler-plus" @click="openPriceListDialog">
+          New price list
+        </VBtn>
+      </div>
+      <VCard>
+        <VTable>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="priceList in priceLists" :key="priceList.id">
+              <td>{{ priceList.name }}</td>
+              <td class="text-end">
+                <VBtn size="small" variant="text" @click="openPriceListEntries(priceList)">
+                  Manage prices
+                </VBtn>
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingPriceListId === priceList.id" @click="deletePriceList(priceList)" />
+              </td>
+            </tr>
+          </tbody>
+        </VTable>
+        <p v-if="!priceLists.length" class="text-medium-emphasis text-center pa-6">
+          No price lists yet.
         </p>
       </VCard>
     </VWindowItem>
@@ -2231,15 +2434,37 @@ onMounted(() => {
           {{ productError }}
         </VAlert>
         <VTextField v-model="productForm.name" label="Product name" density="compact" autofocus />
-        <VTextField v-model="productForm.sku" label="SKU (optional)" density="compact" />
-        <VTextField v-model="productForm.category" label="Category (optional)" density="compact" />
-        <VTextField v-model="productForm.hsn_code" label="HSN code" density="compact" />
-        <VTextField v-model.number="productForm.unit_price" label="Unit price (INR)" type="number" min="0" density="compact" />
-        <VTextField
-          :model-value="productForm.tax_rate === null ? null : productForm.tax_rate * 100"
-          label="Tax rate % (leave blank to use the account's default GST rate)" type="number" min="0" max="100" density="compact"
-          @update:model-value="(v: string) => productForm.tax_rate = v === '' || v === null ? null : Number(v) / 100"
+        <VSwitch
+          v-model="productForm.is_bundle" label="This is a bundle (made of other products)" density="compact" hide-details
+          :disabled="!!editingProductId"
         />
+        <template v-if="!productForm.is_bundle">
+          <VTextField v-model="productForm.sku" label="SKU (optional)" density="compact" />
+          <VTextField v-model="productForm.category" label="Category (optional)" density="compact" />
+          <VTextField v-model="productForm.hsn_code" label="HSN code" density="compact" />
+          <VTextField v-model.number="productForm.unit_price" label="Unit price (INR)" type="number" min="0" density="compact" />
+          <VTextField
+            :model-value="productForm.tax_rate === null ? null : productForm.tax_rate * 100"
+            label="Tax rate % (leave blank to use the account's default GST rate)" type="number" min="0" max="100" density="compact"
+            @update:model-value="(v: string) => productForm.tax_rate = v === '' || v === null ? null : Number(v) / 100"
+          />
+        </template>
+        <template v-else>
+          <p class="text-caption text-medium-emphasis mb-0">
+            A bundle's price is always the sum of its components -- computed fresh on each quote, not stored here.
+          </p>
+          <div v-for="(item, index) in productForm.bundle_items" :key="index" class="d-flex ga-2 align-center">
+            <VSelect
+              v-model="item.component_product_id" label="Component" density="compact" hide-details style="flex: 1;"
+              :items="nonBundleProducts.map(p => ({ title: p.name, value: p.id }))"
+            />
+            <VTextField v-model.number="item.quantity" label="Qty" type="number" min="0.01" density="compact" hide-details style="max-width: 90px;" />
+            <VBtn icon="tabler-x" size="small" variant="text" @click="removeBundleComponent(index)" />
+          </div>
+          <VBtn size="small" variant="text" prepend-icon="tabler-plus" :disabled="!nonBundleProducts.length" @click="addBundleComponent">
+            Add component
+          </VBtn>
+        </template>
         <VTextarea v-model="productForm.description" label="Description (optional)" rows="2" density="compact" />
       </VCardText>
       <VCardActions>
@@ -2280,6 +2505,71 @@ onMounted(() => {
           {{ editingDiscountId ? 'Save' : 'Create' }}
         </VBtn>
       </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="priceListDialog" max-width="400" persistent>
+    <VCard title="New price list">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="priceListDialog = false" />
+      </template>
+      <VCardText>
+        <VAlert v-if="priceListError" type="error" variant="tonal" density="compact" class="mb-4">
+          {{ priceListError }}
+        </VAlert>
+        <VTextField v-model="priceListForm.name" label="Price list name" density="compact" autofocus />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="priceListDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="priceListSaving" :disabled="!priceListForm.name.trim()" @click="savePriceList">
+          Create
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="priceListEntriesDialog" max-width="560">
+    <VCard :title="`Prices — ${priceListEntriesFor?.name || ''}`">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="priceListEntriesDialog = false" />
+      </template>
+      <VCardText>
+        <VProgressLinear v-if="priceListEntriesLoading" indeterminate class="mb-4" />
+        <VTable v-else density="compact" class="mb-4">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Override price (INR)</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="entry in priceListEntries" :key="entry.id">
+              <td>{{ entry.product_name }}</td>
+              <td>{{ inr(entry.unit_price) }}</td>
+              <td class="text-end">
+                <VBtn icon="tabler-trash" size="small" variant="text" @click="removePriceListEntry(entry)" />
+              </td>
+            </tr>
+          </tbody>
+        </VTable>
+        <p v-if="!priceListEntriesLoading && !priceListEntries.length" class="text-medium-emphasis text-center pa-4">
+          No overrides yet -- every product uses its catalog price for this price list.
+        </p>
+        <div class="d-flex ga-2 align-center">
+          <VSelect
+            v-model="newEntryProductId" label="Product" density="compact" hide-details style="flex: 1;"
+            :items="products.filter(p => !p.is_bundle).map(p => ({ title: p.name, value: p.id }))"
+          />
+          <VTextField v-model.number="newEntryPrice" label="Price (INR)" type="number" min="0" density="compact" hide-details style="max-width: 130px;" />
+          <VBtn color="primary" :loading="entrySaving" :disabled="!newEntryProductId" @click="addPriceListEntry">
+            Set
+          </VBtn>
+        </div>
+      </VCardText>
     </VCard>
   </VDialog>
 

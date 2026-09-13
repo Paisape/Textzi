@@ -17,9 +17,9 @@ from .admin import router as admin_router, require_admin
 from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
-from .catalog_shopify import router as catalog_shopify_router, sync_all_shopify_connections
+from .catalog_shopify import public_router as catalog_shopify_public_router, router as catalog_shopify_router, sync_all_shopify_connections
 from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
-from .catalog_woocommerce import router as catalog_woocommerce_router, sync_all_woocommerce_connections
+from .catalog_woocommerce import public_router as catalog_woocommerce_public_router, router as catalog_woocommerce_router, sync_all_woocommerce_connections
 from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
 from .crm import router as crm_router, send_due_scheduled_reports
@@ -144,7 +144,9 @@ app.include_router(admin_wallet_router)
 app.include_router(auth_router)
 app.include_router(catalog_sync_router)
 app.include_router(catalog_shopify_router)
+app.include_router(catalog_shopify_public_router)
 app.include_router(catalog_woocommerce_router)
+app.include_router(catalog_woocommerce_public_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
 app.include_router(crm_router)

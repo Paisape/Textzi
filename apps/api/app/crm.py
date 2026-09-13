@@ -2051,7 +2051,17 @@ def delete_saved_report(report_id: str, user: User = Depends(require_user), db: 
 # --- Dashboards (a named grid of existing saved-report widgets) ---------------------------------
 
 def _dashboard_out(dashboard: Dashboard) -> DashboardOut:
-    return DashboardOut(id=dashboard.id, name=dashboard.name, widget_report_ids=dashboard.widget_report_ids or [], created_at=dashboard.created_at.isoformat())
+    widget_ids = dashboard.widget_report_ids or []
+    widths = dashboard.widget_widths or {}
+    # A widget added before widget_widths existed (or never explicitly resized) defaults to
+    # "half" -- the exact width every existing dashboard already renders at (crm-dashboards.vue's
+    # old hardcoded cols="12" md="6"), so this is purely additive, no visual change for anyone
+    # who never touches the new resize control.
+    return DashboardOut(
+        id=dashboard.id, name=dashboard.name, widget_report_ids=widget_ids,
+        widget_widths={report_id: widths.get(report_id, "half") for report_id in widget_ids},
+        created_at=dashboard.created_at.isoformat(),
+    )
 
 
 def _validate_widget_report_ids(db: Session, entity_id: str, user_id: str, widget_report_ids: list[str]) -> None:
@@ -2095,6 +2105,13 @@ def update_dashboard(dashboard_id: str, payload: DashboardUpdateRequest, user: U
     if "widget_report_ids" in payload.model_fields_set and payload.widget_report_ids is not None:
         _validate_widget_report_ids(db, entity.id, user.id, payload.widget_report_ids)
         dashboard.widget_report_ids = payload.widget_report_ids
+        # Drop widths for any widget that's no longer on the dashboard -- keeps widget_widths from
+        # accumulating stale entries for reports removed a long time ago.
+        dashboard.widget_widths = {k: v for k, v in (dashboard.widget_widths or {}).items() if k in payload.widget_report_ids}
+    if "widget_widths" in payload.model_fields_set and payload.widget_widths is not None:
+        merged = dict(dashboard.widget_widths or {})
+        merged.update(payload.widget_widths)
+        dashboard.widget_widths = merged
     db.commit()
     db.refresh(dashboard)
     return _dashboard_out(dashboard)
@@ -2365,7 +2382,7 @@ def _company_out(db: Session, company: Company) -> CompanyOut:
         notes=company.notes, owner_user_id=company.owner_user_id, account_type=company.account_type,
         parent_company_id=company.parent_company_id, phone=company.phone, address=company.address,
         employee_count=company.employee_count, annual_revenue=float(company.annual_revenue) if company.annual_revenue is not None else None,
-        contact_count=contact_count, open_deal_value=round(open_deal_value, 2),
+        price_list_id=company.price_list_id, contact_count=contact_count, open_deal_value=round(open_deal_value, 2),
         won_deal_value=round(won_deal_value, 2), open_deal_count=open_deal_count, created_at=company.created_at.isoformat(),
     )
 
@@ -2386,7 +2403,7 @@ def create_company(payload: CompanyCreateRequest, user: User = Depends(require_u
         entity_id=entity.id, name=payload.name.strip(), gstin=payload.gstin, industry=payload.industry, website=payload.website,
         notes=payload.notes, owner_user_id=payload.owner_user_id, account_type=payload.account_type,
         parent_company_id=payload.parent_company_id, phone=payload.phone, address=payload.address,
-        employee_count=payload.employee_count, annual_revenue=payload.annual_revenue,
+        employee_count=payload.employee_count, annual_revenue=payload.annual_revenue, price_list_id=payload.price_list_id,
     )
     db.add(company)
     db.commit()
@@ -2432,6 +2449,7 @@ def update_company(company_id: str, payload: CompanyCreateRequest, user: User = 
     company.address = payload.address
     company.employee_count = payload.employee_count
     company.annual_revenue = payload.annual_revenue
+    company.price_list_id = payload.price_list_id
     db.commit()
     db.refresh(company)
     return _company_out(db, company)

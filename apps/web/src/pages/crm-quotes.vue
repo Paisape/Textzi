@@ -36,7 +36,7 @@ type Quote = {
 
 const route = useRoute()
 const authStore = useAuthStore()
-type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, active: boolean }
+type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, is_bundle: boolean, active: boolean }
 
 const quotes = ref<Quote[]>([])
 const deals = ref<Deal[]>([])
@@ -150,9 +150,16 @@ function pickProduct(item: LineItem, productId: string | null) {
   if (product) {
     item.description = product.name
     item.hsn_code = product.hsn_code
-    item.unit_price = product.unit_price
-    item.tax_rate = product.tax_rate
+    // A bundle's own price/tax are meaningless (0/null on the Product row) -- the backend expands
+    // this single line into one real, individually-priced line per component on save, so the
+    // draft-total preview below is deliberately not accurate for a bundle line until then.
+    item.unit_price = product.is_bundle ? 0 : product.unit_price
+    item.tax_rate = product.is_bundle ? null : product.tax_rate
   }
+}
+
+function isBundleLine(item: LineItem) {
+  return !!item.product_id && products.value.find(p => p.id === item.product_id)?.is_bundle
 }
 
 const draftTotal = computed(() => form.line_items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unit_price || 0), 0))
@@ -407,18 +414,23 @@ onMounted(async () => {
               Add line
             </VBtn>
           </div>
-          <div v-for="(item, index) in form.line_items" :key="index" class="d-flex ga-2 mb-2 align-center">
-            <VSelect
-              v-if="products.length"
-              :model-value="item.product_id" placeholder="Pick a product (optional)" density="compact" hide-details clearable
-              style="max-width: 160px;" :items="products.map(p => ({ title: p.name, value: p.id }))"
-              @update:model-value="(v: string | null) => pickProduct(item, v)"
-            />
-            <VTextField v-model="item.description" placeholder="Description" density="compact" hide-details style="flex: 2;" />
-            <VTextField v-model="item.hsn_code" placeholder="HSN" density="compact" hide-details style="max-width: 90px;" />
-            <VTextField v-model.number="item.quantity" type="number" placeholder="Qty" density="compact" hide-details style="max-width: 80px;" />
-            <VTextField v-model.number="item.unit_price" type="number" placeholder="Unit price" density="compact" hide-details style="max-width: 110px;" />
-            <VBtn icon="tabler-x" size="small" variant="text" :disabled="form.line_items.length === 1" @click="removeLine(index)" />
+          <div v-for="(item, index) in form.line_items" :key="index" class="mb-2">
+            <div class="d-flex ga-2 align-center">
+              <VSelect
+                v-if="products.length"
+                :model-value="item.product_id" placeholder="Pick a product (optional)" density="compact" hide-details clearable
+                style="max-width: 160px;" :items="products.map(p => ({ title: p.is_bundle ? `${p.name} (bundle)` : p.name, value: p.id }))"
+                @update:model-value="(v: string | null) => pickProduct(item, v)"
+              />
+              <VTextField v-model="item.description" placeholder="Description" density="compact" hide-details style="flex: 2;" />
+              <VTextField v-model="item.hsn_code" placeholder="HSN" density="compact" hide-details style="max-width: 90px;" :disabled="isBundleLine(item)" />
+              <VTextField v-model.number="item.quantity" type="number" placeholder="Qty" density="compact" hide-details style="max-width: 80px;" />
+              <VTextField v-model.number="item.unit_price" type="number" placeholder="Unit price" density="compact" hide-details style="max-width: 110px;" :disabled="isBundleLine(item)" />
+              <VBtn icon="tabler-x" size="small" variant="text" :disabled="form.line_items.length === 1" @click="removeLine(index)" />
+            </div>
+            <p v-if="isBundleLine(item)" class="text-caption text-medium-emphasis mb-0 mt-1">
+              This bundle expands into one priced line per component when you save.
+            </p>
           </div>
           <p class="text-caption text-medium-emphasis text-end mb-0">
             Subtotal (before GST): {{ inr(draftTotal) }}

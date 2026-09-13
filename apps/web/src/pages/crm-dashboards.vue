@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { useDragAndDrop } from '@formkit/drag-and-drop/vue'
 import { ArcElement, BarElement, CategoryScale, Chart as ChartJS, Legend, LinearScale, Tooltip } from 'chart.js'
 import { Bar, Doughnut } from 'vue-chartjs'
 
@@ -15,7 +16,8 @@ type ObjectType = 'deal' | 'lead' | 'task'
 type ChartType = 'bar' | 'donut' | 'table'
 type ReportRow = { label: string, value: number }
 type SavedReport = { id: string, name: string, object_type: ObjectType, group_by: string, measure: string, chart_type: ChartType }
-type Dashboard = { id: string, name: string, widget_report_ids: string[], created_at: string }
+type WidgetWidth = 'half' | 'full'
+type Dashboard = { id: string, name: string, widget_report_ids: string[], widget_widths: Record<string, WidgetWidth>, created_at: string }
 
 const CHART_COLORS = ['#7367F0', '#28C76F', '#FF9F43', '#EA5455', '#00CFE8', '#82868B', '#5A8DEE', '#FFD93D']
 
@@ -33,6 +35,49 @@ const activeDashboard = computed(() => dashboards.value.find(d => d.id === activ
 
 function reportById(id: string) {
   return savedReports.value.find(r => r.id === id)
+}
+
+// --- Drag-to-reorder widgets (@formkit/drag-and-drop) ---
+
+const [widgetGridRef, orderedWidgetIds] = useDragAndDrop<string>([])
+let suppressReorderPersist = false
+
+watch(orderedWidgetIds, async (newOrder, oldOrder) => {
+  if (suppressReorderPersist || !activeDashboard.value)
+    return
+  // Only persist an actual reorder (same set, different sequence) -- oldOrder is empty on the
+  // very first assignment from syncWidgetOrder below, which must not trigger a write.
+  if (!oldOrder.length || newOrder.length !== oldOrder.length || newOrder.every((id, i) => id === oldOrder[i]))
+    return
+  try {
+    const updated = await $api<Dashboard>(`/v1/crm/dashboards/${activeDashboard.value.id}`, { method: 'PATCH', body: { widget_report_ids: newOrder } })
+    const index = dashboards.value.findIndex(d => d.id === updated.id)
+    if (index !== -1)
+      dashboards.value[index] = updated
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not save the new widget order.')
+  }
+})
+
+function syncWidgetOrder() {
+  suppressReorderPersist = true
+  orderedWidgetIds.value = [...(activeDashboard.value?.widget_report_ids || [])]
+  nextTick(() => { suppressReorderPersist = false })
+}
+
+async function setWidgetWidth(reportId: string, width: WidgetWidth) {
+  if (!activeDashboard.value)
+    return
+  try {
+    const updated = await $api<Dashboard>(`/v1/crm/dashboards/${activeDashboard.value.id}`, { method: 'PATCH', body: { widget_widths: { [reportId]: width } } })
+    const index = dashboards.value.findIndex(d => d.id === updated.id)
+    if (index !== -1)
+      dashboards.value[index] = updated
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not resize this widget.')
+  }
 }
 
 async function runActiveDashboard() {
@@ -53,6 +98,7 @@ async function runActiveDashboard() {
 
 async function selectDashboard(id: string) {
   activeDashboardId.value = id
+  syncWidgetOrder()
   await runActiveDashboard()
 }
 
@@ -180,6 +226,7 @@ async function addWidget() {
     if (index !== -1)
       dashboards.value[index] = updated
     addWidgetDialog.value = false
+    syncWidgetOrder()
     await runActiveDashboard()
   }
   catch (error: any) {
@@ -199,6 +246,7 @@ async function removeWidget(reportId: string) {
     const index = dashboards.value.findIndex(d => d.id === updated.id)
     if (index !== -1)
       dashboards.value[index] = updated
+    syncWidgetOrder()
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not remove this widget.')
@@ -277,12 +325,23 @@ onMounted(loadAll)
         No widgets yet — add one of your saved reports.
       </p>
 
-      <VRow v-else-if="activeDashboard">
-        <VCol v-for="reportId in activeDashboard.widget_report_ids" :key="reportId" cols="12" md="6">
+      <p v-else-if="activeDashboard" class="text-caption text-medium-emphasis mb-2">
+        Drag a widget's header to reorder it. Use the width icon to make it half or full width.
+      </p>
+      <div v-if="activeDashboard" ref="widgetGridRef" class="dashboard-grid">
+        <div
+          v-for="reportId in orderedWidgetIds" v-show="reportById(reportId)" :key="reportId"
+          class="dashboard-widget" :class="{ 'dashboard-widget--full': activeDashboard.widget_widths[reportId] === 'full' }"
+        >
           <VCard v-if="reportById(reportId)">
-            <VCardItem>
+            <VCardItem class="cursor-grab">
               <VCardTitle>{{ reportById(reportId)!.name }}</VCardTitle>
               <template #append>
+                <VBtn
+                  :icon="activeDashboard.widget_widths[reportId] === 'full' ? 'tabler-arrows-minimize' : 'tabler-arrows-maximize'"
+                  size="small" variant="text" :title="activeDashboard.widget_widths[reportId] === 'full' ? 'Make half width' : 'Make full width'"
+                  @click="setWidgetWidth(reportId, activeDashboard.widget_widths[reportId] === 'full' ? 'half' : 'full')"
+                />
                 <VBtn icon="tabler-x" size="small" variant="text" title="Remove from dashboard" @click="removeWidget(reportId)" />
               </template>
             </VCardItem>
@@ -306,8 +365,8 @@ onMounted(loadAll)
               </div>
             </VCardText>
           </VCard>
-        </VCol>
-      </VRow>
+        </div>
+      </div>
     </template>
   </template>
 
@@ -357,3 +416,19 @@ onMounted(loadAll)
     </VCard>
   </VDialog>
 </template>
+
+<style scoped>
+.dashboard-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, 1fr);
+}
+.dashboard-widget--full {
+  grid-column: 1 / -1;
+}
+@media (max-width: 960px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+}
+</style>

@@ -1529,6 +1529,8 @@ class ShopifyConnectionOut(BaseModel):
     last_sync_error: str | None
     last_synced_at: str | None
     products_synced: int
+    order_import_active: bool
+    orders_imported: int
 
 
 class ShopifyConnectRequest(BaseModel):
@@ -1544,6 +1546,8 @@ class WooCommerceConnectionOut(BaseModel):
     last_sync_error: str | None
     last_synced_at: str | None
     products_synced: int
+    order_import_active: bool
+    orders_imported: int
 
 
 class WooCommerceConnectRequest(BaseModel):
@@ -2551,6 +2555,7 @@ class DashboardOut(BaseModel):
     id: str
     name: str
     widget_report_ids: list[str]
+    widget_widths: dict[str, str]
     created_at: str
 
 
@@ -2562,6 +2567,17 @@ class DashboardCreateRequest(BaseModel):
 class DashboardUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     widget_report_ids: list[str] | None = None
+    widget_widths: dict[str, str] | None = None
+
+    @field_validator("widget_widths")
+    @classmethod
+    def _validate_widget_widths(cls, value: dict[str, str] | None) -> dict[str, str] | None:
+        if value is None:
+            return None
+        bad = {k: v for k, v in value.items() if v not in ("half", "full")}
+        if bad:
+            raise ValueError(f"widget_widths values must be 'half' or 'full': {bad}")
+        return value
 
 
 class TaskOut(BaseModel):
@@ -2649,6 +2665,18 @@ class QuoteLineItem(BaseModel):
     discount_percent: float = Field(default=0, ge=0, le=100)
 
 
+class BundleItemOut(BaseModel):
+    id: str
+    component_product_id: str
+    component_name: str
+    quantity: float
+
+
+class BundleItemInput(BaseModel):
+    component_product_id: str
+    quantity: float = Field(gt=0)
+
+
 class ProductOut(BaseModel):
     id: str
     name: str
@@ -2658,6 +2686,8 @@ class ProductOut(BaseModel):
     tax_rate: float | None
     category: str | None
     description: str | None
+    is_bundle: bool
+    bundle_items: list[BundleItemOut] = Field(default_factory=list)
     active: bool
 
 
@@ -2665,10 +2695,14 @@ class ProductCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     sku: str | None = Field(default=None, max_length=60)
     hsn_code: str = Field(default="", max_length=20)
+    # Required even for a bundle (validated as 0 there) -- keeps the column NOT NULL and this
+    # request shape uniform; a bundle's real price always comes from its components at quote time.
     unit_price: float = Field(ge=0)
     tax_rate: float | None = Field(default=None, ge=0, le=1)
     category: str | None = Field(default=None, max_length=80)
     description: str | None = None
+    is_bundle: bool = False
+    bundle_items: list[BundleItemInput] = Field(default_factory=list)
     active: bool = True
 
 
@@ -2680,7 +2714,36 @@ class ProductUpdateRequest(BaseModel):
     tax_rate: float | None = None
     category: str | None = Field(default=None, max_length=80)
     description: str | None = None
+    bundle_items: list[BundleItemInput] | None = None
     active: bool | None = None
+
+
+class PriceListOut(BaseModel):
+    id: str
+    name: str
+    active: bool
+
+
+class PriceListCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    active: bool = True
+
+
+class PriceListUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    active: bool | None = None
+
+
+class PriceListEntryOut(BaseModel):
+    id: str
+    product_id: str
+    product_name: str
+    unit_price: float
+
+
+class PriceListEntrySetRequest(BaseModel):
+    product_id: str
+    unit_price: float = Field(ge=0)
 
 
 class DiscountRuleOut(BaseModel):
@@ -2795,6 +2858,7 @@ class CompanyOut(BaseModel):
     address: str | None
     employee_count: int | None
     annual_revenue: float | None
+    price_list_id: str | None
     contact_count: int
     open_deal_value: float
     won_deal_value: float
@@ -2815,6 +2879,7 @@ class CompanyCreateRequest(BaseModel):
     address: str | None = None
     employee_count: int | None = Field(default=None, ge=0)
     annual_revenue: float | None = Field(default=None, ge=0)
+    price_list_id: str | None = None
 
 
 class ScoringRuleOut(BaseModel):

@@ -570,6 +570,15 @@ class ShopifyConnection(Base):
     last_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     products_synced: Mapped[int] = mapped_column(Integer, default=0)
+    # Set once connect_shopify successfully registers an orders/create webhook with Shopify's own
+    # Admin API -- Shopify's own numeric webhook id, needed to deregister it on disconnect (so a
+    # removed connection doesn't keep silently POSTing to a Textzi entity that no longer wants it).
+    # A random per-connection secret (webhook_secret_encrypted) is generated at the same time and
+    # sent to Shopify as this webhook's own signing key, verified via X-Shopify-Hmac-SHA256 on
+    # every delivery -- same hmac.compare_digest shape as waba_webhooks.py's Meta signature check.
+    order_webhook_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orders_imported: Mapped[int] = mapped_column(Integer, default=0)
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -590,7 +599,33 @@ class WooCommerceConnection(Base):
     last_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     products_synced: Mapped[int] = mapped_column(Integer, default=0)
+    # Same order-import webhook shape as ShopifyConnection above -- WooCommerce's own webhook id
+    # (its REST API returns a numeric id too) plus a per-connection signing secret, verified via
+    # X-WC-Webhook-Signature (base64 HMAC-SHA256, not hex like Shopify's -- a real format
+    # difference between the two platforms' webhook signing, not a copy-paste of the same check).
+    order_webhook_id: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    webhook_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    orders_imported: Mapped[int] = mapped_column(Integer, default=0)
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImportedStoreOrder(Base):
+    """Dedup guard for order-import webhooks -- Shopify and WooCommerce both retry a webhook
+    delivery on anything but a 2xx response (Shopify explicitly documents 19 retries over 48
+    hours), so the receiver must be safe to call twice for the same order. One row per
+    (entity_id, platform, external_order_id); a webhook that finds a matching row here skips
+    creating a second Deal entirely rather than relying on any property of the Deal itself to
+    detect a duplicate."""
+    __tablename__ = "imported_store_orders"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    platform: Mapped[str] = mapped_column(String(20))  # "shopify" | "woocommerce"
+    external_order_id: Mapped[str] = mapped_column(String(60))
+    deal_id: Mapped[str] = mapped_column(ForeignKey("deals.id"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    __table_args__ = (
+        UniqueConstraint("entity_id", "platform", "external_order_id", name="uq_imported_store_orders_entity_platform_order"),
+    )
 
 
 class TallyConnection(Base):
@@ -1476,6 +1511,10 @@ class Company(Base):
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
     employee_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     annual_revenue: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
+    # null = this company's quotes price every product at its plain Product.unit_price (today's
+    # only behavior, unchanged for every company that predates PriceList) -- a set value means a
+    # quote for a deal under this company checks PriceListEntry for each line item's product first.
+    price_list_id: Mapped[str | None] = mapped_column(ForeignKey("price_lists.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -2074,15 +2113,20 @@ class Product(Base):
     optionally reference one (product_id) to pre-fill description/hsn_code/unit_price/tax_rate,
     but the line item itself always stores its own copy of those values (see Quote's own docstring
     on why tax lines aren't recomputed retroactively) -- a price change here never rewrites a quote
-    that's already gone out. Deliberately no bundle/kit products or per-customer price lists --
-    a flat price list with a per-product tax override is what an SME actually needs; revisit only
-    if a real need shows up."""
+    that's already gone out. is_bundle marks this row as a kit made of other Products (its
+    components live in BundleItem) rather than a sellable item with its own unit_price -- a bundle's
+    price is always the sum of its components' (possibly price-list-adjusted) prices, computed at
+    quote time, never stored on the bundle Product row itself."""
     __tablename__ = "products"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
     name: Mapped[str] = mapped_column(String(200))
     sku: Mapped[str | None] = mapped_column(String(60), nullable=True)
     hsn_code: Mapped[str] = mapped_column(String(20), default="")
+    # Ignored for a bundle product (is_bundle=True) -- its effective price is always the sum of its
+    # BundleItem components, computed fresh at quote-build time; kept as a plain Numeric column
+    # (not nullable) rather than Optional so every non-bundle Product ever created keeps working
+    # unchanged, and a bundle row just carries an unused 0.
     unit_price: Mapped[float] = mapped_column(Numeric(14, 2))
     # null = fall back to the global GST_RATE (today's only behavior, unchanged for every existing
     # product) -- a non-null value is a fraction (e.g. 0.05 for 5%) overriding it for this specific
@@ -2090,8 +2134,48 @@ class Product(Base):
     tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
     category: Mapped[str | None] = mapped_column(String(80), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    is_bundle: Mapped[bool] = mapped_column(Boolean, default=False)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BundleItem(Base):
+    """One component product inside a bundle Product (Product.is_bundle=True) -- e.g. a "Starter
+    Kit" bundle made of 1x Router + 2x Cable. quantity is how many of the component ship per one
+    unit of the bundle. No nested bundles (a bundle's own components must themselves be non-bundle
+    products) -- enforced at create time in crm_quotes.py, not by a schema constraint, since a
+    self-referential depth check is simpler in application code than in SQL."""
+    __tablename__ = "bundle_items"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    bundle_product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    component_product_id: Mapped[str] = mapped_column(ForeignKey("products.id"))
+    quantity: Mapped[float] = mapped_column(Numeric(12, 2), default=1)
+
+
+class PriceList(Base):
+    """A named set of customer-specific prices (Zoho/SF's "Price Book") -- e.g. "Wholesale" or
+    "Enterprise Tier". Assigned to a Company (Company.price_list_id); a quote resolves a line
+    item's price by first checking PriceListEntry for the deal's own company + this product, then
+    falling back to Product.unit_price if no entry (or no assigned price list) exists. Deliberately
+    keyed to Company, not CrmContact -- a price agreement is a business-level term, not a per-
+    person one, matching Company's own existing role as the account-level entity in this schema."""
+    __tablename__ = "price_lists"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PriceListEntry(Base):
+    """One product's override price within a PriceList -- a product with no entry in a given price
+    list simply falls back to Product.unit_price, so a price list only needs entries for the
+    products it actually discounts/marks up, not the full catalog."""
+    __tablename__ = "price_list_entries"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    price_list_id: Mapped[str] = mapped_column(ForeignKey("price_lists.id"), index=True)
+    product_id: Mapped[str] = mapped_column(ForeignKey("products.id"), index=True)
+    unit_price: Mapped[float] = mapped_column(Numeric(14, 2))
 
 
 class DiscountRule(Base):
@@ -2178,10 +2262,15 @@ class Dashboard(Base):
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
-    # Ordered list of SavedReport.id -- grid position is just this list's order (rendered in a
-    # fixed-column-count wrap, not a free-form x/y layout, matching this codebase's own "no drag-
-    # and-drop layout engine" scope elsewhere, e.g. Product's own no-pricing-rule-engine docstring).
+    # Ordered list of SavedReport.id -- drag-to-reorder (frontend's @formkit/drag-and-drop) just
+    # rewrites this list's order via the same PATCH the "Add widget"/"Remove widget" actions
+    # already use, no separate reorder endpoint needed.
     widget_report_ids: Mapped[list] = mapped_column(JSON, default=list)
+    # {report_id: "half" | "full"} -- per-widget column width. Deliberately not a free-form x/y/
+    # width/height grid (no library installed for that, and it's more control than an SME dashboard
+    # actually needs); a missing entry defaults to "half" in _dashboard_out, so every dashboard
+    # created before this existed renders exactly as it did before.
+    widget_widths: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

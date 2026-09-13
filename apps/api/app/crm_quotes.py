@@ -22,10 +22,14 @@ from .auth import require_user
 from .config import settings
 from .database import get_db
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
-from .models import Company, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, Product, Quote, User, WabaConnection
+from .models import (
+    BundleItem, Company, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, PriceList, PriceListEntry,
+    Product, Quote, User, WabaConnection,
+)
 from .permissions import require_channel_scope, require_page_scope_for, require_plan_feature
 from .schemas import (
-    DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, ProductCreateRequest, ProductOut,
+    BundleItemOut, DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, PriceListCreateRequest,
+    PriceListEntryOut, PriceListEntrySetRequest, PriceListOut, PriceListUpdateRequest, ProductCreateRequest, ProductOut,
     ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut,
 )
 from .services import GST_RATE, DomainError, channel_active, notify_user, resolve_user_entity, state_code_from_gstin
@@ -47,12 +51,39 @@ def _require_crm(db: Session, entity_id: str) -> None:
 
 # --- Products (CPQ price list) -----------------------------------------------------------------
 
-def _product_out(product: Product) -> ProductOut:
+def _product_out(db: Session, product: Product) -> ProductOut:
+    bundle_items: list[BundleItemOut] = []
+    if product.is_bundle:
+        items = db.scalars(select(BundleItem).where(BundleItem.bundle_product_id == product.id)).all()
+        components = {c.id: c for c in db.scalars(select(Product).where(Product.id.in_([i.component_product_id for i in items]))).all()} if items else {}
+        bundle_items = [
+            BundleItemOut(id=i.id, component_product_id=i.component_product_id, component_name=components[i.component_product_id].name if i.component_product_id in components else "Unknown", quantity=float(i.quantity))
+            for i in items
+        ]
     return ProductOut(
         id=product.id, name=product.name, sku=product.sku, hsn_code=product.hsn_code,
         unit_price=float(product.unit_price), tax_rate=float(product.tax_rate) if product.tax_rate is not None else None,
-        category=product.category, description=product.description, active=product.active,
+        category=product.category, description=product.description, is_bundle=product.is_bundle,
+        bundle_items=bundle_items, active=product.active,
     )
+
+
+def _set_bundle_items(db: Session, entity_id: str, bundle_product_id: str, items: list) -> None:
+    db.execute(text("DELETE FROM bundle_items WHERE bundle_product_id = :id"), {"id": bundle_product_id})
+    if not items:
+        return
+    component_ids = [i.component_product_id for i in items]
+    components = {c.id: c for c in db.scalars(select(Product).where(Product.entity_id == entity_id, Product.id.in_(component_ids))).all()}
+    missing = set(component_ids) - set(components)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Unknown component product id(s): {', '.join(sorted(missing))}")
+    if bundle_product_id in component_ids:
+        raise HTTPException(status_code=422, detail="A bundle cannot contain itself")
+    nested = [components[cid].name for cid in component_ids if components[cid].is_bundle]
+    if nested:
+        raise HTTPException(status_code=422, detail=f"A bundle's components must not themselves be bundles: {', '.join(nested)}")
+    for item in items:
+        db.add(BundleItem(bundle_product_id=bundle_product_id, component_product_id=item.component_product_id, quantity=item.quantity))
 
 
 @router.get("/products", response_model=list[ProductOut])
@@ -60,22 +91,27 @@ def list_products(user: User = Depends(require_user), db: Session = Depends(get_
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     products = db.scalars(select(Product).where(Product.entity_id == entity.id).order_by(Product.name)).all()
-    return [_product_out(p) for p in products]
+    return [_product_out(db, p) for p in products]
 
 
 @router.post("/products", response_model=ProductOut)
 def create_product(payload: ProductCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
+    if payload.is_bundle and not payload.bundle_items:
+        raise HTTPException(status_code=422, detail="A bundle needs at least one component product")
     product = Product(
         entity_id=entity.id, name=payload.name.strip(), sku=payload.sku, hsn_code=payload.hsn_code,
         unit_price=payload.unit_price, tax_rate=payload.tax_rate, category=payload.category,
-        description=payload.description, active=payload.active,
+        description=payload.description, is_bundle=payload.is_bundle, active=payload.active,
     )
     db.add(product)
+    db.flush()  # assigns product.id, needed by _set_bundle_items before the row is committed
+    if payload.is_bundle:
+        _set_bundle_items(db, entity.id, product.id, payload.bundle_items)
     db.commit()
     db.refresh(product)
-    return _product_out(product)
+    return _product_out(db, product)
 
 
 @router.patch("/products/{product_id}", response_model=ProductOut)
@@ -99,11 +135,15 @@ def update_product(product_id: str, payload: ProductUpdateRequest, user: User = 
         product.category = payload.category
     if "description" in payload.model_fields_set:
         product.description = payload.description
+    if "bundle_items" in payload.model_fields_set and payload.bundle_items is not None:
+        if not product.is_bundle:
+            raise HTTPException(status_code=422, detail="Only a bundle product has components -- set is_bundle at creation time")
+        _set_bundle_items(db, entity.id, product.id, payload.bundle_items)
     if "active" in payload.model_fields_set and payload.active is not None:
         product.active = payload.active
     db.commit()
     db.refresh(product)
-    return _product_out(product)
+    return _product_out(db, product)
 
 
 @router.delete("/products/{product_id}")
@@ -113,6 +153,11 @@ def delete_product(product_id: str, user: User = Depends(require_user), db: Sess
     product = db.get(Product, product_id)
     if not product or product.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Product not found")
+    referenced_as_component = db.scalar(select(BundleItem.id).where(BundleItem.component_product_id == product_id))
+    if referenced_as_component:
+        raise HTTPException(status_code=409, detail="This product is a component of a bundle -- remove it from that bundle first")
+    db.execute(text("DELETE FROM bundle_items WHERE bundle_product_id = :id"), {"id": product_id})
+    db.execute(text("DELETE FROM price_list_entries WHERE product_id = :id"), {"id": product_id})
     db.delete(product)
     db.commit()
     return {"deleted": True}
@@ -185,6 +230,119 @@ def delete_discount_rule(rule_id: str, user: User = Depends(require_user), db: S
     return {"deleted": True}
 
 
+# --- Price lists (per-company override pricing) -------------------------------------------------
+
+def _price_list_out(price_list: PriceList) -> PriceListOut:
+    return PriceListOut(id=price_list.id, name=price_list.name, active=price_list.active)
+
+
+@router.get("/price-lists", response_model=list[PriceListOut])
+def list_price_lists(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    lists = db.scalars(select(PriceList).where(PriceList.entity_id == entity.id).order_by(PriceList.name)).all()
+    return [_price_list_out(pl) for pl in lists]
+
+
+@router.post("/price-lists", response_model=PriceListOut)
+def create_price_list(payload: PriceListCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    price_list = PriceList(entity_id=entity.id, name=payload.name.strip(), active=payload.active)
+    db.add(price_list)
+    db.commit()
+    db.refresh(price_list)
+    return _price_list_out(price_list)
+
+
+@router.patch("/price-lists/{price_list_id}", response_model=PriceListOut)
+def update_price_list(price_list_id: str, payload: PriceListUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    price_list = db.get(PriceList, price_list_id)
+    if not price_list or price_list.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Price list not found")
+    if "name" in payload.model_fields_set and payload.name:
+        price_list.name = payload.name.strip()
+    if "active" in payload.model_fields_set and payload.active is not None:
+        price_list.active = payload.active
+    db.commit()
+    db.refresh(price_list)
+    return _price_list_out(price_list)
+
+
+@router.delete("/price-lists/{price_list_id}")
+def delete_price_list(price_list_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    price_list = db.get(PriceList, price_list_id)
+    if not price_list or price_list.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Price list not found")
+    in_use = db.scalar(select(Company.id).where(Company.price_list_id == price_list_id))
+    if in_use:
+        raise HTTPException(status_code=409, detail="This price list is assigned to a company -- unassign it first")
+    db.execute(text("DELETE FROM price_list_entries WHERE price_list_id = :id"), {"id": price_list_id})
+    db.delete(price_list)
+    db.commit()
+    return {"deleted": True}
+
+
+def _price_list_entry_out(db: Session, entry: PriceListEntry) -> PriceListEntryOut:
+    product = db.get(Product, entry.product_id)
+    return PriceListEntryOut(id=entry.id, product_id=entry.product_id, product_name=product.name if product else "Unknown", unit_price=float(entry.unit_price))
+
+
+@router.get("/price-lists/{price_list_id}/entries", response_model=list[PriceListEntryOut])
+def list_price_list_entries(price_list_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    price_list = db.get(PriceList, price_list_id)
+    if not price_list or price_list.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Price list not found")
+    entries = db.scalars(select(PriceListEntry).where(PriceListEntry.price_list_id == price_list_id)).all()
+    return [_price_list_entry_out(db, e) for e in entries]
+
+
+@router.put("/price-lists/{price_list_id}/entries", response_model=PriceListEntryOut)
+def set_price_list_entry(price_list_id: str, payload: PriceListEntrySetRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Upserts one product's override price -- a price list only needs entries for the products
+    it actually overrides, so this is set-one-at-a-time, not a bulk replace."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    price_list = db.get(PriceList, price_list_id)
+    if not price_list or price_list.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Price list not found")
+    product = db.get(Product, payload.product_id)
+    if not product or product.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Product not found")
+    entry = db.scalar(select(PriceListEntry).where(PriceListEntry.price_list_id == price_list_id, PriceListEntry.product_id == payload.product_id))
+    if entry:
+        entry.unit_price = payload.unit_price
+    else:
+        entry = PriceListEntry(price_list_id=price_list_id, product_id=payload.product_id, unit_price=payload.unit_price)
+        db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    return _price_list_entry_out(db, entry)
+
+
+@router.delete("/price-lists/{price_list_id}/entries/{entry_id}")
+def delete_price_list_entry(price_list_id: str, entry_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    entry = db.get(PriceListEntry, entry_id)
+    if not entry or entry.price_list_id != price_list_id:
+        raise HTTPException(status_code=404, detail="Price list entry not found")
+    price_list = db.get(PriceList, price_list_id)
+    if not price_list or price_list.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Price list not found")
+    db.delete(entry)
+    db.commit()
+    return {"deleted": True}
+
+
+# --- Line item pricing (discount rules, price lists, bundle expansion) --------------------------
+
 def _best_discount_percent(db: Session, entity_id: str, product_id: str | None, quantity: float) -> float:
     """Picks the single best-matching active rule for this line: the highest min_quantity that's
     still <= quantity, preferring a product-specific rule over a catalog-wide one (product_id is
@@ -197,16 +355,67 @@ def _best_discount_percent(db: Session, entity_id: str, product_id: str | None, 
     return float(best.discount_percent)
 
 
-def _apply_line_item_defaults(db: Session, entity_id: str, items: list[QuoteLineItem]) -> list[dict]:
+def _price_list_price(db: Session, price_list_id: str | None, product_id: str) -> float | None:
+    if not price_list_id:
+        return None
+    entry = db.scalar(select(PriceListEntry).where(PriceListEntry.price_list_id == price_list_id, PriceListEntry.product_id == product_id))
+    return float(entry.unit_price) if entry else None
+
+
+def _deal_price_list_id(db: Session, deal: Deal) -> str | None:
+    contact = db.get(CrmContact, deal.contact_id) if deal.contact_id else None
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
+    return company.price_list_id if company else None
+
+
+def _expand_bundle(db: Session, price_list_id: str | None, item: QuoteLineItem) -> list[QuoteLineItem]:
+    """A bundle line item becomes one real line per component, quantity multiplied through, each
+    priced independently (price-list override applies per component, same as a standalone sale of
+    that product) -- the bundle Product row itself never appears as a priced line, only its
+    components do, so the quote's own tax/discount math (which operates per real line item) needs
+    no bundle-specific branch anywhere else."""
+    bundle_items = db.scalars(select(BundleItem).where(BundleItem.bundle_product_id == item.product_id)).all()
+    expanded = []
+    for bi in bundle_items:
+        component = db.get(Product, bi.component_product_id)
+        if not component:
+            continue
+        unit_price = _price_list_price(db, price_list_id, component.id)
+        if unit_price is None:
+            unit_price = float(component.unit_price)
+        expanded.append(QuoteLineItem(
+            description=f"{component.name} (from {item.description})", hsn_code=component.hsn_code,
+            quantity=item.quantity * float(bi.quantity), unit_price=unit_price, product_id=component.id,
+            tax_rate=float(component.tax_rate) if component.tax_rate is not None else None,
+        ))
+    return expanded
+
+
+def _apply_line_item_defaults(db: Session, entity_id: str, items: list[QuoteLineItem], price_list_id: str | None = None) -> list[dict]:
     """Fills in tax_rate/discount_percent for each line at add/edit time from the referenced
     Product and any matching DiscountRule -- a caller can still override either explicitly (both
-    fields already came through validated on the request), this only fills gaps left as None/0."""
-    result = []
+    fields already came through validated on the request), this only fills gaps left as None/0.
+    A line referencing a bundle Product is expanded into one real line per component first (see
+    _expand_bundle) before any of that per-line logic runs. price_list_id (the deal's own company's
+    assigned list, if any) overrides a resolved product's unit_price when an entry exists."""
+    expanded_items: list[QuoteLineItem] = []
     for item in items:
+        product = db.get(Product, item.product_id) if item.product_id else None
+        if product and product.is_bundle:
+            expanded_items.extend(_expand_bundle(db, price_list_id, item))
+        else:
+            expanded_items.append(item)
+
+    result = []
+    for item in expanded_items:
         data = item.model_dump()
         product = db.get(Product, item.product_id) if item.product_id else None
         if data.get("tax_rate") is None and product and product.tax_rate is not None:
             data["tax_rate"] = float(product.tax_rate)
+        if product and price_list_id:
+            override = _price_list_price(db, price_list_id, product.id)
+            if override is not None:
+                data["unit_price"] = override
         if not data.get("discount_percent"):
             data["discount_percent"] = _best_discount_percent(db, entity_id, item.product_id, item.quantity)
         result.append(data)
@@ -341,7 +550,8 @@ def create_quote(payload: QuoteCreateRequest, user: User = Depends(require_user)
     deal = db.scalar(select(Deal).where(Deal.id == payload.deal_id, Deal.entity_id == entity.id))
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
-    quote = Quote(entity_id=entity.id, deal_id=deal.id, line_items=_apply_line_item_defaults(db, entity.id, payload.line_items), created_by_user_id=user.id)
+    price_list_id = _deal_price_list_id(db, deal)
+    quote = Quote(entity_id=entity.id, deal_id=deal.id, line_items=_apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id), created_by_user_id=user.id)
     db.add(quote)
     db.commit()
     db.refresh(quote)
@@ -370,7 +580,9 @@ def update_quote_line_items(quote_id: str, payload: QuoteLineItemsUpdateRequest,
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.status != "draft":
         raise HTTPException(status_code=409, detail="Only a draft quote's line items can be edited")
-    quote.line_items = _apply_line_item_defaults(db, entity.id, payload.line_items)
+    deal = db.get(Deal, quote.deal_id)
+    price_list_id = _deal_price_list_id(db, deal) if deal else None
+    quote.line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
     db.commit()
     db.refresh(quote)
     return _quote_out(db, quote)
