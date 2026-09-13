@@ -2012,6 +2012,23 @@ class ZohoPaymentPullResponse(BaseModel):
     zoho_payment_id: str | None
 
 
+class TallyConnectionOut(BaseModel):
+    connected: bool
+    company_name: str | None
+    gateway_url: str | None
+    enabled: bool
+
+
+class TallyConnectRequest(BaseModel):
+    company_name: str = Field(min_length=1, max_length=200)
+    gateway_url: str | None = Field(default=None, max_length=300)
+
+
+class TallyPushResponse(BaseModel):
+    invoice_id: str
+    pushed: bool
+
+
 class ZohoOrganizationLinkResponse(BaseModel):
     organization_id: str
     zoho_contact_id: str

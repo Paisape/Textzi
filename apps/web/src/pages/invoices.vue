@@ -27,6 +27,10 @@ const TYPE_LABELS: Record<string, string> = {
 const invoices = ref<InvoiceRow[]>([])
 const loadError = ref('')
 const downloadingId = ref<string | null>(null)
+const tallyDownloadingId = ref<string | null>(null)
+const tallyPushingId = ref<string | null>(null)
+const tallyConnected = ref(false)
+const tallyGatewayUrl = ref<string | null>(null)
 const viewingId = ref<string | null>(null)
 const viewDialog = ref(false)
 const viewUrl = ref('')
@@ -93,7 +97,58 @@ async function onDownload(invoice: InvoiceRow) {
   }
 }
 
-onMounted(loadInvoices)
+async function onDownloadTallyXml(invoice: InvoiceRow) {
+  tallyDownloadingId.value = invoice.id
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/tally/invoices/${invoice.id}/export.xml`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${invoice.invoice_number || invoice.id}.xml`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not export this invoice for Tally.')
+  }
+  finally {
+    tallyDownloadingId.value = null
+  }
+}
+
+async function loadTallyStatus() {
+  try {
+    const result = await $api<{ connected: boolean, gateway_url: string | null }>('/v1/tally/connection')
+    tallyConnected.value = result.connected
+    tallyGatewayUrl.value = result.gateway_url
+  }
+  catch {
+    tallyConnected.value = false
+  }
+}
+
+const tallyPushSuccess = ref('')
+
+async function onPushToTally(invoice: InvoiceRow) {
+  tallyPushingId.value = invoice.id
+  loadError.value = ''
+  tallyPushSuccess.value = ''
+  try {
+    await $api(`/v1/tally/invoices/${invoice.id}/push`, { method: 'POST' })
+    tallyPushSuccess.value = `${invoice.invoice_number || 'This invoice'} was pushed to Tally.`
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not push this invoice to Tally.')
+  }
+  finally {
+    tallyPushingId.value = null
+  }
+}
+
+onMounted(() => {
+  loadInvoices()
+  loadTallyStatus()
+})
 </script>
 
 <template>
@@ -102,6 +157,12 @@ onMounted(loadInvoices)
   </h1>
   <p class="text-medium-emphasis mb-6">
     Every recharge, fee, and credit to your account produces an invoice here.
+    <template v-if="!tallyConnected">
+      <RouterLink to="/tally-settings" class="font-weight-medium">
+        Set up Tally export
+      </RouterLink>
+      to download each invoice as Tally-importable XML.
+    </template>
   </p>
 
   <VAlert
@@ -111,6 +172,16 @@ onMounted(loadInvoices)
     class="mb-4"
   >
     {{ loadError }}
+  </VAlert>
+  <VAlert
+    v-if="tallyPushSuccess"
+    type="success"
+    variant="tonal"
+    class="mb-4"
+    closable
+    @click:close="tallyPushSuccess = ''"
+  >
+    {{ tallyPushSuccess }}
   </VAlert>
 
   <VCard>
@@ -157,6 +228,24 @@ onMounted(loadInvoices)
               @click="onDownload(invoice)"
             >
               Download
+            </VBtn>
+            <VBtn
+              v-if="tallyConnected"
+              size="small"
+              variant="text"
+              :loading="tallyDownloadingId === invoice.id"
+              @click="onDownloadTallyXml(invoice)"
+            >
+              Tally XML
+            </VBtn>
+            <VBtn
+              v-if="tallyConnected && tallyGatewayUrl"
+              size="small"
+              variant="text"
+              :loading="tallyPushingId === invoice.id"
+              @click="onPushToTally(invoice)"
+            >
+              Push to Tally
             </VBtn>
           </td>
         </tr>

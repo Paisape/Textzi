@@ -253,6 +253,11 @@ export function customerNav(status: { wabaActive: boolean, crmActive: boolean },
           icon: { icon: 'tabler-receipt' },
         },
         {
+          title: 'Tally Export',
+          to: { name: 'tally-settings' },
+          icon: { icon: 'tabler-file-export' },
+        },
+        {
           title: 'Team',
           to: { name: 'team' },
           icon: { icon: 'tabler-users-group' },

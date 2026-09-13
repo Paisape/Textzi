@@ -593,6 +593,26 @@ class WooCommerceConnection(Base):
     connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class TallyConnection(Base):
+    """One row per entity that's turned on Tally export -- entity_id as PK, same
+    one-per-entity convention as WabaConnection/ShopifyConnection. Tally has no cloud API: it's a
+    desktop application whose own XML/HTTP gateway (port 9000) is explicitly documented as never
+    meant to be exposed to the public internet, so Textzi's cloud backend can't reach a customer's
+    Tally in the general case the way it reaches Zoho/Shopify/WooCommerce's real cloud APIs.
+    gateway_url is therefore OPTIONAL and opt-in: null means "generate downloadable XML only" (the
+    universal path, works for every customer with zero networking assumptions -- Gateway of Tally
+    > Import Data); set only by a customer whose Tally is genuinely reachable from the internet
+    (a cloud-hosted Tally VPS, a VPN, or a deliberately port-forwarded office PC), enabling the
+    direct-push button instead of a manual download+import step. No credentials stored -- Tally's
+    XML gateway has no auth of its own to store; network reachability IS the access control."""
+    __tablename__ = "tally_connections"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    company_name: Mapped[str] = mapped_column(String(200))  # exact Tally company name (SVCURRENTCOMPANY)
+    gateway_url: Mapped[str | None] = mapped_column(String(300), nullable=True)  # e.g. "http://203.0.113.5:9000", null = download-only
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class WabaOrder(Base):
     """A structured record of a WhatsApp native-cart order (Meta's `type: "order"` inbound
     webhook message -- customer taps through a catalog/product message, adds items, taps "Review
