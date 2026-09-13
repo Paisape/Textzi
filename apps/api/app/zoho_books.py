@@ -500,3 +500,42 @@ def sync_invoice_to_zoho(db: Session, invoice: Invoice, organization: Organizati
         return None
     finally:
         db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+
+
+def pull_payment_status(db: Session, invoice: Invoice) -> bool:
+    """Reconciles the ONE direction this integration never covered before: a payment recorded or
+    edited directly in Zoho (a bookkeeper marking an invoice paid in Zoho's own UI, bypassing
+    Textzi entirely) never made its way back to invoice.zoho_payment_id, which only ever got set
+    by sync_invoice_to_zoho's own push. This fetches the invoice's current state from Zoho and, if
+    Zoho shows it paid but Textzi doesn't know that yet, records the reconciliation.
+
+    There's no local "paid" boolean on Invoice to flip -- zoho_payment_id being set is already the
+    signal every other part of this codebase reads (the sync-log page, the retry guard above).
+    A real Zoho customerpayment_id would be ideal here, but Zoho's own GET /invoices/{id} response
+    doesn't include it directly (only /invoices/{id}/payments does, a second call) -- rather than
+    add that extra round-trip for a value nothing currently reads, this stores a sentinel
+    ("reconciled-in-zoho") that's honest about its own provenance (never confused with a real
+    Textzi-created payment_id, which is always a Zoho-format alphanumeric id) and is enough to
+    satisfy every existing "is this invoice's payment already reconciled" check.
+
+    Returns True if this call changed anything (so the caller can report "found a new payment" vs
+    "already up to date" distinctly), False otherwise -- including every non-fatal case (not yet
+    synced, Zoho not configured, a real API error) so a bulk "check all invoices" caller can just
+    skip silently rather than treating "nothing to reconcile" as a failure."""
+    if not invoice.zoho_invoice_id or invoice.zoho_payment_id:
+        return False
+    settings_row = get_zoho_settings(db)
+    if not settings_row:
+        return False
+    try:
+        access_token = _access_token(db, settings_row)
+        result = _request(db, settings_row, access_token, "GET", f"/invoices/{invoice.zoho_invoice_id}", invoice.id)
+    except ZohoCallError:
+        return False
+    zoho_status = result.get("invoice", {}).get("status")
+    if zoho_status != "paid":
+        return False
+    invoice.zoho_payment_id = "reconciled-in-zoho"
+    invoice.zoho_mark_paid = True
+    db.commit()
+    return True

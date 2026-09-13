@@ -158,6 +158,24 @@ async function onSave() {
   }
 }
 
+const disconnecting = ref(false)
+const disconnectError = ref('')
+
+async function onDisconnect() {
+  disconnectError.value = ''
+  disconnecting.value = true
+  try {
+    const result = await $api<ZohoSettings>('/v1/admin/platform/zoho-disconnect', { method: 'POST' })
+    applySettings(result)
+  }
+  catch (error: any) {
+    disconnectError.value = extractErrorMessage(error, 'Could not disconnect Zoho Books.')
+  }
+  finally {
+    disconnecting.value = false
+  }
+}
+
 async function onConnect() {
   connectError.value = ''
   connectSuccess.value = ''
@@ -221,13 +239,20 @@ onMounted(loadSettings)
   <template v-else-if="isAdmin">
     <VCard max-width="760" class="mb-6">
       <VCardText>
-        <VChip
-          :color="connected ? 'success' : 'warning'"
-          size="small"
-          class="mb-4"
-        >
-          {{ connected ? `Connected${apiDomain ? ` (${apiDomain})` : ''}` : 'Not connected (Textzi\'s own PDF is used for every invoice)' }}
-        </VChip>
+        <div class="d-flex align-center flex-wrap ga-3 mb-4">
+          <VChip
+            :color="connected ? 'success' : 'warning'"
+            size="small"
+          >
+            {{ connected ? `Connected${apiDomain ? ` (${apiDomain})` : ''}` : 'Not connected (Textzi\'s own PDF is used for every invoice)' }}
+          </VChip>
+          <VBtn v-if="connected" size="small" variant="outlined" color="error" :loading="disconnecting" @click="onDisconnect">
+            Disconnect
+          </VBtn>
+        </div>
+        <VAlert v-if="disconnectError" type="error" variant="tonal" density="compact" class="mb-4">
+          {{ disconnectError }}
+        </VAlert>
 
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact" class="mb-4">
           {{ saveError }}

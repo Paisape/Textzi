@@ -294,11 +294,7 @@ def test_waba_connection(db: Session = Depends(get_db)):
     return WabaTestConnectionResponse(ok=False, detail=f"Unexpected response from Meta: {result}")
 
 
-@router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def get_zoho_settings_admin(db: Session = Depends(get_db)):
-    row = db.get(PlatformZohoSettings, "platform")
-    if not row:
-        row = PlatformZohoSettings(id="platform")
+def _zoho_settings_out(row: PlatformZohoSettings) -> PlatformZohoSettingsOut:
     return PlatformZohoSettingsOut(
         client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
         gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
@@ -308,6 +304,14 @@ def get_zoho_settings_admin(db: Session = Depends(get_db)):
         configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
         connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
     )
+
+
+@router.get("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_zoho_settings_admin(db: Session = Depends(get_db)):
+    row = db.get(PlatformZohoSettings, "platform")
+    if not row:
+        row = PlatformZohoSettings(id="platform")
+    return _zoho_settings_out(row)
 
 
 @router.put("/zoho-settings", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -335,15 +339,7 @@ def update_zoho_settings(payload: PlatformZohoSettingsUpdate, request: Request, 
     row.item_code_platform_fee_whatsapp = payload.item_code_platform_fee_whatsapp
     log_activity(db, None, "platform_zoho_settings_updated", "Platform Zoho Books settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
-    return PlatformZohoSettingsOut(
-        client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
-        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
-        payment_deposit_account_id=row.payment_deposit_account_id,
-        item_code_sms_service=row.item_code_sms_service, item_code_platform_fee_dlt=row.item_code_platform_fee_dlt,
-        item_code_platform_fee_whatsapp=row.item_code_platform_fee_whatsapp,
-        configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
-        connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
-    )
+    return _zoho_settings_out(row)
 
 
 @router.post("/zoho-connect", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -356,15 +352,31 @@ def connect_zoho(payload: ZohoConnectRequest, request: Request, authorization: s
     except ZohoCallError as exc:
         raise HTTPException(status_code=502, detail=f"Could not connect to Zoho Books: {exc}") from exc
     log_activity(db, None, "platform_zoho_connected", "Platform Zoho Books connection established.", actor_email=_caller_email(authorization, db), request=request)
-    return PlatformZohoSettingsOut(
-        client_id=row.client_id, accounts_domain=row.accounts_domain, api_domain=row.api_domain, organization_id=row.organization_id,
-        gst_tax_id_intrastate=row.gst_tax_id_intrastate, gst_tax_id_interstate=row.gst_tax_id_interstate, gst_tax_id_zero_rated=row.gst_tax_id_zero_rated,
-        payment_deposit_account_id=row.payment_deposit_account_id,
-        item_code_sms_service=row.item_code_sms_service, item_code_platform_fee_dlt=row.item_code_platform_fee_dlt,
-        item_code_platform_fee_whatsapp=row.item_code_platform_fee_whatsapp,
-        configured=bool(row.client_id and row.client_secret_encrypted and row.accounts_domain),
-        connected=bool(row.refresh_token_encrypted and row.api_domain and row.organization_id),
-    )
+    return _zoho_settings_out(row)
+
+
+@router.post("/zoho-disconnect", response_model=PlatformZohoSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def disconnect_zoho(request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Clears the refresh/access token so `connected` goes false and every future invoice falls
+    back to Textzi's own fpdf2 rendering (sync_invoice_to_zoho's own documented fallback -- no
+    code change needed there, it already treats "not connected" as the normal unlinked case).
+    Deliberately does NOT clear client_id/client_secret/accounts_domain/organization_id/the GST
+    tax and item-code mappings -- those are real configuration an admin would have to re-enter
+    from scratch otherwise, and none of them are secrets that need revoking (only the token is).
+    Does not call Zoho's own revoke endpoint -- Zoho has no documented one-call "revoke this
+    refresh token" API; the practical equivalent (per Zoho's own account-security guidance) is
+    revoking the app's access from the Zoho Accounts security page directly, which this action
+    can't do on the customer's behalf. This clears Textzi's own side of the connection, which is
+    the actual thing an admin here can control."""
+    row = db.get(PlatformZohoSettings, "platform")
+    if not row or not row.refresh_token_encrypted:
+        raise HTTPException(status_code=422, detail="Zoho Books isn't connected.")
+    row.refresh_token_encrypted = None
+    row.access_token_encrypted = None
+    row.access_token_expires_at = None
+    log_activity(db, None, "platform_zoho_disconnected", "Platform Zoho Books connection revoked.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit(); db.refresh(row)
+    return _zoho_settings_out(row)
 
 
 @router.get("/zoho-accounts", response_model=list[ZohoAccountOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

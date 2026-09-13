@@ -35,11 +35,11 @@ from .schemas import (
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
     TwoFactorAdminUpdate, TwoFactorStatusOut, UsageOrgBreakdown, UsageSummaryResponse, UserAdminOut,
     UserRoleUpdateRequest, UserStatusUpdateRequest, WalletAdjustmentQuoteOut, WalletCreditRequest, WalletCreditResponse, WalletDebitRequest, WalletDebitResponse, WalletTopupReportRowOut, EntityWalletSummaryOut,
-    ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoRetryResponse, ArchiveManifestOut, ArchiveRunLogOut, ArchiveRunNowResponse,
+    ZohoCallLogOut, ZohoOrganizationLinkResponse, ZohoPaymentPullResponse, ZohoRetryResponse, ArchiveManifestOut, ArchiveRunLogOut, ArchiveRunNowResponse,
 )
 from .security import decode_access_token, decrypt_recipient_lenient, decrypt_secret, hash_api_key, hash_password
 from .providers import ttbs_delivery_status_description
-from .zoho_books import ZohoCallError, link_organization, sync_invoice_to_zoho
+from .zoho_books import ZohoCallError, link_organization, pull_payment_status, sync_invoice_to_zoho
 from . import archive_jobs
 from .channel_billing import activate_subscription
 from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
@@ -1319,6 +1319,31 @@ def retry_zoho_sync(invoice_id: str, request: Request, authorization: str | None
         invoice_id=invoice.id, zoho_sync_status=invoice.zoho_sync_status,
         zoho_invoice_id=invoice.zoho_invoice_id, zoho_sync_error=invoice.zoho_sync_error,
     )
+
+
+@router.post("/invoices/{invoice_id}/pull-zoho-payment-status", response_model=ZohoPaymentPullResponse, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def pull_zoho_payment_status(invoice_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """The one direction sync_invoice_to_zoho never covers -- a payment recorded or edited
+    directly in Zoho's own UI (a bookkeeper working there instead of through Textzi) never made
+    it back to invoice.zoho_payment_id. Fetches this invoice's live status from Zoho and records
+    the reconciliation if Zoho shows it paid but Textzi doesn't know that yet (zoho_books.
+    pull_payment_status's own docstring covers exactly what "recording" means here, including why
+    there's no real payment_id to store). A no-op, not an error, if the invoice was never synced,
+    is already reconciled, or the check itself fails -- same "degrade quietly" posture as the sync
+    path itself, since this is a manual admin action checking on a possibility, not a required step."""
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    changed = pull_payment_status(db, invoice)
+    if changed:
+        entity = db.get(Entity, invoice.entity_id)
+        log_activity(
+            db, entity.organization_id if entity else None, "zoho_payment_pulled",
+            f"Payment for invoice {invoice.invoice_number} found reconciled in Zoho Books.",
+            actor_email=_caller_email(authorization, db), request=request,
+        )
+    db.refresh(invoice)
+    return ZohoPaymentPullResponse(invoice_id=invoice.id, payment_found=changed, zoho_payment_id=invoice.zoho_payment_id)
 
 
 @router.get("/zoho/call-log", response_model=list[ZohoCallLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])

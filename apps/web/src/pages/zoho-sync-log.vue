@@ -78,6 +78,29 @@ async function retry(invoiceId: string) {
   }
 }
 
+const pullingInvoiceId = ref('')
+
+async function pullPaymentStatus(invoiceId: string) {
+  retryError.value = ''
+  retrySuccess.value = ''
+  pullingInvoiceId.value = invoiceId
+  try {
+    const result = await $api<{ invoice_id: string, payment_found: boolean, zoho_payment_id: string | null }>(
+      `/v1/admin/invoices/${invoiceId}/pull-zoho-payment-status`,
+      { method: 'POST' },
+    )
+    retrySuccess.value = result.payment_found
+      ? 'Found a payment recorded in Zoho -- this invoice is now reconciled.'
+      : 'No new payment found in Zoho for this invoice.'
+  }
+  catch (error: any) {
+    retryError.value = extractErrorMessage(error, 'Could not check Zoho for a payment.')
+  }
+  finally {
+    pullingInvoiceId.value = ''
+  }
+}
+
 watch(statusFilter, load)
 onMounted(load)
 </script>
@@ -172,7 +195,7 @@ onMounted(load)
             <td class="text-truncate" style="max-inline-size: 320px;">
               {{ row.error ?? '—' }}
             </td>
-            <td>
+            <td class="d-flex ga-2">
               <VBtn
                 v-if="row.status === 'failed' && row.invoice_id"
                 size="small"
@@ -181,6 +204,15 @@ onMounted(load)
                 @click="retry(row.invoice_id)"
               >
                 Retry
+              </VBtn>
+              <VBtn
+                v-if="row.status === 'success' && row.invoice_id"
+                size="small"
+                variant="text"
+                :loading="pullingInvoiceId === row.invoice_id"
+                @click="pullPaymentStatus(row.invoice_id)"
+              >
+                Check payment
               </VBtn>
             </td>
           </tr>

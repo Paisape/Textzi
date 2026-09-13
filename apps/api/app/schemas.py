@@ -1975,6 +1975,12 @@ class ZohoRetryResponse(BaseModel):
     zoho_sync_error: str | None
 
 
+class ZohoPaymentPullResponse(BaseModel):
+    invoice_id: str
+    payment_found: bool
+    zoho_payment_id: str | None
+
+
 class ZohoOrganizationLinkResponse(BaseModel):
     organization_id: str
     zoho_contact_id: str
