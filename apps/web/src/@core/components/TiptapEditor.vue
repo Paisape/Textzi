@@ -10,6 +10,11 @@ const props = defineProps<{
   modelValue: string
   placeholder?: string
   allowImage?: boolean
+  // A single-row, small icon-only toolbar matching the WhatsApp inbox composer's compact style
+  // (inbox.vue's bold/italic/strikethrough row) instead of this component's own boxed two-row
+  // toolbar -- visual only, same rich-text/HTML editing underneath. Opt-in so the email composer
+  // (crm-email.vue), which also uses this component, keeps its current look unchanged.
+  compact?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -68,8 +73,38 @@ watch(() => props.modelValue, () => {
 
 <template>
   <div>
+    <!-- Compact toolbar (webchat-inbox.vue): a single row of small text-variant icon buttons,
+    matching the WhatsApp inbox composer's own bold/italic/strikethrough row (inbox.vue) --
+    formatting-only, no alignment/image controls, since a chat reply has no use for either. -->
     <div
-      v-if="editor"
+      v-if="editor && compact"
+      class="d-flex align-center ga-1 mb-1"
+    >
+      <VBtn
+        size="x-small"
+        variant="text"
+        icon="tabler-bold"
+        :color="editor.isActive('bold') ? 'primary' : 'default'"
+        @click="editor.chain().focus().toggleBold().run()"
+      />
+      <VBtn
+        size="x-small"
+        variant="text"
+        icon="tabler-italic"
+        :color="editor.isActive('italic') ? 'primary' : 'default'"
+        @click="editor.chain().focus().toggleItalic().run()"
+      />
+      <VBtn
+        size="x-small"
+        variant="text"
+        icon="tabler-strikethrough"
+        :color="editor.isActive('strike') ? 'primary' : 'default'"
+        @click="editor.chain().focus().toggleStrike().run()"
+      />
+    </div>
+
+    <div
+      v-else-if="editor"
       class="d-flex gap-2 py-2 px-6 flex-wrap align-center editor"
     >
       <IconBtn
@@ -163,11 +198,12 @@ watch(() => props.modelValue, () => {
       </template>
     </div>
 
-    <VDivider />
+    <VDivider v-if="!compact" />
 
     <EditorContent
       ref="editorRef"
       :editor="editor"
+      :class="{ 'compact-editor': compact }"
     />
   </div>
 </template>
@@ -194,5 +230,12 @@ watch(() => props.modelValue, () => {
     float: inline-start;
     pointer-events: none;
   }
+}
+
+// Compact variant (webchat-inbox.vue) -- a chat reply box, not a document editor, so it starts
+// at roughly the same height as inbox.vue's own `rows="2"` textarea instead of 15vh.
+.compact-editor .ProseMirror {
+  min-block-size: 3rem;
+  padding: 0.375rem 0.75rem;
 }
 </style>

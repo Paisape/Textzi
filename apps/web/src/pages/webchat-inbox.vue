@@ -451,11 +451,14 @@ onBeforeUnmount(() => {
             {{ sendError }}
           </VAlert>
           <input ref="fileInput" type="file" hidden @change="onFileSelected">
-          <div class="d-flex align-end ga-2">
-            <VBtn icon="tabler-paperclip" variant="outlined" :loading="uploadingFile" @click="triggerFilePicker" />
+          <VCard variant="outlined">
+            <TiptapEditor v-model="replyBody" placeholder="Type a reply..." compact />
+          </VCard>
+          <div class="d-flex align-center ga-1 mt-2">
+            <VBtn size="small" variant="text" icon="tabler-paperclip" :loading="uploadingFile" @click="triggerFilePicker" />
             <VMenu v-if="cannedResponses.length" v-model="cannedMenuOpen">
               <template #activator="{ props: menuProps }">
-                <VBtn v-bind="menuProps" icon="tabler-message-2-bolt" variant="outlined" />
+                <VBtn v-bind="menuProps" size="small" variant="text" icon="tabler-message-2-bolt" />
               </template>
               <VList density="compact">
                 <VListItem v-for="canned in cannedResponses" :key="canned.id" @click="pickCanned(canned)">
@@ -464,10 +467,8 @@ onBeforeUnmount(() => {
                 </VListItem>
               </VList>
             </VMenu>
-            <VCard variant="outlined" class="flex-grow-1">
-              <TiptapEditor v-model="replyBody" placeholder="Type a reply..." />
-            </VCard>
-            <VBtn :loading="sending" :disabled="!replyBody.trim()" @click="sendReply">
+            <VSpacer />
+            <VBtn size="small" :loading="sending" :disabled="!replyBody.trim()" @click="sendReply">
               Send
             </VBtn>
           </div>
