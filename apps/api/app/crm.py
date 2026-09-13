@@ -1796,7 +1796,7 @@ def get_crm_home(days: int = 30, user: User = Depends(require_user), db: Session
         [d for d in open_deals if d.expected_close_date and d.expected_close_date < now],
         key=lambda d: d.expected_close_date,
     )[:5]
-    contacts_by_id = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_({d.contact_id for d in (top_open_deals + at_risk_deals)}))).all()} if (top_open_deals or at_risk_deals) else {}
+    contact_ids = {d.contact_id for d in (top_open_deals + at_risk_deals)}
 
     task_query = select(Task).where(Task.entity_id == entity.id, Task.done.is_(False))
     if user.role != UserRole.enterprise_customer.value:
@@ -1814,11 +1814,21 @@ def get_crm_home(days: int = 30, user: User = Depends(require_user), db: Session
     ).all()
     recent_quotes = db.scalars(select(Quote).where(Quote.entity_id == entity.id).order_by(Quote.created_at.desc()).limit(10)).all()
 
+    # Deal.name/Lead.company_name are both free-text and frequently blank in practice (this
+    # account's own real deals all have name=""), same as _deal_out's own contact-name fallback --
+    # without this, the activity feed showed a bare "Untitled" for every such row even though
+    # "Top open deals" correctly displays the contact's name for the exact same deals, since that
+    # section already resolves contacts and this one didn't.
+    contact_ids |= {lead.contact_id for lead in recent_leads} | {deal.contact_id for deal in recent_deals}
+    contacts_by_id = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_(contact_ids))).all()} if contact_ids else {}
+
     activity: list[CrmActivityItemOut] = []
     for lead in recent_leads:
-        activity.append(CrmActivityItemOut(kind="lead_created", label=f"New lead: {lead.company_name or 'Untitled'}", at=lead.created_at.isoformat(), link_id=lead.id))
+        lead_label = lead.company_name or (contacts_by_id[lead.contact_id].name if lead.contact_id in contacts_by_id else None) or "Untitled"
+        activity.append(CrmActivityItemOut(kind="lead_created", label=f"New lead: {lead_label}", at=lead.created_at.isoformat(), link_id=lead.id))
     for deal in recent_deals:
-        activity.append(CrmActivityItemOut(kind="deal_created", label=f"New deal: {deal.name or 'Untitled'}", at=deal.created_at.isoformat(), link_id=deal.id))
+        deal_label = deal.name or (contacts_by_id[deal.contact_id].name if deal.contact_id in contacts_by_id else None) or "Untitled"
+        activity.append(CrmActivityItemOut(kind="deal_created", label=f"New deal: {deal_label}", at=deal.created_at.isoformat(), link_id=deal.id))
     for event in recent_stage_events:
         if event.changed_by_user_id:  # skip the creation-time row every deal already gets (that's covered by deal_created above)
             activity.append(CrmActivityItemOut(kind="deal_stage_changed", label=f"Deal moved to {event.stage}", at=event.entered_at.isoformat(), link_id=event.deal_id))
