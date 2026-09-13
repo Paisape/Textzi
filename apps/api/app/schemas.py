@@ -479,6 +479,9 @@ class RazorpayVerifyRequest(BaseModel):
     razorpay_signature: str
 
 
+CRM_GATEABLE_FEATURES = ("crm-quotes", "crm-automation", "crm-report-builder", "crm-email", "tickets")
+
+
 class BillingPlanOut(BaseModel):
     id: str
     channel: str
@@ -489,6 +492,7 @@ class BillingPlanOut(BaseModel):
     user_limit: int | None
     active: bool
     visible_to_customers: bool
+    feature_flags: list[str] | None
 
 
 class BillingPlanCreateRequest(BaseModel):
@@ -500,6 +504,21 @@ class BillingPlanCreateRequest(BaseModel):
     user_limit: int | None = Field(default=None, gt=0)
     active: bool = True
     visible_to_customers: bool = True
+    # null = every feature unlocked (this plan doesn't restrict anything) -- an empty list is a
+    # real, different value (blocks every gateable feature), so this is deliberately not
+    # default_factory=list. Only meaningful for channel="crm" today; ignored for waba plans since
+    # nothing on the WABA side is feature-gated yet.
+    feature_flags: list[str] | None = None
+
+    @field_validator("feature_flags")
+    @classmethod
+    def _validate_feature_flags(cls, value: list[str] | None) -> list[str] | None:
+        if value is None:
+            return None
+        unknown = set(value) - set(CRM_GATEABLE_FEATURES)
+        if unknown:
+            raise ValueError(f"Unknown feature flag(s): {', '.join(sorted(unknown))}")
+        return value
 
 
 class ChannelSubscriptionStatusOut(BaseModel):

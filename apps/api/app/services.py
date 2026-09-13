@@ -986,6 +986,21 @@ def _has_active_plan_subscription(db: Session, entity_id: str, channel: str) -> 
     return bool(subscription and subscription.plan_id and subscription.period_end and subscription.period_end > datetime.now(timezone.utc))
 
 
+def plan_feature_active(db: Session, entity_id: str, channel: str, feature: str) -> bool:
+    """True unless the entity's active plan for `channel` explicitly restricts feature_flags and
+    `feature` isn't in that list. No active plan at all (free/unpriced channel, or a plan-less
+    subscription) is treated as unrestricted -- this is an additive gate on top of channel_active,
+    never a substitute for it; a channel that isn't active at all is still blocked by that check
+    first, same call-site pattern as _require_crm."""
+    subscription = db.get(ChannelSubscription, (entity_id, channel))
+    if not subscription or not subscription.plan_id:
+        return True
+    plan = db.get(BillingPlan, subscription.plan_id)
+    if not plan or plan.feature_flags is None:
+        return True
+    return feature in plan.feature_flags
+
+
 def channel_enabled(db: Session, channel: str) -> bool:
     """The global kill switch alone (ChannelFeeConfig.enabled), independent of any per-entity
     subscription/connection state -- usable standalone at points like "start connecting WABA"

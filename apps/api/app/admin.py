@@ -537,7 +537,7 @@ def _billing_plan_out(plan: BillingPlan) -> BillingPlanOut:
     return BillingPlanOut(
         id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price),
         message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active,
-        visible_to_customers=plan.visible_to_customers,
+        visible_to_customers=plan.visible_to_customers, feature_flags=plan.feature_flags,
     )
 
 
@@ -564,7 +564,7 @@ def create_billing_plan(payload: BillingPlanCreateRequest, db: Session = Depends
     plan = BillingPlan(
         channel=payload.channel, name=payload.name, period=payload.period, price=payload.price,
         message_limit=payload.message_limit, user_limit=payload.user_limit, active=payload.active,
-        visible_to_customers=payload.visible_to_customers,
+        visible_to_customers=payload.visible_to_customers, feature_flags=payload.feature_flags,
     )
     db.add(plan)
     db.commit(); db.refresh(plan)
@@ -585,6 +585,7 @@ def update_billing_plan(plan_id: str, payload: BillingPlanCreateRequest, db: Ses
     plan.user_limit = payload.user_limit
     plan.active = payload.active
     plan.visible_to_customers = payload.visible_to_customers
+    plan.feature_flags = payload.feature_flags
     db.commit(); db.refresh(plan)
     return _billing_plan_out(plan)
 

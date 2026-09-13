@@ -36,7 +36,7 @@ from .schemas import (
 from . import waba_media
 from .permissions import require_channel_scope_any
 from .security import decrypt_secret
-from .services import DomainError, channel_active, get_platform_waba_settings, resolve_user_entity
+from .services import DomainError, channel_active, get_platform_waba_settings, plan_feature_active, resolve_user_entity
 from .waba_dispatch import (
     mark_conversation_read, send_whatsapp_contact, send_whatsapp_interactive_buttons, send_whatsapp_interactive_list,
     send_whatsapp_location, send_whatsapp_media, send_whatsapp_product, send_whatsapp_product_list, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
@@ -340,6 +340,8 @@ def convert_conversation_to_ticket(conversation_id: str, user: User = Depends(re
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not channel_active(db, entity.id, "crm"):
         raise HTTPException(status_code=422, detail="Upgrade to the CRM plan to convert conversations to tickets")
+    if not plan_feature_active(db, entity.id, "crm", "tickets"):
+        raise HTTPException(status_code=422, detail="Upgrade your CRM plan to use tickets")
     conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
     if conversation.is_ticket:
         raise HTTPException(status_code=409, detail="This conversation is already a ticket")

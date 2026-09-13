@@ -757,6 +757,12 @@ class BillingPlan(Base):
     # admin.grant_plan -- self-serve pricing pages never list it, and a customer can't buy it
     # themselves even by guessing its id (list_plans/create_plan_order both filter on this).
     visible_to_customers: Mapped[bool] = mapped_column(Boolean, default=True)
+    # null = every feature unlocked (every plan created before this existed, and any plan an admin
+    # simply doesn't bother restricting) -- same "null means unrestricted" convention already used
+    # by User.channel_scope/page_scope. A non-null list names CRM page-scope values (crm-quotes,
+    # crm-automation, crm-report-builder, crm-email, tickets) this plan actually unlocks; anything
+    # not listed 403s via require_plan_feature, same shape as permissions.require_page_scope.
+    feature_flags: Mapped[list | None] = mapped_column(JSON, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

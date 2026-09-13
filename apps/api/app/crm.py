@@ -46,12 +46,12 @@ from .schemas import (
     ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskCreateRequest, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
     TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormOut, WebFormUpdateRequest,
 )
-from .permissions import require_channel_scope, require_page_scope
+from .permissions import require_channel_scope, require_page_scope, require_plan_feature_by_path
 from .services import DomainError, channel_active, log_activity, notify_user, resolve_user_entity, save_upload
 
 logger = logging.getLogger("textzi.crm")
 
-router = APIRouter(prefix="/v1/crm", tags=["crm"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope())])
+router = APIRouter(prefix="/v1/crm", tags=["crm"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope()), Depends(require_plan_feature_by_path("crm"))])
 
 
 def _require_crm(db: Session, entity_id: str) -> None:

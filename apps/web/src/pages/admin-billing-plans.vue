@@ -18,7 +18,16 @@ type Plan = {
   user_limit: number | null
   active: boolean
   visible_to_customers: boolean
+  feature_flags: string[] | null
 }
+
+const CRM_FEATURE_OPTIONS = [
+  { title: 'Quotes', value: 'crm-quotes' },
+  { title: 'Automation', value: 'crm-automation' },
+  { title: 'Report Builder', value: 'crm-report-builder' },
+  { title: 'Email channel', value: 'crm-email' },
+  { title: 'Tickets / Helpdesk', value: 'tickets' },
+]
 
 const plans = ref<Plan[]>([])
 const loading = ref(false)
@@ -77,6 +86,50 @@ async function toggleVisibility(plan: Plan) {
   }
 }
 
+// --- Feature-flags edit dialog -------------------------------------------------------------
+
+const featuresDialog = ref(false)
+const featuresError = ref('')
+const featuresSaving = ref(false)
+const featuresPlan = ref<Plan | null>(null)
+const featuresRestrict = ref(false)
+const featuresSelected = ref<string[]>([])
+
+function openFeaturesDialog(plan: Plan) {
+  featuresPlan.value = plan
+  featuresRestrict.value = plan.feature_flags !== null
+  featuresSelected.value = plan.feature_flags ? [...plan.feature_flags] : []
+  featuresError.value = ''
+  featuresDialog.value = true
+}
+
+async function saveFeatures() {
+  if (!featuresPlan.value)
+    return
+  featuresSaving.value = true
+  featuresError.value = ''
+  const plan = featuresPlan.value
+  try {
+    const updated = await stepUp.withStepUp(() => $api<Plan>(`/v1/admin/billing-plans/${plan.id}`, {
+      method: 'PUT',
+      body: {
+        channel: plan.channel, name: plan.name, period: plan.period, price: plan.price,
+        message_limit: plan.message_limit, user_limit: plan.user_limit, active: plan.active,
+        visible_to_customers: plan.visible_to_customers,
+        feature_flags: featuresRestrict.value ? featuresSelected.value : null,
+      },
+    }))
+    plan.feature_flags = updated.feature_flags
+    featuresDialog.value = false
+  }
+  catch (error: any) {
+    featuresError.value = extractErrorMessage(error, 'Could not update this plan\'s features.')
+  }
+  finally {
+    featuresSaving.value = false
+  }
+}
+
 async function deletePlan(plan: Plan) {
   busyPlanId.value = plan.id
   try {
@@ -96,17 +149,19 @@ async function deletePlan(plan: Plan) {
 const createDialog = ref(false)
 const createError = ref('')
 const creating = ref(false)
-const form = ref({ channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null as number | null, user_limit: null as number | null, active: true, visible_to_customers: true })
+const form = ref({ channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null as number | null, user_limit: null as number | null, active: true, visible_to_customers: true, restrictFeatures: false, feature_flags: [] as string[] })
 
 // CRM plans are monthly/quarterly only (no yearly tier) -- reset period if a channel switch
 // leaves it on a value that channel no longer offers.
 watch(() => form.value.channel, (channel) => {
   if (channel === 'crm' && form.value.period === 'yearly')
     form.value.period = 'monthly'
+  if (channel === 'waba')
+    form.value.restrictFeatures = false
 })
 
 function openCreateDialog() {
-  form.value = { channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null, user_limit: null, active: true, visible_to_customers: true }
+  form.value = { channel: 'waba', name: '', period: 'monthly', price: 0, message_limit: null, user_limit: null, active: true, visible_to_customers: true, restrictFeatures: false, feature_flags: [] }
   createError.value = ''
   createDialog.value = true
 }
@@ -117,7 +172,15 @@ async function createPlan() {
   creating.value = true
   createError.value = ''
   try {
-    const plan = await stepUp.withStepUp(() => $api<Plan>('/v1/admin/billing-plans', { method: 'POST', body: form.value }))
+    const plan = await stepUp.withStepUp(() => $api<Plan>('/v1/admin/billing-plans', {
+      method: 'POST',
+      body: {
+        channel: form.value.channel, name: form.value.name, period: form.value.period, price: form.value.price,
+        message_limit: form.value.message_limit, user_limit: form.value.user_limit, active: form.value.active,
+        visible_to_customers: form.value.visible_to_customers,
+        feature_flags: form.value.restrictFeatures ? form.value.feature_flags : null,
+      },
+    }))
     plans.value.push(plan)
     createDialog.value = false
   }
@@ -174,6 +237,7 @@ onMounted(loadPlans)
           <th>Seat limit</th>
           <th>Active</th>
           <th>Customer-visible</th>
+          <th>Features</th>
           <th />
         </tr>
       </thead>
@@ -190,6 +254,12 @@ onMounted(loadPlans)
           </td>
           <td>
             <VSwitch :model-value="plan.visible_to_customers" density="compact" hide-details :disabled="busyPlanId === plan.id" @update:model-value="toggleVisibility(plan)" />
+          </td>
+          <td>
+            <VBtn v-if="plan.channel === 'crm'" size="small" variant="text" @click="openFeaturesDialog(plan)">
+              {{ plan.feature_flags === null ? 'All' : `${plan.feature_flags.length} selected` }}
+            </VBtn>
+            <span v-else class="text-medium-emphasis">—</span>
           </td>
           <td>
             <VBtn size="small" variant="text" icon="tabler-trash" :loading="busyPlanId === plan.id" :disabled="busyPlanId === plan.id" @click="deletePlan(plan)" />
@@ -233,10 +303,32 @@ onMounted(loadPlans)
           hide-details
           class="mb-1"
         />
-        <p class="text-caption text-medium-emphasis mb-0">
+        <p class="text-caption text-medium-emphasis mb-4">
           Off for a custom/negotiated tier (e.g. "Unlimited") -- only reachable by granting it to a
           specific customer from their account page, never shown on the self-serve pricing page.
         </p>
+        <template v-if="form.channel === 'crm'">
+          <VSwitch
+            v-model="form.restrictFeatures"
+            label="Restrict this plan to specific features"
+            hide-details
+            class="mb-1"
+          />
+          <p class="text-caption text-medium-emphasis mb-3">
+            Off means every CRM feature is unlocked -- the default for every plan. On lets you pick
+            exactly which of the features below this plan includes; core CRM (Leads/Deals/Contacts/
+            Companies/Tasks/Pipelines/Reports) is always included either way.
+          </p>
+          <VSelect
+            v-if="form.restrictFeatures"
+            v-model="form.feature_flags"
+            label="Included features"
+            :items="CRM_FEATURE_OPTIONS"
+            multiple
+            chips
+            class="mb-1"
+          />
+        </template>
       </VCardText>
       <VCardText class="d-flex justify-end ga-3 pt-0">
         <VBtn variant="text" @click="createDialog = false">
@@ -244,6 +336,43 @@ onMounted(loadPlans)
         </VBtn>
         <VBtn :loading="creating" @click="createPlan">
           Create
+        </VBtn>
+      </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="featuresDialog" max-width="480">
+    <VCard v-if="featuresPlan">
+      <VCardTitle>Features -- {{ featuresPlan.name }}</VCardTitle>
+      <VCardText>
+        <VAlert v-if="featuresError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ featuresError }}
+        </VAlert>
+        <VSwitch
+          v-model="featuresRestrict"
+          label="Restrict this plan to specific features"
+          hide-details
+          class="mb-1"
+        />
+        <p class="text-caption text-medium-emphasis mb-3">
+          Off means every CRM feature is unlocked. Core CRM (Leads/Deals/Contacts/Companies/Tasks/
+          Pipelines/Reports) is always included either way.
+        </p>
+        <VSelect
+          v-if="featuresRestrict"
+          v-model="featuresSelected"
+          label="Included features"
+          :items="CRM_FEATURE_OPTIONS"
+          multiple
+          chips
+        />
+      </VCardText>
+      <VCardText class="d-flex justify-end ga-3 pt-0">
+        <VBtn variant="text" @click="featuresDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn :loading="featuresSaving" @click="saveFeatures">
+          Save
         </VBtn>
       </VCardText>
     </VCard>

@@ -4,10 +4,12 @@ depends on for its own /v1/auth/permissions endpoint -- kept out of this module 
 require_user <-> permissions import cycle, since this module needs require_user for the FastAPI
 dependency below."""
 from fastapi import Depends, HTTPException, Request
+from sqlalchemy.orm import Session
 
 from .auth import require_user
+from .database import get_db
 from .models import User
-from .services import has_capability
+from .services import DomainError, has_capability, plan_feature_active, resolve_user_entity
 
 
 def require_capability(capability: str):
@@ -52,6 +54,16 @@ _CRM_PATH_TO_PAGE = {
     "scoring-rules": "crm-automation", "territories": "crm-automation", "sales-targets": "crm-automation",
 }
 
+# Only the plan-gateable subset of crm.py's own paths -- everything else (leads/deals/contacts/
+# companies/tasks/pipelines/plain reports) stays unrestricted on every CRM plan regardless of
+# feature_flags; see BillingPlan.feature_flags's own docstring for the full gateable-feature list
+# (crm-quotes/crm-automation/crm-report-builder/crm-email/tickets), most of which live on their
+# own dedicated router (require_plan_feature) rather than here.
+_CRM_PATH_TO_FEATURE = {
+    "scoring-rules": "crm-automation",
+    "reports/run": "crm-report-builder", "reports/drill-down": "crm-report-builder", "reports/saved": "crm-report-builder",
+}
+
 
 def require_page_scope():
     """The finer-grained half of a teammate's access (models.py's User.page_scope docstring) --
@@ -78,5 +90,51 @@ def require_page_scope_for(page: str):
     def dependency(user: User = Depends(require_user)) -> User:
         if user.page_scope and page not in user.page_scope:
             raise HTTPException(status_code=403, detail="Your account does not have access to this CRM page")
+        return user
+    return dependency
+
+
+def require_plan_feature_by_path(channel: str):
+    """URL-segment variant of require_plan_feature, for crm.py's own router -- covers
+    scoring-rules (crm-automation) and the reports/report-builder split (basic Reports stays free
+    on every plan; only the report-builder's own run/drill-down/saved-report endpoints are gated)
+    the same way require_page_scope covers page_scope for crm.py's non-module-scoped endpoints.
+    Checked against the path with the /v1/crm/ prefix stripped -- report-builder's own endpoints
+    all live under /reports/{run,drill-down,saved...}, one level deeper than plain /reports, so
+    this needs prefix matching, not just the first segment like require_page_scope uses."""
+    def dependency(request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+        path = request.url.path.removeprefix("/v1/crm/")
+        feature = next((f for prefix, f in _CRM_PATH_TO_FEATURE.items() if path == prefix or path.startswith(f"{prefix}/")), None)
+        if not feature:
+            return user
+        try:
+            entity = resolve_user_entity(db, user)
+        except DomainError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not plan_feature_active(db, entity.id, channel, feature):
+            raise HTTPException(status_code=422, detail=f"Upgrade your {channel.upper()} plan to use this feature")
+        return user
+    return dependency
+
+
+def require_plan_feature(channel: str, feature: str):
+    """Plan-tier gate, distinct from require_page_scope above -- that one restricts what a
+    teammate can see within an account's existing access; this restricts what the account's own
+    plan unlocks at all, same shape (a named page/feature, null-list-means-unrestricted) applied
+    to BillingPlan.feature_flags instead of User.page_scope. Applied per-module like
+    require_page_scope_for, not per-router-URL-segment, since every gateable feature here already
+    maps to one whole module (crm_quotes.py, crm_sequences.py's automation routes, crm_email.py,
+    the report-builder endpoints, tickets/helpdesk). Raises the same "Upgrade..." tone as
+    _require_crm rather than a bare 403, since this is a real, actionable upsell moment, not a
+    security violation."""
+    def dependency(user: User = Depends(require_user), db: Session = Depends(get_db)) -> User:
+        try:
+            entity = resolve_user_entity(db, user)
+        except DomainError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if not plan_feature_active(db, entity.id, channel, feature):
+            # 422, matching _require_crm's own status code -- CRM pages already special-case a 422
+            # here as "show the upgrade banner", not a hard permission error.
+            raise HTTPException(status_code=422, detail=f"Upgrade your {channel.upper()} plan to use this feature")
         return user
     return dependency

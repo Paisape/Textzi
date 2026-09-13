@@ -37,7 +37,7 @@ def _plan_out(plan: BillingPlan) -> BillingPlanOut:
     return BillingPlanOut(
         id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price),
         message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active,
-        visible_to_customers=plan.visible_to_customers,
+        visible_to_customers=plan.visible_to_customers, feature_flags=plan.feature_flags,
     )
 
 
