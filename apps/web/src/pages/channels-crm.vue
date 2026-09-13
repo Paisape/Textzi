@@ -170,11 +170,11 @@ async function saveApprovals() {
 
 // --- Products (CPQ price list) ---
 
-type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, description: string | null, active: boolean }
+type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, description: string | null, active: boolean }
 
 const products = ref<Product[]>([])
 const productDialog = ref(false)
-const productForm = reactive({ name: '', sku: '', hsn_code: '', unit_price: 0, description: '' })
+const productForm = reactive({ name: '', sku: '', hsn_code: '', unit_price: 0, tax_rate: null as number | null, category: '', description: '' })
 const productSaving = ref(false)
 const productError = ref('')
 const editingProductId = ref<string | null>(null)
@@ -194,6 +194,8 @@ function openProductDialog() {
   productForm.sku = ''
   productForm.hsn_code = ''
   productForm.unit_price = 0
+  productForm.tax_rate = null
+  productForm.category = ''
   productForm.description = ''
   productError.value = ''
   productDialog.value = true
@@ -205,6 +207,8 @@ function openEditProductDialog(product: Product) {
   productForm.sku = product.sku || ''
   productForm.hsn_code = product.hsn_code
   productForm.unit_price = product.unit_price
+  productForm.tax_rate = product.tax_rate
+  productForm.category = product.category || ''
   productForm.description = product.description || ''
   productError.value = ''
   productDialog.value = true
@@ -218,7 +222,8 @@ async function saveProduct() {
   try {
     const body = {
       name: productForm.name.trim(), sku: productForm.sku.trim() || null, hsn_code: productForm.hsn_code.trim(),
-      unit_price: productForm.unit_price, description: productForm.description.trim() || null,
+      unit_price: productForm.unit_price, tax_rate: productForm.tax_rate, category: productForm.category.trim() || null,
+      description: productForm.description.trim() || null,
     }
     if (editingProductId.value) {
       const updated = await $api<Product>(`/v1/crm/quotes/products/${editingProductId.value}`, { method: 'PATCH', body })
@@ -268,6 +273,95 @@ async function deleteProduct(product: Product) {
   }
   finally {
     deletingProductId.value = null
+  }
+}
+
+// --- Discount rules (quantity-threshold, per-product or catalog-wide) ---
+
+type DiscountRule = { id: string, product_id: string | null, name: string, min_quantity: number, discount_percent: number, active: boolean }
+
+const discountRules = ref<DiscountRule[]>([])
+const discountDialog = ref(false)
+const discountForm = reactive({ product_id: null as string | null, name: '', min_quantity: 1, discount_percent: 0 })
+const discountSaving = ref(false)
+const discountError = ref('')
+const editingDiscountId = ref<string | null>(null)
+
+async function loadDiscountRules() {
+  try {
+    discountRules.value = await $api<DiscountRule[]>('/v1/crm/quotes/discount-rules')
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not load discount rules.')
+  }
+}
+
+function discountProductLabel(productId: string | null) {
+  if (!productId)
+    return 'Any product'
+  return products.value.find(p => p.id === productId)?.name || 'Unknown product'
+}
+
+function openDiscountDialog() {
+  editingDiscountId.value = null
+  discountForm.product_id = null
+  discountForm.name = ''
+  discountForm.min_quantity = 1
+  discountForm.discount_percent = 0
+  discountError.value = ''
+  discountDialog.value = true
+}
+
+function openEditDiscountDialog(rule: DiscountRule) {
+  editingDiscountId.value = rule.id
+  discountForm.product_id = rule.product_id
+  discountForm.name = rule.name
+  discountForm.min_quantity = rule.min_quantity
+  discountForm.discount_percent = rule.discount_percent
+  discountError.value = ''
+  discountDialog.value = true
+}
+
+async function saveDiscountRule() {
+  if (!discountForm.name.trim())
+    return
+  discountSaving.value = true
+  discountError.value = ''
+  try {
+    if (editingDiscountId.value) {
+      const body = { name: discountForm.name.trim(), min_quantity: discountForm.min_quantity, discount_percent: discountForm.discount_percent }
+      const updated = await $api<DiscountRule>(`/v1/crm/quotes/discount-rules/${editingDiscountId.value}`, { method: 'PATCH', body })
+      const index = discountRules.value.findIndex(r => r.id === editingDiscountId.value)
+      if (index !== -1)
+        discountRules.value[index] = updated
+    }
+    else {
+      const body = { product_id: discountForm.product_id, name: discountForm.name.trim(), min_quantity: discountForm.min_quantity, discount_percent: discountForm.discount_percent }
+      discountRules.value.push(await $api<DiscountRule>('/v1/crm/quotes/discount-rules', { method: 'POST', body }))
+    }
+    discountDialog.value = false
+  }
+  catch (error: any) {
+    discountError.value = extractErrorMessage(error, 'Could not save this discount rule.')
+  }
+  finally {
+    discountSaving.value = false
+  }
+}
+
+const deletingDiscountId = ref<string | null>(null)
+
+async function deleteDiscountRule(rule: DiscountRule) {
+  deletingDiscountId.value = rule.id
+  try {
+    await $api(`/v1/crm/quotes/discount-rules/${rule.id}`, { method: 'DELETE' })
+    discountRules.value = discountRules.value.filter(r => r.id !== rule.id)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not delete this discount rule.')
+  }
+  finally {
+    deletingDiscountId.value = null
   }
 }
 
@@ -947,6 +1041,7 @@ async function loadExtras() {
   loadEmailAccount()
   loadCannedResponses()
   loadProducts()
+  loadDiscountRules()
   loadDocumentTemplates()
 }
 
@@ -1838,14 +1933,16 @@ onMounted(() => {
           New product
         </VBtn>
       </div>
-      <VCard>
+      <VCard class="mb-6">
         <VTable>
           <thead>
             <tr>
               <th>Name</th>
               <th>SKU</th>
+              <th>Category</th>
               <th>HSN</th>
               <th>Price (INR)</th>
+              <th>Tax rate</th>
               <th>Active</th>
               <th />
             </tr>
@@ -1854,8 +1951,10 @@ onMounted(() => {
             <tr v-for="product in products" :key="product.id">
               <td>{{ product.name }}</td>
               <td>{{ product.sku || '—' }}</td>
+              <td>{{ product.category || '—' }}</td>
               <td>{{ product.hsn_code || '—' }}</td>
               <td>{{ inr(product.unit_price) }}</td>
+              <td>{{ product.tax_rate !== null ? `${(product.tax_rate * 100).toFixed(0)}%` : 'Default GST' }}</td>
               <td>
                 <VSwitch :model-value="product.active" density="compact" hide-details :disabled="togglingProductId === product.id" @update:model-value="toggleProductActive(product)" />
               </td>
@@ -1868,6 +1967,50 @@ onMounted(() => {
         </VTable>
         <p v-if="!products.length" class="text-medium-emphasis text-center pa-6">
           No products yet — add one to pick it directly on a quote.
+        </p>
+      </VCard>
+
+      <div class="d-flex align-center justify-space-between mb-3">
+        <div>
+          <h3 class="text-h6 mb-1">
+            Discount rules
+          </h3>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            Quantity-based discounts applied automatically on a quote line -- e.g. "10+ units: 5% off." Leave product blank for a catalog-wide fallback.
+          </p>
+        </div>
+        <VBtn color="primary" prepend-icon="tabler-plus" @click="openDiscountDialog">
+          New rule
+        </VBtn>
+      </div>
+      <VCard>
+        <VTable>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th>Product</th>
+              <th>Min quantity</th>
+              <th>Discount</th>
+              <th>Active</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="rule in discountRules" :key="rule.id">
+              <td>{{ rule.name }}</td>
+              <td>{{ discountProductLabel(rule.product_id) }}</td>
+              <td>{{ rule.min_quantity }}+</td>
+              <td>{{ rule.discount_percent }}%</td>
+              <td>{{ rule.active ? 'Yes' : 'No' }}</td>
+              <td class="text-end">
+                <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditDiscountDialog(rule)" />
+                <VBtn icon="tabler-trash" size="small" variant="text" :loading="deletingDiscountId === rule.id" @click="deleteDiscountRule(rule)" />
+              </td>
+            </tr>
+          </tbody>
+        </VTable>
+        <p v-if="!discountRules.length" class="text-medium-emphasis text-center pa-6">
+          No discount rules yet.
         </p>
       </VCard>
     </VWindowItem>
@@ -2089,8 +2232,14 @@ onMounted(() => {
         </VAlert>
         <VTextField v-model="productForm.name" label="Product name" density="compact" autofocus />
         <VTextField v-model="productForm.sku" label="SKU (optional)" density="compact" />
+        <VTextField v-model="productForm.category" label="Category (optional)" density="compact" />
         <VTextField v-model="productForm.hsn_code" label="HSN code" density="compact" />
         <VTextField v-model.number="productForm.unit_price" label="Unit price (INR)" type="number" min="0" density="compact" />
+        <VTextField
+          :model-value="productForm.tax_rate === null ? null : productForm.tax_rate * 100"
+          label="Tax rate % (leave blank to use the account's default GST rate)" type="number" min="0" max="100" density="compact"
+          @update:model-value="(v: string) => productForm.tax_rate = v === '' || v === null ? null : Number(v) / 100"
+        />
         <VTextarea v-model="productForm.description" label="Description (optional)" rows="2" density="compact" />
       </VCardText>
       <VCardActions>
@@ -2100,6 +2249,35 @@ onMounted(() => {
         </VBtn>
         <VBtn color="primary" :loading="productSaving" :disabled="!productForm.name.trim()" @click="saveProduct">
           {{ editingProductId ? 'Save' : 'Create' }}
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="discountDialog" max-width="420" persistent>
+    <VCard :title="editingDiscountId ? 'Edit discount rule' : 'New discount rule'">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="discountDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="discountError" type="error" variant="tonal" density="compact">
+          {{ discountError }}
+        </VAlert>
+        <VTextField v-model="discountForm.name" label="Rule name" density="compact" autofocus />
+        <VSelect
+          v-model="discountForm.product_id" label="Product (leave blank for any product)" density="compact" clearable
+          :disabled="!!editingDiscountId" :items="products.map(p => ({ title: p.name, value: p.id }))"
+        />
+        <VTextField v-model.number="discountForm.min_quantity" label="Minimum quantity" type="number" min="1" density="compact" />
+        <VTextField v-model.number="discountForm.discount_percent" label="Discount %" type="number" min="0" max="100" density="compact" />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="discountDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="discountSaving" :disabled="!discountForm.name.trim()" @click="saveDiscountRule">
+          {{ editingDiscountId ? 'Save' : 'Create' }}
         </VBtn>
       </VCardActions>
     </VCard>

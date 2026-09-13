@@ -117,6 +117,11 @@ export const CRM_NAV_ITEMS = [
     icon: { icon: 'tabler-chart-dots' },
   },
   {
+    title: 'Dashboards',
+    to: { name: 'crm-dashboards' },
+    icon: { icon: 'tabler-layout-dashboard' },
+  },
+  {
     title: 'Manage',
     to: { name: 'channels-crm' },
     icon: { icon: 'tabler-settings' },

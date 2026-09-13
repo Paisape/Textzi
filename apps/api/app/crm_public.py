@@ -117,7 +117,7 @@ def _public_quote_out(db: Session, quote: Quote) -> PublicQuoteOut:
     company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     return PublicQuoteOut(
         quote_number=out.quote_number, line_items=out.line_items, status=out.status,
-        subtotal=out.subtotal, cgst=out.cgst, sgst=out.sgst, igst=out.igst, total=out.total,
+        subtotal=out.subtotal, discount_total=out.discount_total, cgst=out.cgst, sgst=out.sgst, igst=out.igst, total=out.total,
         company_name=company.name if company else "", contact_name=contact.name if contact else "",
         signed_by_name=out.signed_by_name, signed_at=out.signed_at,
     )

@@ -22,9 +22,12 @@ from .auth import require_user
 from .config import settings
 from .database import get_db
 from .invoicing import _safe_text, create_draft_invoice, issue_invoice
-from .models import Company, CrmContact, CrmSettings, Deal, Entity, Organization, Product, Quote, User, WabaConnection
+from .models import Company, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, Product, Quote, User, WabaConnection
 from .permissions import require_channel_scope, require_page_scope_for, require_plan_feature
-from .schemas import ProductCreateRequest, ProductOut, ProductUpdateRequest, QuoteCreateRequest, QuoteLineItemsUpdateRequest, QuoteOut
+from .schemas import (
+    DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, ProductCreateRequest, ProductOut,
+    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut,
+)
 from .services import GST_RATE, DomainError, channel_active, notify_user, resolve_user_entity, state_code_from_gstin
 
 router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-quotes")), Depends(require_plan_feature("crm", "crm-quotes"))])
@@ -47,7 +50,8 @@ def _require_crm(db: Session, entity_id: str) -> None:
 def _product_out(product: Product) -> ProductOut:
     return ProductOut(
         id=product.id, name=product.name, sku=product.sku, hsn_code=product.hsn_code,
-        unit_price=float(product.unit_price), description=product.description, active=product.active,
+        unit_price=float(product.unit_price), tax_rate=float(product.tax_rate) if product.tax_rate is not None else None,
+        category=product.category, description=product.description, active=product.active,
     )
 
 
@@ -65,7 +69,8 @@ def create_product(payload: ProductCreateRequest, user: User = Depends(require_u
     _require_crm(db, entity.id)
     product = Product(
         entity_id=entity.id, name=payload.name.strip(), sku=payload.sku, hsn_code=payload.hsn_code,
-        unit_price=payload.unit_price, description=payload.description, active=payload.active,
+        unit_price=payload.unit_price, tax_rate=payload.tax_rate, category=payload.category,
+        description=payload.description, active=payload.active,
     )
     db.add(product)
     db.commit()
@@ -88,6 +93,10 @@ def update_product(product_id: str, payload: ProductUpdateRequest, user: User = 
         product.hsn_code = payload.hsn_code
     if "unit_price" in payload.model_fields_set and payload.unit_price is not None:
         product.unit_price = payload.unit_price
+    if "tax_rate" in payload.model_fields_set:
+        product.tax_rate = payload.tax_rate
+    if "category" in payload.model_fields_set:
+        product.category = payload.category
     if "description" in payload.model_fields_set:
         product.description = payload.description
     if "active" in payload.model_fields_set and payload.active is not None:
@@ -109,14 +118,123 @@ def delete_product(product_id: str, user: User = Depends(require_user), db: Sess
     return {"deleted": True}
 
 
+# --- Discount rules (quantity-threshold, per-product or catalog-wide) ---------------------------
+
+def _discount_rule_out(rule: DiscountRule) -> DiscountRuleOut:
+    return DiscountRuleOut(
+        id=rule.id, product_id=rule.product_id, name=rule.name,
+        min_quantity=float(rule.min_quantity), discount_percent=float(rule.discount_percent), active=rule.active,
+    )
+
+
+@router.get("/discount-rules", response_model=list[DiscountRuleOut])
+def list_discount_rules(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    rules = db.scalars(select(DiscountRule).where(DiscountRule.entity_id == entity.id).order_by(DiscountRule.min_quantity)).all()
+    return [_discount_rule_out(r) for r in rules]
+
+
+@router.post("/discount-rules", response_model=DiscountRuleOut)
+def create_discount_rule(payload: DiscountRuleCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    if payload.product_id:
+        product = db.get(Product, payload.product_id)
+        if not product or product.entity_id != entity.id:
+            raise HTTPException(status_code=404, detail="Product not found")
+    rule = DiscountRule(
+        entity_id=entity.id, product_id=payload.product_id, name=payload.name.strip(),
+        min_quantity=payload.min_quantity, discount_percent=payload.discount_percent, active=payload.active,
+    )
+    db.add(rule)
+    db.commit()
+    db.refresh(rule)
+    return _discount_rule_out(rule)
+
+
+@router.patch("/discount-rules/{rule_id}", response_model=DiscountRuleOut)
+def update_discount_rule(rule_id: str, payload: DiscountRuleUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    rule = db.get(DiscountRule, rule_id)
+    if not rule or rule.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Discount rule not found")
+    if "name" in payload.model_fields_set and payload.name:
+        rule.name = payload.name.strip()
+    if "min_quantity" in payload.model_fields_set and payload.min_quantity is not None:
+        rule.min_quantity = payload.min_quantity
+    if "discount_percent" in payload.model_fields_set and payload.discount_percent is not None:
+        rule.discount_percent = payload.discount_percent
+    if "active" in payload.model_fields_set and payload.active is not None:
+        rule.active = payload.active
+    db.commit()
+    db.refresh(rule)
+    return _discount_rule_out(rule)
+
+
+@router.delete("/discount-rules/{rule_id}")
+def delete_discount_rule(rule_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    rule = db.get(DiscountRule, rule_id)
+    if not rule or rule.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Discount rule not found")
+    db.delete(rule)
+    db.commit()
+    return {"deleted": True}
+
+
+def _best_discount_percent(db: Session, entity_id: str, product_id: str | None, quantity: float) -> float:
+    """Picks the single best-matching active rule for this line: the highest min_quantity that's
+    still <= quantity, preferring a product-specific rule over a catalog-wide one (product_id is
+    null) at the same min_quantity. No stacking -- exactly one rule ever applies per line."""
+    rules = db.scalars(select(DiscountRule).where(DiscountRule.entity_id == entity_id, DiscountRule.active.is_(True), DiscountRule.min_quantity <= quantity)).all()
+    candidates = [r for r in rules if r.product_id == product_id] or [r for r in rules if r.product_id is None]
+    if not candidates:
+        return 0.0
+    best = max(candidates, key=lambda r: float(r.min_quantity))
+    return float(best.discount_percent)
+
+
+def _apply_line_item_defaults(db: Session, entity_id: str, items: list[QuoteLineItem]) -> list[dict]:
+    """Fills in tax_rate/discount_percent for each line at add/edit time from the referenced
+    Product and any matching DiscountRule -- a caller can still override either explicitly (both
+    fields already came through validated on the request), this only fills gaps left as None/0."""
+    result = []
+    for item in items:
+        data = item.model_dump()
+        product = db.get(Product, item.product_id) if item.product_id else None
+        if data.get("tax_rate") is None and product and product.tax_rate is not None:
+            data["tax_rate"] = float(product.tax_rate)
+        if not data.get("discount_percent"):
+            data["discount_percent"] = _best_discount_percent(db, entity_id, item.product_id, item.quantity)
+        result.append(data)
+    return result
+
+
 def _compute_totals(quote: Quote, entity_state: str | None, company_state: str | None) -> dict:
-    subtotal = sum(item["quantity"] * item["unit_price"] for item in quote.line_items)
-    gst = subtotal * GST_RATE
+    subtotal = 0.0
+    discount_total = 0.0
+    gst = 0.0
+    for item in quote.line_items:
+        line_amount = item["quantity"] * item["unit_price"]
+        discount = line_amount * (item.get("discount_percent") or 0) / 100
+        taxable = line_amount - discount
+        rate = item.get("tax_rate")
+        rate = GST_RATE if rate is None else rate
+        subtotal += line_amount
+        discount_total += discount
+        gst += taxable * rate
     same_state = bool(entity_state and company_state and entity_state == company_state) or not company_state
     cgst = gst / 2 if same_state else 0
     sgst = gst / 2 if same_state else 0
     igst = gst if not same_state else 0
-    return {"subtotal": round(subtotal, 2), "cgst": round(cgst, 2), "sgst": round(sgst, 2), "igst": round(igst, 2), "total": round(subtotal + gst, 2)}
+    return {
+        "subtotal": round(subtotal, 2), "discount_total": round(discount_total, 2),
+        "cgst": round(cgst, 2), "sgst": round(sgst, 2), "igst": round(igst, 2),
+        "total": round(subtotal - discount_total + gst, 2),
+    }
 
 
 def _quote_out(db: Session, quote: Quote) -> QuoteOut:
@@ -132,7 +250,8 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     approvers_required = (settings_row.quote_approver_user_ids or []) if settings_row else []
     return QuoteOut(
         id=quote.id, deal_id=quote.deal_id, quote_number=quote.quote_number, line_items=quote.line_items, status=quote.status,
-        subtotal=totals["subtotal"], cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
+        subtotal=totals["subtotal"], discount_total=totals["discount_total"],
+        cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
         has_pdf=bool(quote.pdf_path), approval_status=quote.approval_status, approvals=quote.approvals or [],
         approvers_required=approvers_required, converted_invoice_id=quote.converted_invoice_id,
         created_at=quote.created_at.isoformat(), sent_at=quote.sent_at.isoformat() if quote.sent_at else None,
@@ -175,13 +294,18 @@ def _render_quote_pdf(quote: Quote, deal: Deal, contact: CrmContact, company: Co
     pdf.ln(4)
     pdf.cell(160, 7, "Subtotal", align="R")
     pdf.cell(30, 7, f"{totals['subtotal']:.2f}", ln=True)
+    if totals["discount_total"]:
+        pdf.cell(160, 7, "Discount", align="R")
+        pdf.cell(30, 7, f"-{totals['discount_total']:.2f}", ln=True)
+    # No fixed "(9%)"/"(18%)" label -- line items can each carry their own tax_rate override
+    # (per-product GST varies by HSN code), so the total is a sum across possibly-mixed rates.
     if totals["cgst"]:
-        pdf.cell(160, 7, "CGST (9%)", align="R")
+        pdf.cell(160, 7, "CGST", align="R")
         pdf.cell(30, 7, f"{totals['cgst']:.2f}", ln=True)
-        pdf.cell(160, 7, "SGST (9%)", align="R")
+        pdf.cell(160, 7, "SGST", align="R")
         pdf.cell(30, 7, f"{totals['sgst']:.2f}", ln=True)
     if totals["igst"]:
-        pdf.cell(160, 7, "IGST (18%)", align="R")
+        pdf.cell(160, 7, "IGST", align="R")
         pdf.cell(30, 7, f"{totals['igst']:.2f}", ln=True)
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(160, 8, "Total", align="R")
@@ -217,7 +341,7 @@ def create_quote(payload: QuoteCreateRequest, user: User = Depends(require_user)
     deal = db.scalar(select(Deal).where(Deal.id == payload.deal_id, Deal.entity_id == entity.id))
     if not deal:
         raise HTTPException(status_code=404, detail="Deal not found")
-    quote = Quote(entity_id=entity.id, deal_id=deal.id, line_items=[item.model_dump() for item in payload.line_items], created_by_user_id=user.id)
+    quote = Quote(entity_id=entity.id, deal_id=deal.id, line_items=_apply_line_item_defaults(db, entity.id, payload.line_items), created_by_user_id=user.id)
     db.add(quote)
     db.commit()
     db.refresh(quote)
@@ -246,7 +370,7 @@ def update_quote_line_items(quote_id: str, payload: QuoteLineItemsUpdateRequest,
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.status != "draft":
         raise HTTPException(status_code=409, detail="Only a draft quote's line items can be edited")
-    quote.line_items = [item.model_dump() for item in payload.line_items]
+    quote.line_items = _apply_line_item_defaults(db, entity.id, payload.line_items)
     db.commit()
     db.refresh(quote)
     return _quote_out(db, quote)
@@ -388,7 +512,7 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
 
     out = _quote_out(db, quote)
     invoice = create_draft_invoice(
-        db, entity, type="crm_quote", base_amount=out.subtotal, gst_amount=round(out.cgst + out.sgst + out.igst, 2),
+        db, entity, type="crm_quote", base_amount=round(out.subtotal - out.discount_total, 2), gst_amount=round(out.cgst + out.sgst + out.igst, 2),
         reference=quote.id, notes=f"Converted from quote {quote.quote_number or quote.id}",
     )
     issue_invoice(db, invoice)

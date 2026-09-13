@@ -2547,6 +2547,23 @@ class SavedReportUpdateRequest(BaseModel):
     schedule: str | None = Field(default=None, pattern="^(weekly|monthly)$")
 
 
+class DashboardOut(BaseModel):
+    id: str
+    name: str
+    widget_report_ids: list[str]
+    created_at: str
+
+
+class DashboardCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    widget_report_ids: list[str] = Field(default_factory=list)
+
+
+class DashboardUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    widget_report_ids: list[str] | None = None
+
+
 class TaskOut(BaseModel):
     id: str
     contact_id: str
@@ -2621,9 +2638,15 @@ class QuoteLineItem(BaseModel):
     quantity: float = Field(gt=0)
     unit_price: float = Field(ge=0)
     # Optional -- which Product this line was populated from, if any (kept for reference only;
-    # description/hsn_code/unit_price above are this line's own snapshot and never re-read from
-    # the product later, same reasoning as Product's own model docstring).
+    # description/hsn_code/unit_price/tax_rate above are this line's own snapshot and never
+    # re-read from the product later, same reasoning as Product's own model docstring).
     product_id: str | None = None
+    # null = this line uses the global GST_RATE, same as before tax_rate existed. A non-null value
+    # is this line's own snapshot of Product.tax_rate at the moment it was added/edited.
+    tax_rate: float | None = Field(default=None, ge=0, le=1)
+    # Percentage off this line's subtotal (0-100), snapshotted from the best-matching DiscountRule
+    # at add/edit time, same "never re-read later" snapshot semantics as everything else on a line.
+    discount_percent: float = Field(default=0, ge=0, le=100)
 
 
 class ProductOut(BaseModel):
@@ -2632,6 +2655,8 @@ class ProductOut(BaseModel):
     sku: str | None
     hsn_code: str
     unit_price: float
+    tax_rate: float | None
+    category: str | None
     description: str | None
     active: bool
 
@@ -2641,6 +2666,8 @@ class ProductCreateRequest(BaseModel):
     sku: str | None = Field(default=None, max_length=60)
     hsn_code: str = Field(default="", max_length=20)
     unit_price: float = Field(ge=0)
+    tax_rate: float | None = Field(default=None, ge=0, le=1)
+    category: str | None = Field(default=None, max_length=80)
     description: str | None = None
     active: bool = True
 
@@ -2650,7 +2677,33 @@ class ProductUpdateRequest(BaseModel):
     sku: str | None = Field(default=None, max_length=60)
     hsn_code: str | None = Field(default=None, max_length=20)
     unit_price: float | None = Field(default=None, ge=0)
+    tax_rate: float | None = None
+    category: str | None = Field(default=None, max_length=80)
     description: str | None = None
+    active: bool | None = None
+
+
+class DiscountRuleOut(BaseModel):
+    id: str
+    product_id: str | None
+    name: str
+    min_quantity: float
+    discount_percent: float
+    active: bool
+
+
+class DiscountRuleCreateRequest(BaseModel):
+    product_id: str | None = None
+    name: str = Field(min_length=1, max_length=120)
+    min_quantity: float = Field(gt=0)
+    discount_percent: float = Field(ge=0, le=100)
+    active: bool = True
+
+
+class DiscountRuleUpdateRequest(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    min_quantity: float | None = Field(default=None, gt=0)
+    discount_percent: float | None = Field(default=None, ge=0, le=100)
     active: bool | None = None
 
 
@@ -2681,6 +2734,7 @@ class QuoteOut(BaseModel):
     line_items: list[QuoteLineItem]
     status: str
     subtotal: float
+    discount_total: float
     cgst: float
     sgst: float
     igst: float
@@ -2701,6 +2755,7 @@ class PublicQuoteOut(BaseModel):
     line_items: list[QuoteLineItem]
     status: str
     subtotal: float
+    discount_total: float
     cgst: float
     sgst: float
     igst: float

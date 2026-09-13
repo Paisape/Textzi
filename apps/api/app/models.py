@@ -2071,11 +2071,12 @@ class Quote(Base):
 
 class Product(Base):
     """An entity's own price-list item -- the concrete shape behind "CPQ": a QuoteLineItem can
-    optionally reference one (product_id) to pre-fill description/hsn_code/unit_price, but the
-    line item itself always stores its own copy of those values (see Quote's own docstring on why
-    tax lines aren't recomputed retroactively) -- a price change here never rewrites a quote
-    that's already gone out. Deliberately no pricing-rule engine (volume discounts, bundles) --
-    a flat price list is what an SME actually needs; revisit only if a real need shows up."""
+    optionally reference one (product_id) to pre-fill description/hsn_code/unit_price/tax_rate,
+    but the line item itself always stores its own copy of those values (see Quote's own docstring
+    on why tax lines aren't recomputed retroactively) -- a price change here never rewrites a quote
+    that's already gone out. Deliberately no bundle/kit products or per-customer price lists --
+    a flat price list with a per-product tax override is what an SME actually needs; revisit only
+    if a real need shows up."""
     __tablename__ = "products"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
@@ -2083,7 +2084,31 @@ class Product(Base):
     sku: Mapped[str | None] = mapped_column(String(60), nullable=True)
     hsn_code: Mapped[str] = mapped_column(String(20), default="")
     unit_price: Mapped[float] = mapped_column(Numeric(14, 2))
+    # null = fall back to the global GST_RATE (today's only behavior, unchanged for every existing
+    # product) -- a non-null value is a fraction (e.g. 0.05 for 5%) overriding it for this specific
+    # product, since real GST rates vary by HSN code (5%/12%/18%/28%), not a single flat rate.
+    tax_rate: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(80), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class DiscountRule(Base):
+    """A simple quantity-threshold discount an entity defines once per product (or, with
+    product_id null, as a catalog-wide fallback rule) -- e.g. "10+ units: 5% off". Applied
+    automatically when a quote line item's quantity is set/changed (crm_quotes._apply_discount),
+    picking the single best-matching (highest min_quantity <= this line's quantity) rule for that
+    product, falling back to any catalog-wide rule if no product-specific one matches. Deliberately
+    just a percentage off at a quantity breakpoint -- no bundles, no customer-segment pricing, no
+    stacking multiple rules; revisit only if a real need shows up."""
+    __tablename__ = "discount_rules"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    product_id: Mapped[str | None] = mapped_column(ForeignKey("products.id"), nullable=True)
+    name: Mapped[str] = mapped_column(String(120))
+    min_quantity: Mapped[float] = mapped_column(Numeric(12, 2))
+    discount_percent: Mapped[float] = mapped_column(Numeric(5, 2))  # e.g. 5.00 = 5% off
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -2139,6 +2164,24 @@ class SavedReport(Base):
     # every other scheduled job in this codebase, not a per-report cron).
     schedule: Mapped[str | None] = mapped_column(String(10), nullable=True)
     last_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Dashboard(Base):
+    """A named grid of existing SavedReport widgets -- deliberately a thin layer on top of the
+    single-report engine (widget_report_ids just orders and groups SavedReport ids someone already
+    created), not a rewrite of _run_report's aggregation. Per-user, same "my own view of my own
+    saved reports" scope as SavedReport itself, since a report can only ever be selected here if
+    the current user already owns it."""
+    __tablename__ = "dashboards"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    # Ordered list of SavedReport.id -- grid position is just this list's order (rendered in a
+    # fixed-column-count wrap, not a free-form x/y layout, matching this codebase's own "no drag-
+    # and-drop layout engine" scope elsewhere, e.g. Product's own no-pricing-rule-engine docstring).
+    widget_report_ids: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

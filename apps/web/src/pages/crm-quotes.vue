@@ -10,7 +10,7 @@ definePage({
 
 type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null }
 type Deal = { id: string, contact: CrmContact, stage: string, status: string }
-type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number, product_id?: string | null }
+type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number, product_id?: string | null, tax_rate?: number | null, discount_percent?: number }
 type Quote = {
   id: string
   deal_id: string
@@ -18,6 +18,7 @@ type Quote = {
   line_items: LineItem[]
   status: 'draft' | 'sent' | 'accepted' | 'rejected'
   subtotal: number
+  discount_total: number
   cgst: number
   sgst: number
   igst: number
@@ -35,7 +36,7 @@ type Quote = {
 
 const route = useRoute()
 const authStore = useAuthStore()
-type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, active: boolean }
+type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, active: boolean }
 
 const quotes = ref<Quote[]>([])
 const deals = ref<Deal[]>([])
@@ -150,6 +151,7 @@ function pickProduct(item: LineItem, productId: string | null) {
     item.description = product.name
     item.hsn_code = product.hsn_code
     item.unit_price = product.unit_price
+    item.tax_rate = product.tax_rate
   }
 }
 
@@ -332,7 +334,12 @@ onMounted(async () => {
             <span v-else class="text-medium-emphasis font-italic">Not yet numbered</span>
           </td>
           <td>{{ dealContactLabel(quote.deal_id) }}</td>
-          <td>{{ inr(quote.total) }}</td>
+          <td>
+            {{ inr(quote.total) }}
+            <p v-if="quote.discount_total" class="text-caption text-medium-emphasis mb-0">
+              {{ inr(quote.discount_total) }} discount applied
+            </p>
+          </td>
           <td>
             <VChip size="small" :color="statusColor[quote.status]">
               {{ quote.status }}

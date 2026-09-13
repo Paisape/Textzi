@@ -52,6 +52,7 @@ _CRM_PATH_TO_PAGE = {
     "companies": "crm-companies", "tasks": "crm-tasks", "quotes": "crm-quotes", "pipelines": "crm-pipelines",
     "reports": "crm-reports", "settings": "channels-crm", "custom-fields": "channels-crm",
     "scoring-rules": "crm-automation", "territories": "crm-automation", "sales-targets": "crm-automation",
+    "dashboards": "crm-report-builder",
 }
 
 # Only the plan-gateable subset of crm.py's own paths -- everything else (leads/deals/contacts/
@@ -62,6 +63,7 @@ _CRM_PATH_TO_PAGE = {
 _CRM_PATH_TO_FEATURE = {
     "scoring-rules": "crm-automation",
     "reports/run": "crm-report-builder", "reports/drill-down": "crm-report-builder", "reports/saved": "crm-report-builder",
+    "dashboards": "crm-report-builder",
 }
 
 

@@ -26,7 +26,7 @@ from .database import SessionLocal, get_db
 from .email_service import render_email, send_email
 from .models import (
     Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
-    Customer, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesTarget, SavedReport, SavedView, ScoringRule,
+    Customer, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesTarget, SavedReport, SavedView, ScoringRule,
     Task, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
@@ -34,6 +34,7 @@ from .schemas import (
     CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
     CustomerCreateRequest, CustomerDetailOut, CustomerOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
+    DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
     DealUpdateRequest, DuplicateGroupOut, EmployeeSalesRow, FollowUpPerformanceOut, ImportResultOut, LeadBulkDeleteRequest, LeadBulkOwnerRequest,
@@ -2045,6 +2046,89 @@ def delete_saved_report(report_id: str, user: User = Depends(require_user), db: 
     db.delete(report)
     db.commit()
     return {"deleted": True}
+
+
+# --- Dashboards (a named grid of existing saved-report widgets) ---------------------------------
+
+def _dashboard_out(dashboard: Dashboard) -> DashboardOut:
+    return DashboardOut(id=dashboard.id, name=dashboard.name, widget_report_ids=dashboard.widget_report_ids or [], created_at=dashboard.created_at.isoformat())
+
+
+def _validate_widget_report_ids(db: Session, entity_id: str, user_id: str, widget_report_ids: list[str]) -> None:
+    if not widget_report_ids:
+        return
+    owned = db.scalars(select(SavedReport.id).where(SavedReport.entity_id == entity_id, SavedReport.user_id == user_id, SavedReport.id.in_(widget_report_ids))).all()
+    missing = set(widget_report_ids) - set(owned)
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Unknown saved report id(s): {', '.join(sorted(missing))}")
+
+
+@router.get("/dashboards", response_model=list[DashboardOut])
+def list_dashboards(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    dashboards = db.scalars(select(Dashboard).where(Dashboard.entity_id == entity.id, Dashboard.user_id == user.id).order_by(Dashboard.created_at.desc())).all()
+    return [_dashboard_out(d) for d in dashboards]
+
+
+@router.post("/dashboards", response_model=DashboardOut)
+def create_dashboard(payload: DashboardCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    _validate_widget_report_ids(db, entity.id, user.id, payload.widget_report_ids)
+    dashboard = Dashboard(entity_id=entity.id, user_id=user.id, name=payload.name.strip(), widget_report_ids=payload.widget_report_ids)
+    db.add(dashboard)
+    db.commit()
+    db.refresh(dashboard)
+    return _dashboard_out(dashboard)
+
+
+@router.patch("/dashboards/{dashboard_id}", response_model=DashboardOut)
+def update_dashboard(dashboard_id: str, payload: DashboardUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    dashboard = db.get(Dashboard, dashboard_id)
+    if not dashboard or dashboard.entity_id != entity.id or dashboard.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    if "name" in payload.model_fields_set and payload.name:
+        dashboard.name = payload.name.strip()
+    if "widget_report_ids" in payload.model_fields_set and payload.widget_report_ids is not None:
+        _validate_widget_report_ids(db, entity.id, user.id, payload.widget_report_ids)
+        dashboard.widget_report_ids = payload.widget_report_ids
+    db.commit()
+    db.refresh(dashboard)
+    return _dashboard_out(dashboard)
+
+
+@router.delete("/dashboards/{dashboard_id}")
+def delete_dashboard(dashboard_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    dashboard = db.get(Dashboard, dashboard_id)
+    if not dashboard or dashboard.entity_id != entity.id or dashboard.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    db.delete(dashboard)
+    db.commit()
+    return {"deleted": True}
+
+
+@router.get("/dashboards/{dashboard_id}/run", response_model=dict[str, ReportRunResult])
+def run_dashboard(dashboard_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Runs every widget's underlying saved report and returns them keyed by report id -- a thin
+    fan-out over the existing single-report engine (_run_report), not a new aggregation path."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    dashboard = db.get(Dashboard, dashboard_id)
+    if not dashboard or dashboard.entity_id != entity.id or dashboard.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    results: dict[str, ReportRunResult] = {}
+    for report_id in (dashboard.widget_report_ids or []):
+        report = db.get(SavedReport, report_id)
+        if not report or report.entity_id != entity.id or report.user_id != user.id:
+            continue  # the underlying report was deleted after being added as a widget -- skip, don't 404 the whole dashboard
+        rows = _run_report(db, entity.id, report.object_type, report.group_by, report.measure, report.filters or {})
+        results[report_id] = ReportRunResult(rows=rows)
+    return results
 
 
 def send_due_scheduled_reports() -> None:
