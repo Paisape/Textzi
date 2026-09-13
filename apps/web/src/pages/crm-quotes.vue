@@ -43,6 +43,7 @@ const products = ref<Product[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+const crmInactiveMessage = ref('')
 const actionError = ref('')
 const busy = ref<string | null>(null)
 const pendingMyApprovalOnly = ref(false)
@@ -87,10 +88,16 @@ async function loadAll() {
     products.value = productResult.filter(p => p.active)
   }
   catch (error: any) {
-    if (error?.response?.status === 422)
+    if (error?.response?.status === 422) {
       crmInactive.value = true
-    else
+      // The backend's own detail text already distinguishes "CRM plan not active" from "this plan
+      // doesn't include this feature" (require_plan_feature vs. the whole-channel gate) -- show it
+      // verbatim instead of a hardcoded message written before per-feature gating existed.
+      crmInactiveMessage.value = extractErrorMessage(error, 'Upgrade your CRM plan to use this feature.')
+    }
+    else {
       loadError.value = extractErrorMessage(error, 'Could not load quotes.')
+    }
   }
   finally {
     loading.value = false
@@ -294,7 +301,7 @@ onMounted(async () => {
   </div>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
-    Upgrade to the CRM plan to use leads, tickets, and customers.
+    {{ crmInactiveMessage }}
     <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
       View plans
     </RouterLink>

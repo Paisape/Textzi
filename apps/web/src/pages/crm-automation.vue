@@ -33,6 +33,7 @@ const pipelines = ref<Pipeline[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+const crmInactiveMessage = ref('')
 
 const stageOptions = computed(() => {
   const names = new Set<string>()
@@ -64,10 +65,15 @@ async function loadAll() {
     pipelines.value = pipelineResult
   }
   catch (error: any) {
-    if (error?.response?.status === 422)
+    if (error?.response?.status === 422) {
       crmInactive.value = true
-    else
+      // Show the backend's own detail text (distinguishes "CRM plan inactive" from "this plan
+      // lacks this feature") instead of a hardcoded whole-channel message.
+      crmInactiveMessage.value = extractErrorMessage(error, 'Upgrade your CRM plan to use this feature.')
+    }
+    else {
       loadError.value = extractErrorMessage(error, 'Could not load automation settings.')
+    }
   }
   finally {
     loading.value = false
@@ -281,7 +287,7 @@ onMounted(loadAll)
   </p>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
-    Upgrade to the CRM plan to use leads, tickets, and customers.
+    {{ crmInactiveMessage }}
     <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
       View plans
     </RouterLink>

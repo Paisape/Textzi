@@ -73,6 +73,7 @@ const pipelines = ref<Pipeline[]>([])
 const savedReports = ref<SavedReport[]>([])
 const loadError = ref('')
 const crmInactive = ref(false)
+const crmInactiveMessage = ref('')
 
 const form = reactive({
   object_type: 'deal' as ObjectType,
@@ -289,6 +290,7 @@ onMounted(async () => {
   catch (error: any) {
     if (error?.response?.status === 422) {
       crmInactive.value = true
+      crmInactiveMessage.value = extractErrorMessage(error, 'Upgrade your CRM plan to use this feature.')
       return
     }
     loadError.value = extractErrorMessage(error, 'Could not load report builder.')
@@ -306,7 +308,7 @@ onMounted(async () => {
   </p>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
-    Upgrade to the CRM plan to use reports.
+    {{ crmInactiveMessage }}
     <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
       View plans
     </RouterLink>

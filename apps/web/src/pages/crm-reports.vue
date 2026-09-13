@@ -44,6 +44,7 @@ const extended = ref<ExtendedReports | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+const crmInactiveMessage = ref('')
 const periodDays = ref<number | null>(null)
 
 const PERIOD_OPTIONS = [
@@ -78,10 +79,13 @@ async function load() {
     extended.value = extendedResult
   }
   catch (error: any) {
-    if (error?.response?.status === 422)
+    if (error?.response?.status === 422) {
       crmInactive.value = true
-    else
+      crmInactiveMessage.value = extractErrorMessage(error, 'Upgrade your CRM plan to use this feature.')
+    }
+    else {
       loadError.value = extractErrorMessage(error, 'Could not load reports.')
+    }
   }
   finally {
     loading.value = false
@@ -136,7 +140,7 @@ onMounted(load)
   </p>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
-    Upgrade to the CRM plan to use leads, tickets, and customers.
+    {{ crmInactiveMessage }}
     <RouterLink to="/channels-crm?tab=billing" class="font-weight-medium">
       View plans
     </RouterLink>
