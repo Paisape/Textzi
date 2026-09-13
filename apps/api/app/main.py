@@ -17,7 +17,9 @@ from .admin import router as admin_router, require_admin
 from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
+from .catalog_shopify import router as catalog_shopify_router, sync_all_shopify_connections
 from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
+from .catalog_woocommerce import router as catalog_woocommerce_router, sync_all_woocommerce_connections
 from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
 from .crm import router as crm_router, send_due_scheduled_reports
@@ -112,6 +114,10 @@ async def lifespan(_: FastAPI):
     # mirror close to Meta's own catalog for the agent-inbox product picker. Hourly, same
     # reasoning as the CRM sequence runner: granular enough, cheap enough to just poll.
     scheduler.add_job(sync_all_catalogs, IntervalTrigger(hours=1), id="catalog_sync_job", misfire_grace_time=3600)
+    # Shopify/WooCommerce -> Meta catalog pushes, same hourly cadence -- runs just before
+    # catalog_sync_job's own Meta-side pull each hour would naturally pick up whatever landed.
+    scheduler.add_job(sync_all_shopify_connections, IntervalTrigger(hours=1), id="shopify_catalog_sync_job", misfire_grace_time=3600)
+    scheduler.add_job(sync_all_woocommerce_connections, IntervalTrigger(hours=1), id="woocommerce_catalog_sync_job", misfire_grace_time=3600)
     # WhatsApp Commerce abandoned-cart reminders (Addendum 14 Phase 4) -- hourly is enough
     # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
     scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
@@ -136,6 +142,8 @@ app.include_router(admin_router)
 app.include_router(admin_wallet_router)
 app.include_router(auth_router)
 app.include_router(catalog_sync_router)
+app.include_router(catalog_shopify_router)
+app.include_router(catalog_woocommerce_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
 app.include_router(crm_router)

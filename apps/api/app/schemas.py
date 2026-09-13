@@ -1521,6 +1521,37 @@ class WabaCatalogItemOut(BaseModel):
     last_synced_at: str
 
 
+class ShopifyConnectionOut(BaseModel):
+    connected: bool
+    shop_domain: str | None
+    status: str | None
+    last_sync_status: str | None
+    last_sync_error: str | None
+    last_synced_at: str | None
+    products_synced: int
+
+
+class ShopifyConnectRequest(BaseModel):
+    shop_domain: str = Field(min_length=1, max_length=300)
+    access_token: str = Field(min_length=1, max_length=200)
+
+
+class WooCommerceConnectionOut(BaseModel):
+    connected: bool
+    store_url: str | None
+    status: str | None
+    last_sync_status: str | None
+    last_sync_error: str | None
+    last_synced_at: str | None
+    products_synced: int
+
+
+class WooCommerceConnectRequest(BaseModel):
+    store_url: str = Field(min_length=1, max_length=300)
+    consumer_key: str = Field(min_length=1, max_length=200)
+    consumer_secret: str = Field(min_length=1, max_length=200)
+
+
 class WabaOrderItemOut(BaseModel):
     product_retailer_id: str
     product_name: str | None = None

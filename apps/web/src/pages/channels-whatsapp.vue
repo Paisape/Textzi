@@ -252,6 +252,135 @@ async function syncCatalogNow() {
   }
 }
 
+// --- Shopify / WooCommerce -> Meta catalog sync ---------------------------------------------
+
+type StoreConnection = { connected: boolean, status: string | null, last_sync_status: string | null, last_sync_error: string | null, products_synced: number }
+type ShopifyConnection = StoreConnection & { shop_domain: string | null }
+type WooConnection = StoreConnection & { store_url: string | null }
+
+const shopify = ref<ShopifyConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, shop_domain: null })
+const shopifyError = ref('')
+const shopifyConnecting = ref(false)
+const shopifySyncing = ref(false)
+const shopifyDomainInput = ref('')
+const shopifyTokenInput = ref('')
+
+const woo = ref<WooConnection>({ connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, store_url: null })
+const wooError = ref('')
+const wooConnecting = ref(false)
+const wooSyncing = ref(false)
+const wooUrlInput = ref('')
+const wooKeyInput = ref('')
+const wooSecretInput = ref('')
+
+async function loadStoreConnections() {
+  try {
+    shopify.value = await $api<ShopifyConnection>('/v1/waba/shopify/connection')
+  }
+  catch { /* non-critical -- form just shows as disconnected */ }
+  try {
+    woo.value = await $api<WooConnection>('/v1/waba/woocommerce/connection')
+  }
+  catch { /* non-critical */ }
+}
+
+async function connectShopify() {
+  shopifyError.value = ''
+  if (!shopifyDomainInput.value.trim() || !shopifyTokenInput.value.trim()) {
+    shopifyError.value = 'Enter both the shop domain and access token.'
+    return
+  }
+  shopifyConnecting.value = true
+  try {
+    shopify.value = await $api<ShopifyConnection>('/v1/waba/shopify/connect', {
+      method: 'POST',
+      body: { shop_domain: shopifyDomainInput.value.trim(), access_token: shopifyTokenInput.value.trim() },
+    })
+    shopifyDomainInput.value = ''
+    shopifyTokenInput.value = ''
+  }
+  catch (error: any) {
+    shopifyError.value = extractErrorMessage(error, 'Could not connect to Shopify.')
+  }
+  finally {
+    shopifyConnecting.value = false
+  }
+}
+
+async function syncShopifyNow() {
+  shopifyError.value = ''
+  shopifySyncing.value = true
+  try {
+    shopify.value = await $api<ShopifyConnection>('/v1/waba/shopify/sync-now', { method: 'POST' })
+  }
+  catch (error: any) {
+    shopifyError.value = extractErrorMessage(error, 'Could not sync Shopify.')
+  }
+  finally {
+    shopifySyncing.value = false
+  }
+}
+
+async function disconnectShopify() {
+  shopifyError.value = ''
+  try {
+    await $api('/v1/waba/shopify/connection', { method: 'DELETE' })
+    shopify.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, shop_domain: null }
+  }
+  catch (error: any) {
+    shopifyError.value = extractErrorMessage(error, 'Could not disconnect Shopify.')
+  }
+}
+
+async function connectWoo() {
+  wooError.value = ''
+  if (!wooUrlInput.value.trim() || !wooKeyInput.value.trim() || !wooSecretInput.value.trim()) {
+    wooError.value = 'Enter the store URL, consumer key, and consumer secret.'
+    return
+  }
+  wooConnecting.value = true
+  try {
+    woo.value = await $api<WooConnection>('/v1/waba/woocommerce/connect', {
+      method: 'POST',
+      body: { store_url: wooUrlInput.value.trim(), consumer_key: wooKeyInput.value.trim(), consumer_secret: wooSecretInput.value.trim() },
+    })
+    wooUrlInput.value = ''
+    wooKeyInput.value = ''
+    wooSecretInput.value = ''
+  }
+  catch (error: any) {
+    wooError.value = extractErrorMessage(error, 'Could not connect to WooCommerce.')
+  }
+  finally {
+    wooConnecting.value = false
+  }
+}
+
+async function syncWooNow() {
+  wooError.value = ''
+  wooSyncing.value = true
+  try {
+    woo.value = await $api<WooConnection>('/v1/waba/woocommerce/sync-now', { method: 'POST' })
+  }
+  catch (error: any) {
+    wooError.value = extractErrorMessage(error, 'Could not sync WooCommerce.')
+  }
+  finally {
+    wooSyncing.value = false
+  }
+}
+
+async function disconnectWoo() {
+  wooError.value = ''
+  try {
+    await $api('/v1/waba/woocommerce/connection', { method: 'DELETE' })
+    woo.value = { connected: false, status: null, last_sync_status: null, last_sync_error: null, products_synced: 0, store_url: null }
+  }
+  catch (error: any) {
+    wooError.value = extractErrorMessage(error, 'Could not disconnect WooCommerce.')
+  }
+}
+
 function loadFacebookSdk(appId: string): Promise<void> {
   if (sdkReadyPromise)
     return sdkReadyPromise
@@ -305,6 +434,7 @@ function onSignupMessage(event: MessageEvent) {
 onMounted(() => {
   window.addEventListener('message', onSignupMessage)
   loadStatus()
+  loadStoreConnections()
 })
 onBeforeUnmount(() => {
   window.removeEventListener('message', onSignupMessage)
@@ -694,6 +824,71 @@ watch(activeTab, tab => {
           <p class="text-caption text-medium-emphasis mt-2 mb-0">
             Products sync automatically once an hour; use "Sync now" for immediate feedback after saving a new catalog id.
           </p>
+        </VCardText>
+      </VCard>
+
+      <VCard v-if="status?.connected && status?.catalog_id" max-width="640" class="mt-6">
+        <VCardText>
+          <h2 class="text-h6 mb-1">
+            Keep your catalog in sync from your store
+          </h2>
+          <p class="text-body-2 text-medium-emphasis mb-3">
+            Connect Shopify or WooCommerce and Textzi will keep your Meta catalog above updated
+            from your real store data automatically, once an hour.
+          </p>
+
+          <VAlert v-if="shopifyError" type="error" variant="tonal" density="compact" class="mb-3">
+            {{ shopifyError }}
+          </VAlert>
+          <div v-if="shopify.connected" class="d-flex align-center flex-wrap ga-2 mb-2">
+            <VChip color="success" size="small">
+              Shopify: {{ shopify.shop_domain }}
+            </VChip>
+            <span class="text-caption text-medium-emphasis">
+              {{ shopify.last_sync_status === 'failed' ? `Last sync failed: ${shopify.last_sync_error}` : `${shopify.products_synced} products synced` }}
+            </span>
+            <VBtn size="small" variant="tonal" :loading="shopifySyncing" @click="syncShopifyNow">
+              Sync now
+            </VBtn>
+            <VBtn size="small" variant="text" color="error" @click="disconnectShopify">
+              Disconnect
+            </VBtn>
+          </div>
+          <div v-else class="d-flex align-center ga-2 flex-wrap mb-4">
+            <VTextField v-model="shopifyDomainInput" label="Shop domain" placeholder="example.myshopify.com" density="compact" hide-details style="max-inline-size: 260px;" />
+            <VTextField v-model="shopifyTokenInput" label="Admin API access token" placeholder="shpat_..." density="compact" hide-details type="password" style="max-inline-size: 260px;" />
+            <VBtn size="small" :loading="shopifyConnecting" @click="connectShopify">
+              Connect Shopify
+            </VBtn>
+          </div>
+
+          <VDivider class="mb-4" />
+
+          <VAlert v-if="wooError" type="error" variant="tonal" density="compact" class="mb-3">
+            {{ wooError }}
+          </VAlert>
+          <div v-if="woo.connected" class="d-flex align-center flex-wrap ga-2">
+            <VChip color="success" size="small">
+              WooCommerce: {{ woo.store_url }}
+            </VChip>
+            <span class="text-caption text-medium-emphasis">
+              {{ woo.last_sync_status === 'failed' ? `Last sync failed: ${woo.last_sync_error}` : `${woo.products_synced} products synced` }}
+            </span>
+            <VBtn size="small" variant="tonal" :loading="wooSyncing" @click="syncWooNow">
+              Sync now
+            </VBtn>
+            <VBtn size="small" variant="text" color="error" @click="disconnectWoo">
+              Disconnect
+            </VBtn>
+          </div>
+          <div v-else class="d-flex align-center ga-2 flex-wrap">
+            <VTextField v-model="wooUrlInput" label="Store URL" placeholder="https://example.com" density="compact" hide-details style="max-inline-size: 260px;" />
+            <VTextField v-model="wooKeyInput" label="Consumer key" placeholder="ck_..." density="compact" hide-details style="max-inline-size: 200px;" />
+            <VTextField v-model="wooSecretInput" label="Consumer secret" placeholder="cs_..." density="compact" hide-details type="password" style="max-inline-size: 200px;" />
+            <VBtn size="small" :loading="wooConnecting" @click="connectWoo">
+              Connect WooCommerce
+            </VBtn>
+          </div>
         </VCardText>
       </VCard>
 

@@ -549,6 +549,50 @@ class WabaCatalogItem(Base):
     last_synced_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class ShopifyConnection(Base):
+    """One row per entity that's connected a Shopify store to feed WhatsApp Commerce -- entity_id
+    as PK mirrors WabaConnection's own one-connection-per-entity convention. This is deliberately
+    NOT a second product source alongside WabaCatalogItem: WabaCatalogItem is a read-only mirror
+    of Meta's own catalog (its own docstring), so the only way a Shopify product ever becomes
+    sendable over WhatsApp is by first landing in the entity's connected Meta Commerce Catalog --
+    catalog_shopify.py periodically pulls this shop's products and pushes them into Meta via
+    waba_meta.push_catalog_batch, and the existing hourly catalog_sync.py pull then mirrors them
+    into WabaCatalogItem same as any other Meta-side catalog change. access_token is a private-app
+    "Admin API access token" (shpat_...), Fernet-encrypted like every other third-party credential
+    here -- Shopify's custom-app model, not OAuth, since this is one merchant's own store, not a
+    public app listing needing per-install authorization."""
+    __tablename__ = "shopify_connections"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    shop_domain: Mapped[str] = mapped_column(String(120))  # "example.myshopify.com", no scheme
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="connected")
+    last_sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)  # "success" | "failed"
+    last_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    products_synced: Mapped[int] = mapped_column(Integer, default=0)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class WooCommerceConnection(Base):
+    """WooCommerce twin of ShopifyConnection above -- same one-directional "pull from the store,
+    push into Meta's catalog" shape, same reasoning for why this isn't a second product-source
+    table. Auth is WooCommerce REST API consumer key/secret (a self-hosted WordPress site's own
+    REST API credentials, generated in WooCommerce > Settings > Advanced > REST API), both
+    Fernet-encrypted -- WooCommerce has no single bearer token the way Shopify's private-app model
+    does, it's HTTP Basic Auth with these two values as username/password."""
+    __tablename__ = "woocommerce_connections"
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    store_url: Mapped[str] = mapped_column(String(300))  # "https://example.com", full base URL
+    consumer_key_encrypted: Mapped[str] = mapped_column(Text)
+    consumer_secret_encrypted: Mapped[str] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), default="connected")
+    last_sync_status: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    last_sync_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    products_synced: Mapped[int] = mapped_column(Integer, default=0)
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class WabaOrder(Base):
     """A structured record of a WhatsApp native-cart order (Meta's `type: "order"` inbound
     webhook message -- customer taps through a catalog/product message, adds items, taps "Review

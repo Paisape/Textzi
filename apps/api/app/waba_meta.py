@@ -380,6 +380,33 @@ def list_message_templates(waba_id: str, access_token: str) -> list[dict]:
     return body.get("data", [])
 
 
+def push_catalog_batch(catalog_id: str, access_token: str, items: list[dict], method: str = "UPDATE") -> dict:
+    """Writes products INTO a Meta Commerce Catalog via the Catalog Batch API (POST
+    /{catalog_id}/items_batch) -- the write-side counterpart to get_catalog_products' read-only
+    fetch above. This is how a third-party product source (Shopify/WooCommerce, catalog_shopify.py/
+    catalog_woocommerce.py) actually gets its products into WhatsApp Commerce: WabaCatalogItem
+    itself is explicitly a read-only local mirror of Meta's catalog (its own docstring), so there
+    is no "sync a store into Textzi's own table" path that would ever reach a real WhatsApp product
+    message -- products have to land in Meta's own catalog first, and catalog_sync.py's existing
+    hourly pull then mirrors them locally same as any other Meta-side change.
+
+    `items` is a list of Meta-shaped {id, title, description, price, availability, condition,
+    brand, link, image_link, ...} dicts, capped at 5000 per Meta's own limit (unenforced here --
+    callers batch their own source data into chunks well under that before calling). method
+    defaults to "UPDATE" since Meta's items_batch treats UPDATE as an upsert when allow_upsert
+    isn't explicitly disabled (confirmed against Meta's own Catalog Batch API reference), so the
+    same call creates a new product or updates an existing one keyed by `id` -- exactly the
+    idempotent-resync behavior a periodic catalog sync needs, no separate CREATE-vs-UPDATE branch
+    required. Returns Meta's raw response (a handle id for the async batch job, not a synchronous
+    per-item result -- Meta processes items_batch requests asynchronously)."""
+    body = _post(
+        f"{catalog_id}/items_batch",
+        access_token,
+        {"item_type": "PRODUCT_ITEM", "requests": [{"method": method, "data": item} for item in items]},
+    )
+    return body
+
+
 def get_catalog_products(catalog_id: str, access_token: str) -> list[dict]:
     """Read-only catalog sync -- Meta's Product Catalog is a Business-Manager-owned asset shared
     across Facebook/Instagram/WhatsApp Shops, not something the WhatsApp Cloud API itself owns, but
