@@ -1907,20 +1907,34 @@ def _delete_where_in(db: Session, table: str, column: str, values: list[str]) ->
     db.execute(stmt, {"ids": values})
 
 
+def _delete_where_subselect(db: Session, table: str, column: str, subselect: str, ids: list[str]) -> None:
+    """For a table with no direct FK to the scoping column -- deletes WHERE {column} IN (subselect
+    parameterized by ids), e.g. conversation_messages has no entity_id, only conversation_id, so
+    it's scoped via a subselect against conversations. The subselect string must itself reference
+    the bound parameter as `:ids`."""
+    stmt = text(f"DELETE FROM {table} WHERE {column} IN ({subselect})").bindparams(bindparam("ids", expanding=True))
+    db.execute(stmt, {"ids": ids})
+
+
 @router.delete("/customers/{organization_id}", response_model=CustomerDeleteResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def delete_customer(organization_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """Permanently deletes a customer organization and every row under it -- every Entity,
-    Wallet, Message, Invoice, DLT record, Template/Header/PE ID, and every User tied to this
-    org. Restricted to Super Admin/Operator Admin (require_admin, not just require_staff) given
-    the blast radius -- this is irreversible, there is no undo. Staff/admin accounts never have
-    an organization_id (see list_customers' own docstring on this invariant), so this can never
-    touch a platform account regardless of which organization_id is passed in.
+    """Permanently deletes a customer organization and every row under it -- every Entity, CRM
+    object (Lead/Deal/Customer/Contact/Company/Quote/...), WABA object (Conversation/Contact/
+    Campaign/...), Wallet, Message, Invoice, DLT record, Template/Header/PE ID, and every User tied
+    to this org. Restricted to Super Admin/Operator Admin (require_admin, not just require_staff)
+    given the blast radius -- this is irreversible, there is no undo. Staff/admin accounts never
+    have an organization_id (see list_customers' own docstring on this invariant), so this can
+    never touch a platform account regardless of which organization_id is passed in.
 
-    Raw SQL DELETEs in explicit dependency order rather than loading+deleting ORM objects one at
-    a time -- there are ~20 tables involved (confirmed against the live FK graph, not guessed),
-    and getting the order wrong would fail loudly with a FK violation rather than silently
+    Raw SQL DELETEs in explicit dependency order rather than loading+deleting ORM objects one at a
+    time -- getting the order wrong fails loudly with a FK violation rather than silently
     corrupting anything, but doing it via SQLAlchemy relationships would need every one of those
-    relationships declared first, which they aren't."""
+    relationships declared first, which they aren't. This list was originally written before CRM/
+    WABA existed and was never extended as those modules grew (~90 tables added since); confirmed
+    by a full audit against every ForeignKey in models.py, not just the tables that happened to
+    come up in testing -- an org with real CRM/WABA activity used to 500 with a ForeignKeyViolation
+    partway through this function (transaction rolled back cleanly, no partial deletes, but the
+    delete never completed)."""
     org = db.get(Organization, organization_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -1929,6 +1943,116 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
     user_ids = [row[0] for row in db.execute(text("SELECT id FROM users WHERE organization_id = :oid"), {"oid": organization_id}).all()]
 
     if entity_ids:
+        # --- Step 0: null out circular/self-referential FKs before anything is deleted -- none of
+        # these tables can be safely ordered relative to each other otherwise (each references the
+        # other, or itself). Every column nulled here belongs to a row that's about to be deleted
+        # anyway, so this is never visible to anyone, just a mechanical unblock.
+        for stmt_sql in [
+            "UPDATE contacts SET customer_id = NULL, crm_contact_id = NULL WHERE entity_id IN :ids",
+            "UPDATE deals SET converted_from_lead_id = NULL WHERE entity_id IN :ids",
+            "UPDATE leads SET converted_deal_id = NULL WHERE entity_id IN :ids",
+            "UPDATE crm_contacts SET reports_to_id = NULL WHERE entity_id IN :ids",
+            "UPDATE companies SET parent_company_id = NULL WHERE entity_id IN :ids",
+            "UPDATE territories SET parent_territory_id = NULL WHERE entity_id IN :ids",
+            # quotes.converted_invoice_id points at invoices, which this function deletes further
+            # down (existing code, unchanged) -- null it first so that delete doesn't orphan a
+            # still-live FK on a quotes row that hasn't been deleted yet.
+            "UPDATE quotes SET converted_invoice_id = NULL WHERE entity_id IN :ids",
+        ]:
+            db.execute(text(stmt_sql).bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids})
+
+        # --- Step 1: WABA commerce (Shopify/WooCommerce order import, native WhatsApp orders) ---
+        _delete_where_subselect(db, "waba_order_items", "order_id", "SELECT id FROM waba_orders WHERE entity_id IN :ids", entity_ids)
+        _delete_where_in(db, "imported_store_orders", "entity_id", entity_ids)
+
+        # --- Step 2: shared-inbox rows that reference conversations/contacts/campaigns ---
+        _delete_where_in(db, "csat_responses", "entity_id", entity_ids)
+        _delete_where_in(db, "webchat_visits", "entity_id", entity_ids)
+        _delete_where_subselect(db, "campaign_recipients", "campaign_id", "SELECT id FROM campaigns WHERE entity_id IN :ids", entity_ids)
+        _delete_where_subselect(db, "conversation_labels", "conversation_id", "SELECT id FROM conversations WHERE entity_id IN :ids", entity_ids)
+        _delete_where_subselect(db, "contact_labels", "contact_id", "SELECT id FROM contacts WHERE entity_id IN :ids", entity_ids)
+        _delete_where_subselect(db, "conversation_messages", "conversation_id", "SELECT id FROM conversations WHERE entity_id IN :ids", entity_ids)
+        _delete_where_in(db, "waba_orders", "entity_id", entity_ids)
+
+        # --- Step 3: CRM rows that reference deals/crm_contacts/products ---
+        _delete_where_in(db, "attachments", "entity_id", entity_ids)
+        _delete_where_in(db, "tasks", "entity_id", entity_ids)
+        _delete_where_subselect(db, "sequence_enrollments", "sequence_id", "SELECT id FROM sequences WHERE entity_id IN :ids", entity_ids)
+        _delete_where_subselect(db, "sequence_steps", "sequence_id", "SELECT id FROM sequences WHERE entity_id IN :ids", entity_ids)
+        _delete_where_in(db, "quotes", "entity_id", entity_ids)
+        _delete_where_subselect(
+            db, "bundle_items", "bundle_product_id",
+            "SELECT id FROM products WHERE entity_id IN :ids", entity_ids,
+        )
+        db.execute(
+            text("DELETE FROM bundle_items WHERE component_product_id IN (SELECT id FROM products WHERE entity_id IN :ids)").bindparams(bindparam("ids", expanding=True)),
+            {"ids": entity_ids},
+        )
+        _delete_where_subselect(db, "price_list_entries", "price_list_id", "SELECT id FROM price_lists WHERE entity_id IN :ids", entity_ids)
+        _delete_where_in(db, "discount_rules", "entity_id", entity_ids)
+        _delete_where_in(db, "deal_stage_events", "entity_id", entity_ids)
+        _delete_where_in(db, "customers", "entity_id", entity_ids)
+
+        # --- Step 4: conversations (safe now -- every child row above is gone) ---
+        _delete_where_in(db, "conversations", "entity_id", entity_ids)
+
+        # --- Step 5: deals / leads (their mutual FK was nulled in Step 0) ---
+        _delete_where_in(db, "deals", "entity_id", entity_ids)
+        _delete_where_in(db, "leads", "entity_id", entity_ids)
+
+        # --- Step 6: pipelines / crm_contacts / contacts / companies / products / price lists ---
+        _delete_where_in(db, "pipelines", "entity_id", entity_ids)
+        _delete_where_in(db, "crm_contacts", "entity_id", entity_ids)
+        _delete_where_in(db, "contacts", "entity_id", entity_ids)
+        _delete_where_in(db, "companies", "entity_id", entity_ids)
+        _delete_where_in(db, "products", "entity_id", entity_ids)
+        _delete_where_in(db, "price_lists", "entity_id", entity_ids)
+
+        # --- Step 7: remaining CRM leaf tables ---
+        _delete_where_in(db, "sequences", "entity_id", entity_ids)
+        _delete_where_in(db, "lead_routing_rules", "entity_id", entity_ids)
+        _delete_where_in(db, "scoring_rules", "entity_id", entity_ids)
+        _delete_where_in(db, "territories", "entity_id", entity_ids)
+        _delete_where_in(db, "sales_targets", "entity_id", entity_ids)
+        _delete_where_in(db, "web_forms", "entity_id", entity_ids)
+        _delete_where_in(db, "email_accounts", "entity_id", entity_ids)
+        _delete_where_in(db, "crm_settings", "entity_id", entity_ids)
+        _delete_where_in(db, "saved_views", "entity_id", entity_ids)
+        _delete_where_in(db, "saved_reports", "entity_id", entity_ids)
+        _delete_where_in(db, "dashboards", "entity_id", entity_ids)
+        _delete_where_in(db, "booking_links", "entity_id", entity_ids)
+        _delete_where_in(db, "custom_field_definitions", "entity_id", entity_ids)
+        _delete_where_in(db, "document_templates", "entity_id", entity_ids)
+        _delete_where_in(db, "notifications", "entity_id", entity_ids)
+        _delete_where_in(db, "campaigns", "entity_id", entity_ids)  # before segments: campaigns.segment_id is NOT nullable
+        _delete_where_in(db, "segments", "entity_id", entity_ids)
+
+        # --- Step 8: remaining shared-inbox leaf tables ---
+        _delete_where_in(db, "webchat_widget_settings", "entity_id", entity_ids)  # before ticket_groups (default_group_id)
+        _delete_where_in(db, "ticket_groups", "entity_id", entity_ids)
+        _delete_where_in(db, "labels", "entity_id", entity_ids)
+        _delete_where_in(db, "canned_responses", "entity_id", entity_ids)
+        _delete_where_in(db, "automation_rules", "entity_id", entity_ids)
+        _delete_where_in(db, "business_hours", "entity_id", entity_ids)
+        _delete_where_in(db, "sla_policies", "entity_id", entity_ids)
+        _delete_where_in(db, "macros", "entity_id", entity_ids)
+        _delete_where_in(db, "csat_settings", "entity_id", entity_ids)
+
+        # --- Step 9: WABA connections / commerce catalog / Textzi Wallet / Smart Collect ---
+        _delete_where_in(db, "waba_catalog_items", "entity_id", entity_ids)
+        _delete_where_in(db, "waba_connections", "entity_id", entity_ids)
+        _delete_where_in(db, "shopify_connections", "entity_id", entity_ids)
+        _delete_where_in(db, "woocommerce_connections", "entity_id", entity_ids)
+        _delete_where_in(db, "tally_connections", "entity_id", entity_ids)
+        _delete_where_in(db, "waba_webhook_subscriptions", "entity_id", entity_ids)
+        _delete_where_in(db, "waba_webhook_logs", "entity_id", entity_ids)
+        _delete_where_in(db, "waba_api_call_logs", "entity_id", entity_ids)
+        _delete_where_in(db, "textzi_wallet_transactions", "entity_id", entity_ids)
+        _delete_where_in(db, "textzi_wallets", "entity_id", entity_ids)
+        _delete_where_in(db, "razorpay_virtual_accounts", "entity_id", entity_ids)
+        _delete_where_in(db, "bank_transfer_topup_requests", "entity_id", entity_ids)
+
+        # --- Existing sequence (SMS/DLT/billing) -- unchanged from before this fix ---
         _delete_where_in(db, "delivery_attempts", "entity_id", entity_ids)
         invoice_ids = [row[0] for row in db.execute(
             text("SELECT id FROM invoices WHERE entity_id IN :ids").bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids},
@@ -1963,13 +2087,22 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
     _delete_where_in(db, "entities", "organization_id", [organization_id])
 
     if user_ids:
+        # users.manager_id is self-referential -- null it before the final DELETE FROM users below,
+        # same reasoning as the Step 0 nulling above (every row here is about to be deleted anyway).
+        db.execute(
+            text("UPDATE users SET manager_id = NULL WHERE organization_id = :oid"), {"oid": organization_id},
+        )
         _delete_where_in(db, "email_verifications", "user_id", user_ids)
         _delete_where_in(db, "mobile_verifications", "user_id", user_ids)
         _delete_where_in(db, "password_resets", "user_id", user_ids)
         _delete_where_in(db, "two_factor_auth", "user_id", user_ids)
+        _delete_where_in(db, "two_factor_recovery_codes", "user_id", user_ids)
         _delete_where_in(db, "user_sessions", "user_id", user_ids)
         _delete_where_in(db, "api_key_action_otps", "user_id", user_ids)
         _delete_where_in(db, "user_rate_cards", "user_id", user_ids)
+        _delete_where_in(db, "profile_change_requests", "user_id", user_ids)
+        _delete_where_subselect(db, "page_views", "session_id", "SELECT id FROM visitor_sessions WHERE user_id IN :ids", user_ids)
+        _delete_where_in(db, "visitor_sessions", "user_id", user_ids)
 
     _delete_where_in(db, "users", "organization_id", [organization_id])
 

@@ -1106,6 +1106,11 @@ def convert_deal_to_customer(deal_id: str, user: User = Depends(require_user), d
         converted_from_conversation_id=deal.converted_from_conversation_id, owner_user_id=deal.owner_user_id, notes=deal.notes,
     )
     db.add(customer)
+    # Converting to a customer is a closing event, same as marking a deal won directly (see
+    # update_deal_status) -- previously left status="open"/probability untouched, which silently
+    # undercounted "won" deals and overcounted open pipeline value for every converted deal.
+    deal.status = "won"
+    deal.probability = 100
     db.commit()
     db.refresh(customer)
     # See create_customer's identical comment -- keep the originating WhatsApp contact (if any)
