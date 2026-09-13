@@ -46,6 +46,10 @@ def _fetch_products(store_url: str, consumer_key: str, consumer_secret: str) -> 
             params={"per_page": MAX_PRODUCTS_PER_SYNC, "status": "publish"},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.Timeout as exc:
+        raise WooCommerceApiError(f"Could not reach this WooCommerce store: timed out after {REQUEST_TIMEOUT_SECONDS}s.") from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise WooCommerceApiError(f"Could not reach this WooCommerce store at '{store_url}' -- check the URL is correct.") from exc
     except requests.exceptions.RequestException as exc:
         raise WooCommerceApiError(f"Could not reach this WooCommerce store: {exc}") from exc
     if response.status_code == 401:

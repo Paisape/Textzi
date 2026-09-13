@@ -125,7 +125,7 @@ def _access_token(db: Session, settings_row: PlatformZohoSettings) -> str:
     try:
         with urlopen(request, timeout=20) as response:
             result = json.loads(response.read().decode())
-        _log(db, None, "POST", "/oauth/v2/token", "success", response.status, None)
+            response_status = response.status
     except HTTPError as exc:
         try:
             error_body = exc.read().decode(errors="replace")[:400]
@@ -138,8 +138,15 @@ def _access_token(db: Session, settings_row: PlatformZohoSettings) -> str:
         _log(db, None, "POST", "/oauth/v2/token", "failed", None, str(exc))
         raise ZohoCallError(f"Could not refresh the Zoho access token: {exc}") from exc
 
+    # Zoho's own token endpoint returns a plain HTTP 200 even for a rejected refresh token (e.g.
+    # {"error": "invalid_client"}) -- an HTTP-level success here is not the same as an actual
+    # token refresh succeeding, so this must be logged as "failed" too, or the sync log
+    # (/zoho-sync-log) shows a misleadingly green "success" row for a connection that's actually
+    # broken, with no error text for an admin to act on.
     if "access_token" not in result:
+        _log(db, None, "POST", "/oauth/v2/token", "failed", response_status, f"Zoho did not return an access token: {result}"[:500])
         raise ZohoCallError(f"Zoho did not return an access token on refresh: {result}")
+    _log(db, None, "POST", "/oauth/v2/token", "success", response_status, None)
     settings_row.access_token_encrypted = encrypt_secret(result["access_token"])
     settings_row.access_token_expires_at = now + timedelta(seconds=int(result.get("expires_in", 3600)))
     db.commit()

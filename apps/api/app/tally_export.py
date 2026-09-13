@@ -184,6 +184,10 @@ def push_invoice_to_tally(invoice_id: str, user: User = Depends(require_user), d
     xml_body = build_voucher_xml(invoice, organization, company.company_name, connection.company_name)
     try:
         response = requests.post(connection.gateway_url, data=xml_body.encode("utf-8"), headers={"Content-Type": "text/xml"}, timeout=REQUEST_TIMEOUT_SECONDS)
+    except requests.exceptions.Timeout as exc:
+        raise HTTPException(status_code=502, detail=f"Could not reach your Tally gateway: timed out after {REQUEST_TIMEOUT_SECONDS}s.") from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise HTTPException(status_code=502, detail="Could not reach your Tally gateway -- check the URL is correct and reachable.") from exc
     except requests.exceptions.RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Could not reach your Tally gateway: {exc}") from exc
     if not response.ok:

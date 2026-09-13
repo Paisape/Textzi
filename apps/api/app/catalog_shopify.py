@@ -52,7 +52,15 @@ def _fetch_products(shop_domain: str, access_token: str) -> list[dict]:
             url, headers={"X-Shopify-Access-Token": access_token}, params={"limit": MAX_PRODUCTS_PER_SYNC, "status": "active"},
             timeout=REQUEST_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.Timeout as exc:
+        raise ShopifyApiError(f"Could not reach this Shopify store: timed out after {REQUEST_TIMEOUT_SECONDS}s.") from exc
+    except requests.exceptions.ConnectionError as exc:
+        raise ShopifyApiError(f"Could not reach this Shopify store at '{shop_domain}' -- check the domain is correct.") from exc
     except requests.exceptions.RequestException as exc:
+        # Anything else (a malformed URL, an unsupported redirect, etc.) -- str(exc) on these is
+        # usually readable on its own, unlike ConnectionError/Timeout's own str() which embeds a
+        # raw urllib3 connection-pool repr (object memory address and all) meant for a stack
+        # trace, not an end user.
         raise ShopifyApiError(f"Could not reach this Shopify store: {exc}") from exc
     if response.status_code == 401:
         raise ShopifyApiError("Shopify rejected this access token -- it may have been revoked. Reconnect with a fresh one.")
