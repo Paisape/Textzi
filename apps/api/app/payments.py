@@ -18,7 +18,7 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import PaymentOrder, User
 from .schemas import RazorpayOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse
-from .services import GST_RATE, DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .services import DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet/recharge/razorpay", tags=["wallet"])
 
@@ -42,7 +42,7 @@ def create_order(payload: RazorpayOrderRequest, request: Request, user: User = D
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    total_amount = payload.amount * (1 + GST_RATE)
+    total_amount = payload.amount * (1 + get_gst_rate(db))
     amount_paise = int(round(total_amount * 100))
     try:
         # Razorpay caps "receipt" at 40 characters -- "wallet-" (7) + a UUID4 entity id (36) is 43,
@@ -100,7 +100,7 @@ def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_
         # at "created" (nothing committed yet) so the customer can safely retry once Razorpay is
         # reachable again, rather than getting an opaque 500.
         raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
-    expected_paise = expected_order_paise(order)
+    expected_paise = expected_order_paise(db, order)
     if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
         flag_suspicious_payment(
             db, order, entity,
@@ -125,7 +125,7 @@ def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_
     wallet = credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay", reference=payload.razorpay_payment_id)
     order.status = "paid"
     order.credits_applied = credits
-    gst_amount = round(float(order.amount) * GST_RATE, 2)
+    gst_amount = round(float(order.amount) * get_gst_rate(db), 2)
     price_per_sms = float(order.price_per_sms) if order.price_per_sms else (float(order.amount) / credits if credits else None)
     invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id, credits_purchased=round(credits, 2), price_per_sms=price_per_sms)
     issue_invoice(db, invoice)

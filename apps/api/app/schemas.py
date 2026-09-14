@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from .models import MessageCategory, Status, UserRole, UserStatus
@@ -7,6 +8,24 @@ from .security import assert_safe_webhook_url
 # (security.generate_recovery_code's "XXXXX-XXXXX" format, 11 chars with the dash, 10 without --
 # callers normalize before hashing, so this pattern just needs to admit both shapes).
 TWO_FACTOR_CODE_PATTERN = r"^[A-Za-z0-9-]{6,11}$"
+
+# A real GSTIN: 2-digit state code, 10-char PAN, 1-digit entity/registration count, a literal
+# "Z", and a final checksum character -- same pattern as services.validate_gstin_format (kept
+# duplicated here, not imported, since schemas.py has no existing dependency on services.py and
+# services.py already imports plenty from models.py/schemas.py-adjacent modules; adding that edge
+# for one regex isn't worth the cycle risk). Checked at the format level only, no checksum
+# recomputation -- enough to reject an obviously-malformed value before it silently breaks
+# services.state_code_from_gstin() downstream, which just reads the first two characters.
+GSTIN_PATTERN = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z]\dZ[A-Z\d]$")
+
+
+def _validate_gstin(v: str | None) -> str | None:
+    if not v:
+        return v
+    v = v.strip().upper()
+    if not GSTIN_PATTERN.match(v):
+        raise ValueError("GSTIN must be a valid 15-character GST identification number (e.g. 27AAAPL1234C1Z5).")
+    return v
 
 
 class SmsSendRequest(BaseModel):
@@ -299,6 +318,8 @@ class OrganizationOnboardRequest(BaseModel):
     contact_email: EmailStr
     contact_mobile: str = Field(pattern=r"^[1-9][0-9]{9,14}$")
 
+    _validate_gstin_format = field_validator("gstin")(_validate_gstin)
+
 
 class CompanyProfileOut(BaseModel):
     organization_id: str
@@ -588,6 +609,8 @@ class AdminCreateCustomerRequest(BaseModel):
     contact_full_name: str = Field(min_length=2, max_length=160)
     contact_email: EmailStr
     contact_mobile: str | None = Field(default=None, max_length=20)
+
+    _validate_gstin_format = field_validator("gstin")(_validate_gstin)
 
 
 class AdminCreateCustomerResponse(BaseModel):
@@ -993,6 +1016,8 @@ class ProfileChangeRequestCreate(BaseModel):
         # EmailStr rejects "" outright -- an empty string here just means "not requesting this
         # field changed", same as every other requested_* field being omitted/null.
         return v or None
+
+    _validate_gstin_format = field_validator("requested_gstin")(_validate_gstin)
 
 
 class ProfileChangeRequestOut(BaseModel):
@@ -2104,6 +2129,7 @@ class PlatformGeneralSettingsOut(BaseModel):
     bank_account_number: str | None = None
     bank_ifsc: str | None = None
     bank_name: str | None = None
+    gst_rate: float
 
 
 class PlatformGeneralSettingsUpdate(BaseModel):
@@ -2119,6 +2145,10 @@ class PlatformGeneralSettingsUpdate(BaseModel):
     bank_account_number: str | None = None
     bank_ifsc: str | None = None
     bank_name: str | None = None
+    # Fraction (e.g. 0.18) -- null clears the override and falls back to services.GST_RATE (0.18).
+    gst_rate: float | None = Field(default=None, ge=0, le=1)
+
+    _validate_gstin_format = field_validator("company_gstin")(_validate_gstin)
 
 
 class PublicCompanyInfoOut(BaseModel):
@@ -2833,6 +2863,32 @@ class PublicQuoteSignRequest(BaseModel):
     signed_by_name: str = Field(min_length=1, max_length=160)
     accept: bool  # true = accepted, false = rejected
     turnstile_token: str
+
+
+class SalesInvoiceCreateRequest(BaseModel):
+    deal_id: str
+    quote_id: str | None = None
+    # Omitted (both None) only when quote_id is set -- the quote's own line_items are copied as-is.
+    line_items: list[QuoteLineItem] | None = None
+
+
+class SalesInvoiceOut(BaseModel):
+    id: str
+    deal_id: str
+    quote_id: str | None
+    invoice_number: str | None
+    line_items: list[QuoteLineItem]
+    status: str
+    subtotal: float
+    discount_total: float
+    cgst: float
+    sgst: float
+    igst: float
+    total: float
+    has_pdf: bool
+    created_at: str
+    sent_at: str | None
+    paid_at: str | None
 
 
 class QuoteCreateRequest(BaseModel):

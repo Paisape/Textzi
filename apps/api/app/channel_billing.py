@@ -19,7 +19,7 @@ from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import BillingPlan, ChannelSubscription, Entity, PaymentOrder, User
 from .schemas import BillingPlanOut, ChannelSubscriptionStatusOut, PlanOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest
-from .services import GST_RATE, DomainError, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, resolve_user_entity
+from .services import DomainError, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, resolve_user_entity
 
 router = APIRouter(prefix="/v1/billing", tags=["billing"])
 
@@ -86,7 +86,7 @@ def create_plan_order(payload: PlanOrderRequest, user: User = Depends(require_us
     # payments.create_order, channels.create_dlt_request_order) -- GST is added on top at
     # checkout, and expected_order_paise() independently re-derives this same GST-inclusive
     # amount at verify time from order.amount, so the two must stay in lockstep.
-    amount_paise = int(round(float(plan.price) * (1 + GST_RATE) * 100))
+    amount_paise = int(round(float(plan.price) * (1 + get_gst_rate(db)) * 100))
     try:
         # Razorpay caps "receipt" at 40 characters -- same constraint hit in payments.py and
         # channels.py, same fix (short prefix, full ids in "notes" instead).
@@ -144,7 +144,7 @@ def verify_plan_payment(payload: RazorpayVerifyRequest, user: User = Depends(req
         razorpay_payment = client.payment.fetch(payload.razorpay_payment_id)
     except Exception as exc:
         raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
-    expected_paise = expected_order_paise(order)
+    expected_paise = expected_order_paise(db, order)
     if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
         flag_suspicious_payment(
             db, order, entity,
@@ -161,7 +161,7 @@ def verify_plan_payment(payload: RazorpayVerifyRequest, user: User = Depends(req
     subscription = activate_subscription(db, entity, plan)
 
     order.status = "paid"
-    gst_amount = round(float(plan.price) * GST_RATE, 2)
+    gst_amount = round(float(plan.price) * get_gst_rate(db), 2)
     invoice = create_draft_invoice(db, entity, type="channel_subscription", base_amount=float(plan.price), gst_amount=gst_amount, reference=order.id)
     issue_invoice(db, invoice)
     db.commit()

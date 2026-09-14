@@ -33,12 +33,25 @@ type Quote = {
   signed_by_name: string | null
   signed_at: string | null
 }
+type SalesInvoice = {
+  id: string
+  deal_id: string
+  quote_id: string | null
+  invoice_number: string | null
+  status: 'issued' | 'paid' | 'cancelled'
+  total: number
+  has_pdf: boolean
+  created_at: string
+  sent_at: string | null
+  paid_at: string | null
+}
 
 const route = useRoute()
 const authStore = useAuthStore()
 type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, category: string | null, is_bundle: boolean, active: boolean }
 
 const quotes = ref<Quote[]>([])
+const salesInvoices = ref<SalesInvoice[]>([])
 const deals = ref<Deal[]>([])
 const products = ref<Product[]>([])
 const loading = ref(false)
@@ -79,12 +92,14 @@ async function loadAll() {
   loadError.value = ''
   crmInactive.value = false
   try {
-    const [quoteResult, dealResult, productResult] = await Promise.all([
+    const [quoteResult, invoiceResult, dealResult, productResult] = await Promise.all([
       $api<Quote[]>('/v1/crm/quotes'),
+      $api<SalesInvoice[]>('/v1/crm/quotes/invoices'),
       $api<Deal[]>('/v1/crm/deals'),
       $api<Product[]>('/v1/crm/quotes/products'),
     ])
     quotes.value = quoteResult
+    salesInvoices.value = invoiceResult
     deals.value = dealResult
     products.value = productResult.filter(p => p.active)
   }
@@ -269,15 +284,70 @@ async function setStatus(quote: Quote, status: 'accepted' | 'rejected') {
   }
 }
 
+function invoiceForQuote(quote: Quote) {
+  return salesInvoices.value.find(i => i.id === quote.converted_invoice_id)
+}
+
 async function convertToInvoice(quote: Quote) {
   busy.value = quote.id
   actionError.value = ''
   try {
-    const updated = await $api<Quote>(`/v1/crm/quotes/${quote.id}/convert-to-invoice`, { method: 'POST' })
-    Object.assign(quote, updated)
+    const invoice = await $api<SalesInvoice>(`/v1/crm/quotes/${quote.id}/convert-to-invoice`, { method: 'POST' })
+    salesInvoices.value.unshift(invoice)
+    quote.converted_invoice_id = invoice.id
   }
   catch (error: any) {
-    actionError.value = extractErrorMessage(error, 'Could not convert this quote to an invoice.')
+    actionError.value = extractErrorMessage(error, 'Could not issue a tax invoice for this quote.')
+  }
+  finally {
+    busy.value = null
+  }
+}
+
+async function downloadInvoicePdf(invoice: SalesInvoice) {
+  busy.value = invoice.id
+  actionError.value = ''
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/quotes/invoices/${invoice.id}/pdf`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${invoice.invoice_number || invoice.id}.pdf`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    actionError.value = extractErrorMessage(error, 'Could not download this invoice.')
+  }
+  finally {
+    busy.value = null
+  }
+}
+
+async function sendInvoiceWhatsapp(invoice: SalesInvoice) {
+  busy.value = invoice.id
+  actionError.value = ''
+  try {
+    const updated = await $api<SalesInvoice>(`/v1/crm/quotes/invoices/${invoice.id}/send-whatsapp`, { method: 'POST' })
+    Object.assign(invoice, updated)
+  }
+  catch (error: any) {
+    actionError.value = extractErrorMessage(error, 'Could not send this invoice via WhatsApp.')
+  }
+  finally {
+    busy.value = null
+  }
+}
+
+async function markInvoicePaid(invoice: SalesInvoice) {
+  busy.value = invoice.id
+  actionError.value = ''
+  try {
+    const updated = await $api<SalesInvoice>(`/v1/crm/quotes/invoices/${invoice.id}/mark-paid`, { method: 'POST' })
+    Object.assign(invoice, updated)
+  }
+  catch (error: any) {
+    actionError.value = extractErrorMessage(error, 'Could not mark this invoice paid.')
   }
   finally {
     busy.value = null
@@ -376,11 +446,16 @@ onMounted(async () => {
               <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" icon="tabler-check" size="small" variant="text" color="success" :loading="busy === quote.id" title="Mark accepted" @click="setStatus(quote, 'accepted')" />
               <VBtn v-if="quote.status !== 'accepted' && quote.status !== 'rejected'" icon="tabler-x" size="small" variant="text" color="error" :loading="busy === quote.id" title="Mark rejected" @click="setStatus(quote, 'rejected')" />
               <VBtn v-if="quote.status === 'accepted' && !quote.converted_invoice_id" size="small" variant="tonal" color="primary" :loading="busy === quote.id" @click="convertToInvoice(quote)">
-                Convert to invoice
+                Issue tax invoice
               </VBtn>
-              <VChip v-if="quote.converted_invoice_id" size="small" variant="tonal">
-                Invoiced
-              </VChip>
+              <template v-if="quote.converted_invoice_id && invoiceForQuote(quote)">
+                <VChip size="small" :color="invoiceForQuote(quote)!.status === 'paid' ? 'success' : 'default'" variant="tonal">
+                  {{ invoiceForQuote(quote)!.invoice_number }} · {{ invoiceForQuote(quote)!.status }}
+                </VChip>
+                <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === invoiceForQuote(quote)!.id" title="Download tax invoice" @click="downloadInvoicePdf(invoiceForQuote(quote)!)" />
+                <VBtn icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Send tax invoice via WhatsApp" @click="sendInvoiceWhatsapp(invoiceForQuote(quote)!)" />
+                <VBtn v-if="invoiceForQuote(quote)!.status !== 'paid'" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Mark paid" @click="markInvoicePaid(invoiceForQuote(quote)!)" />
+              </template>
               <VBtn v-if="quote.status === 'draft'" icon="tabler-trash" size="small" variant="text" :loading="busy === quote.id" title="Delete" @click="removeQuote(quote)" />
             </div>
           </td>

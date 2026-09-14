@@ -767,6 +767,13 @@ class Invoice(Base):
     base_amount: Mapped[float] = mapped_column(Numeric(14, 2))
     gst_amount: Mapped[float] = mapped_column(Numeric(14, 2))
     total_amount: Mapped[float] = mapped_column(Numeric(14, 2))
+    # Split of gst_amount into its three components, so the PDF (and Zoho line items) can render
+    # the correct CGST+SGST-vs-IGST breakup instead of always assuming intra-state. All three
+    # null means "not known at creation time" -- the renderer falls back to assuming intra-state
+    # (today's only prior behavior) rather than crashing on a pre-existing invoice.
+    cgst_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    sgst_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    igst_amount: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     # Set only for type="wallet_recharge" -- how many SMS credits this purchase bought and at
     # what per-SMS rate, so the Purchase Ledger can show "money in" and "credits out" on one row
     # without joining back through WalletTransaction (whose amount is credits, not rupees, and
@@ -1380,6 +1387,10 @@ class PlatformGeneralSettings(Base):
     bank_account_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
     bank_ifsc: Mapped[str | None] = mapped_column(String(20), nullable=True)
     bank_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    # Admin-editable platform-wide GST rate (fraction, e.g. 0.18) -- null falls back to
+    # services.GST_RATE (see get_gst_rate()). A CRM quote line item can still override this
+    # per-line via Product.tax_rate/QuoteLineItem.tax_rate independently of this default.
+    gst_rate: Mapped[float | None] = mapped_column(Numeric(5, 4), nullable=True)
 
 
 class PlatformMessage(Base):
@@ -2106,6 +2117,32 @@ class Quote(Base):
     signed_by_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
+class SalesInvoice(Base):
+    """A real GST Tax Invoice the CRM tenant issues to THEIR OWN client (the deal's Company/
+    CrmContact) -- genuinely different from Invoice (models.py, Textzi billing the tenant itself).
+    Distinct from Quote too: a Quote is a proforma sent before the sale; a SalesInvoice is created
+    once (usually from an accepted Quote, optionally standalone against a Deal directly) and is
+    the actual tax document handed to the paying client, with its own sequence-numbered
+    invoice_number ("SINV-{year}-{seq}", never reusing invoice_number_seq/quote_number_seq --
+    those number two unrelated document series and mixing them would break the "sequentially
+    numbered without gaps" GST requirement for each series independently).
+    line_items snapshotted the same way Quote.line_items are -- editing a Product/DiscountRule
+    later must never change an already-issued invoice's numbers."""
+    __tablename__ = "sales_invoices"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    deal_id: Mapped[str] = mapped_column(ForeignKey("deals.id"), index=True)
+    quote_id: Mapped[str | None] = mapped_column(ForeignKey("quotes.id"), nullable=True)
+    invoice_number: Mapped[str | None] = mapped_column(String(24), nullable=True, unique=True)
+    line_items: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="issued")  # "issued" | "paid" | "cancelled"
+    pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class Product(Base):

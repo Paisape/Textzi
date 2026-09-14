@@ -34,7 +34,7 @@ from .schemas import (
     TextziBankDetailsOut, TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
 )
 from .services import (
-    GST_RATE, DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_platform_company_info, get_platform_razorpay_keys,
+    DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_gst_rate, get_platform_company_info, get_platform_razorpay_keys,
     get_platform_razorpay_webhook_secret, log_activity, payment_method_config, quote_credits, resolve_rate_card, resolve_user_entity, save_upload,
 )
 
@@ -463,7 +463,7 @@ def spend_wallet_on_sms_credit(payload: TextziWalletSpendSmsRequest, user: User 
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    gst_amount = round(payload.amount * GST_RATE, 2)
+    gst_amount = round(payload.amount * get_gst_rate(db), 2)
     total = round(payload.amount + gst_amount, 2)
     try:
         debit_textzi_wallet(db, entity.id, total, transaction_type="spend_sms_credit")
@@ -493,7 +493,7 @@ def spend_wallet_on_plan(plan_id: str, payload: TextziWalletSpendPlanRequest, us
     if not plan or not plan.active:
         raise HTTPException(status_code=404, detail="Plan not found")
 
-    gst_amount = round(float(plan.price) * GST_RATE, 2)
+    gst_amount = round(float(plan.price) * get_gst_rate(db), 2)
     total = round(float(plan.price) + gst_amount, 2)
     now = datetime.now(timezone.utc)
     try:

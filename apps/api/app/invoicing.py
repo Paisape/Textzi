@@ -15,7 +15,7 @@ from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
 from .models import Entity, Invoice, Organization
-from .services import PlatformCompanyInfo, get_platform_company_info, resolve_primary_user, sac_code_for_invoice_type
+from .services import PlatformCompanyInfo, get_platform_company_info, resolve_primary_user, sac_code_for_invoice_type, state_code_from_gstin
 from .zoho_books import sync_invoice_to_zoho
 
 INVOICE_TYPE_LABELS = {
@@ -84,7 +84,26 @@ def _amount_in_words(amount: float) -> str:
     return f"{words} Only"
 
 
-def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: float, gst_amount: float, reference: str | None = None, notes: str | None = None, created_by_admin_id: str | None = None, credits_purchased: float | None = None, price_per_sms: float | None = None, mark_as_paid: bool = True) -> Invoice:
+def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: float, gst_amount: float, reference: str | None = None, notes: str | None = None, created_by_admin_id: str | None = None, credits_purchased: float | None = None, price_per_sms: float | None = None, mark_as_paid: bool = True, cgst_amount: float | None = None, sgst_amount: float | None = None, igst_amount: float | None = None) -> Invoice:
+    # A caller that already knows the exact split (e.g. crm_quotes.convert_quote_to_invoice,
+    # which computed it against the deal's own company GSTIN) passes cgst/sgst/igst explicitly.
+    # Every other call site bills the tenant's own organization directly -- buyer state is that
+    # organization's own state vs. Textzi's seller state, computed here so 14+ call sites across
+    # payments.py/channels.py/channel_billing.py/admin.py/wallet.py/payments_smart_collect.py
+    # don't each need to duplicate this lookup.
+    if cgst_amount is None and sgst_amount is None and igst_amount is None and gst_amount:
+        organization = db.get(Organization, entity.organization_id)
+        buyer_state = state_code_from_gstin(organization.gstin) if organization else None
+        buyer_state = buyer_state or (organization.state_code if organization else None)
+        seller_state = get_platform_company_info(db).company_state_code
+        interstate = bool(buyer_state and seller_state and buyer_state != seller_state)
+        if interstate:
+            igst_amount = gst_amount
+            cgst_amount = sgst_amount = 0.0
+        else:
+            cgst_amount = sgst_amount = round(gst_amount / 2, 2)
+            igst_amount = 0.0
+
     invoice = Invoice(
         entity_id=entity.id,
         type=type,
@@ -98,6 +117,9 @@ def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: fl
         notes=notes,
         created_by_admin_id=created_by_admin_id,
         zoho_mark_paid=mark_as_paid,
+        cgst_amount=cgst_amount,
+        sgst_amount=sgst_amount,
+        igst_amount=igst_amount,
     )
     db.add(invoice)
     db.flush()
@@ -105,10 +127,12 @@ def create_draft_invoice(db: Session, entity: Entity, type: str, base_amount: fl
 
 
 def _render_invoice_pdf(invoice: Invoice, entity: Entity, organization: Organization, company: PlatformCompanyInfo) -> bytes:
-    """A Tally-style Indian tax invoice: bordered header/party/item/total blocks, CGST+SGST split
-    (assumes intra-state supply -- there's no buyer-state field captured anywhere to determine
-    IGST vs CGST/SGST), amount-in-words, and a signatory block, matching the layout every Indian
-    business and accountant already recognizes from Tally/Zoho/ClearTax invoices."""
+    """A Tally-style Indian tax invoice: bordered header/party/item/total blocks, a real
+    CGST+SGST-vs-IGST split (invoice.cgst_amount/sgst_amount/igst_amount, computed at creation
+    time in create_draft_invoice from the buyer organization's state vs Textzi's own seller
+    state -- falls back to assuming intra-state only for a legacy invoice with none of the three
+    set), amount-in-words, and a signatory block, matching the layout every Indian business and
+    accountant already recognizes from Tally/Zoho/ClearTax invoices."""
     pdf = FPDF(format="A4")
     pdf.set_auto_page_break(auto=True, margin=15)
     pdf.set_margins(12, 12, 12)
@@ -216,7 +240,16 @@ def _render_invoice_pdf(invoice: Invoice, entity: Entity, organization: Organiza
 
     # ---- Tax summary ----
     gst_amount = float(invoice.gst_amount)
-    half_gst = gst_amount / 2
+    # cgst_amount/sgst_amount/igst_amount are set at invoice-creation time for every call site
+    # that actually knows the buyer's state (see create_draft_invoice callers); an older/legacy
+    # invoice with all three null falls back to the original intra-state assumption rather than
+    # rendering a blank/broken tax section.
+    cgst = float(invoice.cgst_amount) if invoice.cgst_amount is not None else None
+    sgst = float(invoice.sgst_amount) if invoice.sgst_amount is not None else None
+    igst = float(invoice.igst_amount) if invoice.igst_amount is not None else None
+    if cgst is None and sgst is None and igst is None and gst_amount > 0:
+        cgst = sgst = gst_amount / 2
+        igst = 0.0
     summary_x = left + width - 85
 
     def summary_row(label: str, value: str, bold: bool = False) -> None:
@@ -226,9 +259,11 @@ def _render_invoice_pdf(invoice: Invoice, entity: Entity, organization: Organiza
         pdf.cell(40, 6, value, align="R", ln=True)
 
     summary_row("Taxable Value", f"Rs. {float(invoice.base_amount):.2f}")
-    if gst_amount > 0:
-        summary_row("CGST @ 9%", f"Rs. {half_gst:.2f}")
-        summary_row("SGST @ 9%", f"Rs. {half_gst:.2f}")
+    if igst:
+        summary_row("IGST", f"Rs. {igst:.2f}")
+    elif cgst or sgst:
+        summary_row("CGST", f"Rs. {(cgst or 0):.2f}")
+        summary_row("SGST", f"Rs. {(sgst or 0):.2f}")
     summary_row("Total", f"Rs. {float(invoice.total_amount):.2f}", bold=True)
     summary_bottom = pdf.get_y() + 2
     pdf.set_y(summary_bottom)

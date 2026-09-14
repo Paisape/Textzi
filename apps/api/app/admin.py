@@ -42,7 +42,7 @@ from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, pull_payment_status, sync_invoice_to_zoho
 from . import archive_jobs
 from .channel_billing import activate_subscription
-from .services import GST_RATE, DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .services import DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -1506,7 +1506,7 @@ def create_wallet_credit(payload: WalletCreditRequest, request: Request, authori
     # outside Razorpay); a free/promotional credit (paid=False) has no money changing hands and so
     # no output tax to collect, mirroring how every other invoice type computes gst_amount only
     # once real payment is confirmed.
-    gst_amount = round(payload.amount * GST_RATE, 2) if payload.paid else 0.0
+    gst_amount = round(payload.amount * get_gst_rate(db), 2) if payload.paid else 0.0
     invoice = create_draft_invoice(db, entity, type="admin_credit", base_amount=payload.amount, gst_amount=gst_amount, notes=payload.notes, created_by_admin_id=admin_user.id if admin_user else None, mark_as_paid=payload.paid)
     if payload.generate_invoice:
         issue_invoice(db, invoice)
@@ -1541,7 +1541,7 @@ def wallet_topup_report(mismatches_only: bool = False, db: Session = Depends(get
         if mismatches_only and not mismatch:
             continue
         user = users_by_id.get(o.user_id) if o.user_id else None
-        gst_amount = round(float(o.amount) * GST_RATE, 2)
+        gst_amount = round(float(o.amount) * get_gst_rate(db), 2)
         rows.append(WalletTopupReportRowOut(
             order_id=o.id, user_name=user.full_name if user else None, user_email=user.email if user else None,
             created_at=o.created_at.isoformat(), ip_address=o.ip_address,
@@ -1624,7 +1624,7 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
     elif order.status != "paid" and captured:
         payment_id = captured[0]["id"]
         captured_amount = captured[0].get("amount")
-        expected_paise = expected_order_paise(order)
+        expected_paise = expected_order_paise(db, order)
         if captured_amount != expected_paise:
             # Razorpay's own record of what it actually captured doesn't match what this order
             # expects -- flag for manual review rather than crediting an unverified amount.
@@ -1654,7 +1654,7 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
                     if credits:
                         credit_wallet(db, entity.id, credits, transaction_type="recharge_razorpay_reconciled", reference=payment_id)
                         order.credits_applied = credits
-                        gst_amount = round(float(order.amount) * GST_RATE, 2)
+                        gst_amount = round(float(order.amount) * get_gst_rate(db), 2)
                         invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=float(order.amount), gst_amount=gst_amount, reference=order.id)
                         issue_invoice(db, invoice)
             order.status = "paid"

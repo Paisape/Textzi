@@ -68,7 +68,37 @@ def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
     return stored_path, content
 
 
-GST_RATE = 0.18
+GST_RATE = 0.18  # fallback default when PlatformGeneralSettings.gst_rate is unset -- see get_gst_rate()
+
+
+def get_gst_rate(db: Session) -> float:
+    """The platform-wide GST rate, admin-editable (PlatformGeneralSettings.gst_rate) with the
+    same "row/field may not exist yet" fallback as get_platform_company_info -- an unconfigured
+    deployment keeps behaving exactly as it did when GST_RATE was a flat constant. CRM quote line
+    items still support their own per-line override (Product.tax_rate / QuoteLineItem.tax_rate)
+    independently of this platform default."""
+    row = db.get(PlatformGeneralSettings, "platform")
+    if row and row.gst_rate is not None:
+        return float(row.gst_rate)
+    return GST_RATE
+
+
+# A real GSTIN is 15 chars: 2-digit state code, 10-char PAN (5 letters, 4 digits, 1 letter), a
+# 1-digit entity/registration count (1-9 or A-Z), the literter "Z" by convention, and a final
+# checksum character (alphanumeric) -- validated at the format level only (no checksum
+# recomputation), which is enough to reject an obviously-malformed value before it silently
+# breaks state_code_from_gstin() downstream.
+GSTIN_PATTERN = re.compile(r"^\d{2}[A-Z]{5}\d{4}[A-Z]\dZ[A-Z\d]$")
+
+
+def validate_gstin_format(gstin: str | None) -> str | None:
+    """Returns an error message if gstin is present but not a well-formed GSTIN, else None (a
+    blank/absent GSTIN is always valid -- it's an optional field everywhere it appears)."""
+    if not gstin:
+        return None
+    if not GSTIN_PATTERN.match(gstin.strip().upper()):
+        return "GSTIN must be a valid 15-character GST identification number (e.g. 27AAAPL1234C1Z5)."
+    return None
 
 # Real GST SAC (Services Accounting Code) classification, as provided by the business's own
 # accountant -- three item groups, not one per Invoice.type: "SMS Service" covers SMS wallet
@@ -736,14 +766,16 @@ def enforce_topup_integrity(db: Session, order: PaymentOrder, entity: Entity, us
     return True
 
 
-def expected_order_paise(order: PaymentOrder) -> int:
+def expected_order_paise(db: Session, order: PaymentOrder) -> int:
     """The paise amount Razorpay should have actually captured for this order, computed the same
     way it was at order-creation time (payments.create_order / channels.create_dlt_request_order)
     -- wallet recharges are grossed up by GST at checkout, DLT request fees are not (their
-    total_amount is already GST-inclusive when the order is created)."""
+    total_amount is already GST-inclusive when the order is created). Uses the current GST rate,
+    not a rate snapshotted on the order -- a checkout completes within minutes of order creation,
+    well inside any realistic window for a genuine admin-driven rate change."""
     if order.purpose == "dlt_request":
         return int(round(float(order.amount) * 100))
-    return int(round(float(order.amount) * (1 + GST_RATE) * 100))
+    return int(round(float(order.amount) * (1 + get_gst_rate(db)) * 100))
 
 
 def flag_suspicious_payment(db: Session, order: PaymentOrder, entity: Entity, reason: str, user: User | None = None) -> None:

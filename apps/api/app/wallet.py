@@ -13,7 +13,7 @@ from .invoicing import create_draft_invoice, issue_invoice
 from .models import PlatformPaymentMethodConfig, User, WabaWallet, Wallet, WalletTransaction
 from .permissions import require_capability
 from .schemas import PaymentMethodConfigOut, RateCardSlabOut, RateCardSummary, RechargeRequest, RechargeResponse, WalletQuoteRequest, WalletQuoteResponse, WalletResponse, WalletTransactionOut
-from .services import GST_RATE, DomainError, credit_wallet, payment_method_config, quote_credits, rate_card_slabs, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
+from .services import DomainError, credit_wallet, get_gst_rate, payment_method_config, quote_credits, rate_card_slabs, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
 router = APIRouter(prefix="/v1/wallet", tags=["wallet"])
 
@@ -73,7 +73,7 @@ def _recharge_wallet(db: Session, user: User, payload: RechargeRequest, wallet_m
     try:
         entity = resolve_user_entity(db, user)
         require_channel_active(db, entity.id, channel)
-        gst_amount = round(payload.amount * GST_RATE, 2)
+        gst_amount = round(payload.amount * get_gst_rate(db), 2)
         wallet = credit_wallet(db, entity.id, payload.amount, transaction_type="recharge", reference="self-service recharge", wallet_model=wallet_model, channel=channel)
         invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=payload.amount, gst_amount=gst_amount)
         issue_invoice(db, invoice)
@@ -128,7 +128,7 @@ def quote_recharge(payload: WalletQuoteRequest, user: User = Depends(require_use
         credits, slab = quote_credits(db, rate_card, payload.amount)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    gst_amount = round(payload.amount * GST_RATE, 2)
+    gst_amount = round(payload.amount * get_gst_rate(db), 2)
     return WalletQuoteResponse(
         amount=payload.amount,
         gst_amount=gst_amount,
@@ -154,7 +154,7 @@ def recharge_wallet(payload: RechargeRequest, user: User = Depends(require_capab
         require_min_recharge(rate_card, payload.amount)
         credits, slab = quote_credits(db, rate_card, payload.amount)
         wallet = credit_wallet(db, entity.id, credits, transaction_type="recharge", reference=f"self-service recharge (Rs.{payload.amount} @ Rs.{slab.price_per_sms}/sms)", wallet_model=Wallet, channel="sms")
-        gst_amount = round(payload.amount * GST_RATE, 2)
+        gst_amount = round(payload.amount * get_gst_rate(db), 2)
         invoice = create_draft_invoice(db, entity, type="wallet_recharge", base_amount=payload.amount, gst_amount=gst_amount, credits_purchased=round(credits, 2), price_per_sms=float(slab.price_per_sms))
         issue_invoice(db, invoice)
     except DomainError as exc:

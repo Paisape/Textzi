@@ -24,11 +24,13 @@ type GeneralSettings = {
   bank_account_number: string | null
   bank_ifsc: string | null
   bank_name: string | null
+  gst_rate: number
 }
 
 const form = ref<GeneralSettings>({
   company_name: '', company_address: '', company_gstin: '', company_state: '', company_state_code: '', company_phone: '', support_email: '', public_api_base_url: '',
   bank_account_holder_name: null, bank_account_number: null, bank_ifsc: null, bank_name: null,
+  gst_rate: 0.18,
 })
 
 const loadError = ref('')
@@ -69,6 +71,7 @@ async function onSave() {
         bank_account_number: form.value.bank_account_number || null,
         bank_ifsc: form.value.bank_ifsc || null,
         bank_name: form.value.bank_name || null,
+        gst_rate: form.value.gst_rate ?? null,
       },
     })
     saveSuccess.value = 'Saved.'
@@ -179,6 +182,19 @@ onMounted(loadSettings)
               v-model="form.company_phone"
               label="Phone"
               placeholder="022-68833223"
+            />
+          </VCol>
+          <VCol cols="12" sm="6">
+            <AppTextField
+              v-model.number="form.gst_rate"
+              label="GST rate"
+              type="number"
+              min="0"
+              max="1"
+              step="0.01"
+              placeholder="0.18"
+              hint="Fraction, e.g. 0.18 for 18%. Applies to wallet recharges, channel subscriptions, and quote line items with no per-product tax rate override."
+              persistent-hint
             />
           </VCol>
         </VRow>

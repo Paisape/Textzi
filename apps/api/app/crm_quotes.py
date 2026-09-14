@@ -21,18 +21,18 @@ from sqlalchemy.orm import Session
 from .auth import require_user
 from .config import settings
 from .database import get_db
-from .invoicing import _safe_text, create_draft_invoice, issue_invoice
+from .invoicing import _safe_text
 from .models import (
     BundleItem, Company, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, PriceList, PriceListEntry,
-    Product, Quote, User, WabaConnection,
+    Product, Quote, SalesInvoice, User, WabaConnection,
 )
 from .permissions import require_channel_scope, require_page_scope_for, require_plan_feature
 from .schemas import (
     BundleItemOut, DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, PriceListCreateRequest,
     PriceListEntryOut, PriceListEntrySetRequest, PriceListOut, PriceListUpdateRequest, ProductCreateRequest, ProductOut,
-    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut,
+    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut, SalesInvoiceOut,
 )
-from .services import GST_RATE, DomainError, channel_active, notify_user, resolve_user_entity, state_code_from_gstin
+from .services import DomainError, channel_active, get_gst_rate, notify_user, resolve_user_entity, state_code_from_gstin
 
 router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-quotes")), Depends(require_plan_feature("crm", "crm-quotes"))])
 
@@ -422,16 +422,20 @@ def _apply_line_item_defaults(db: Session, entity_id: str, items: list[QuoteLine
     return result
 
 
-def _compute_totals(quote: Quote, entity_state: str | None, company_state: str | None) -> dict:
+def _compute_totals(db: Session, line_items: list, entity_state: str | None, company_state: str | None) -> dict:
+    """Shared by Quote and SalesInvoice -- both snapshot the same line_items shape
+    (description/hsn_code/quantity/unit_price/tax_rate/discount_percent), so the tax math needs
+    only one implementation."""
     subtotal = 0.0
     discount_total = 0.0
     gst = 0.0
-    for item in quote.line_items:
+    default_rate = get_gst_rate(db)
+    for item in line_items:
         line_amount = item["quantity"] * item["unit_price"]
         discount = line_amount * (item.get("discount_percent") or 0) / 100
         taxable = line_amount - discount
         rate = item.get("tax_rate")
-        rate = GST_RATE if rate is None else rate
+        rate = default_rate if rate is None else rate
         subtotal += line_amount
         discount_total += discount
         gst += taxable * rate
@@ -454,7 +458,7 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     organization = db.get(Organization, entity.organization_id) if entity else None
     entity_state = (organization.state_code or state_code_from_gstin(organization.gstin)) if organization else None
     company_state = state_code_from_gstin(company.gstin) if company else None
-    totals = _compute_totals(quote, entity_state, company_state)
+    totals = _compute_totals(db, quote.line_items, entity_state, company_state)
     settings_row = db.get(CrmSettings, quote.entity_id)
     approvers_required = (settings_row.quote_approver_user_ids or []) if settings_row else []
     return QuoteOut(
@@ -468,17 +472,21 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     )
 
 
-def _render_quote_pdf(quote: Quote, deal: Deal, contact: CrmContact, company: Company | None, organization, totals: dict) -> bytes:
+def _render_line_items_pdf(doc_label: str, doc_number: str | None, line_items: list, contact: CrmContact, company: Company | None, organization, totals: dict, tax_invoice: bool = False) -> bytes:
+    """Shared by Quote (doc_label="Quote", tax_invoice=False) and SalesInvoice
+    (doc_label="TAX INVOICE", tax_invoice=True) -- both a proforma and a real tax invoice are the
+    same header/party/item-table/totals layout; a real invoice additionally gets a signatory
+    block, since (unlike a quote) it's the actual document a client uses for their own accounting."""
     pdf = FPDF()
     pdf.add_page()
     pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, _safe_text(organization.name if organization else "Quote"), ln=True)
+    pdf.cell(0, 10, _safe_text(organization.name if organization else doc_label), ln=True)
     pdf.set_font("Helvetica", "", 10)
     if organization and organization.gstin:
         pdf.cell(0, 6, _safe_text(f"GSTIN: {organization.gstin}"), ln=True)
     pdf.ln(4)
     pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, _safe_text(f"Quote {quote.quote_number or '(draft)'}"), ln=True)
+    pdf.cell(0, 8, _safe_text(f"{doc_label} {doc_number or '(draft)'}"), ln=True)
     pdf.set_font("Helvetica", "", 10)
     pdf.cell(0, 6, _safe_text(f"To: {company.name if company else (contact.name or contact.phone or 'Customer')}"), ln=True)
     if company and company.gstin:
@@ -492,7 +500,7 @@ def _render_quote_pdf(quote: Quote, deal: Deal, contact: CrmContact, company: Co
     pdf.cell(30, 8, "Unit Price", border=1)
     pdf.cell(30, 8, "Amount", border=1, ln=True)
     pdf.set_font("Helvetica", "", 10)
-    for item in quote.line_items:
+    for item in line_items:
         amount = item["quantity"] * item["unit_price"]
         pdf.cell(80, 8, _safe_text(item["description"])[:40], border=1)
         pdf.cell(25, 8, _safe_text(item.get("hsn_code", "")), border=1)
@@ -519,6 +527,16 @@ def _render_quote_pdf(quote: Quote, deal: Deal, contact: CrmContact, company: Co
     pdf.set_font("Helvetica", "B", 10)
     pdf.cell(160, 8, "Total", align="R")
     pdf.cell(30, 8, f"{totals['total']:.2f}", ln=True)
+
+    if tax_invoice:
+        pdf.ln(14)
+        pdf.set_font("Helvetica", "", 8)
+        pdf.multi_cell(0, 4.5, "This is a system-generated tax invoice and does not require a physical signature. Subject to reconciliation.")
+        pdf.ln(12)
+        pdf.set_font("Helvetica", "", 9)
+        pdf.cell(0, 5, _safe_text(f"For {organization.name}" if organization else ""), align="R", ln=True)
+        pdf.cell(0, 5, "Authorized Signatory", align="R", ln=True)
+
     return bytes(pdf.output())
 
 
@@ -643,8 +661,8 @@ def _get_pdf_bytes(db: Session, quote: Quote) -> bytes:
     organization = db.get(Organization, entity.organization_id)
     entity_state = organization.state_code or state_code_from_gstin(organization.gstin)
     company_state = state_code_from_gstin(company.gstin) if company else None
-    totals = _compute_totals(quote, entity_state, company_state)
-    return _render_quote_pdf(quote, deal, contact, company, organization, totals)
+    totals = _compute_totals(db, quote.line_items, entity_state, company_state)
+    return _render_line_items_pdf("Quote", quote.quote_number, quote.line_items, contact, company, organization, totals)
 
 
 @router.get("/{quote_id}/pdf")
@@ -706,12 +724,56 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
     return _quote_out(db, quote)
 
 
-@router.post("/{quote_id}/convert-to-invoice", response_model=QuoteOut)
+@router.get("/invoices", response_model=list[SalesInvoiceOut])
+def list_sales_invoices(deal_id: str | None = None, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    query = select(SalesInvoice).where(SalesInvoice.entity_id == entity.id)
+    if deal_id:
+        query = query.where(SalesInvoice.deal_id == deal_id)
+    invoices = db.scalars(query.order_by(SalesInvoice.created_at.desc())).all()
+    return [_sales_invoice_out(db, i) for i in invoices]
+
+
+def _sales_invoice_out(db: Session, invoice: SalesInvoice) -> SalesInvoiceOut:
+    deal = db.get(Deal, invoice.deal_id)
+    contact = db.get(CrmContact, deal.contact_id) if deal else None
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
+    entity = db.get(Entity, invoice.entity_id)
+    organization = db.get(Organization, entity.organization_id) if entity else None
+    entity_state = (organization.state_code or state_code_from_gstin(organization.gstin)) if organization else None
+    company_state = state_code_from_gstin(company.gstin) if company else None
+    totals = _compute_totals(db, invoice.line_items, entity_state, company_state)
+    return SalesInvoiceOut(
+        id=invoice.id, deal_id=invoice.deal_id, quote_id=invoice.quote_id, invoice_number=invoice.invoice_number,
+        line_items=invoice.line_items, status=invoice.status,
+        subtotal=totals["subtotal"], discount_total=totals["discount_total"],
+        cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
+        has_pdf=bool(invoice.pdf_path), created_at=invoice.created_at.isoformat(),
+        sent_at=invoice.sent_at.isoformat() if invoice.sent_at else None,
+        paid_at=invoice.paid_at.isoformat() if invoice.paid_at else None,
+    )
+
+
+def _get_sales_invoice_pdf_bytes(db: Session, invoice: SalesInvoice) -> bytes:
+    deal = db.get(Deal, invoice.deal_id)
+    contact = db.get(CrmContact, deal.contact_id)
+    company = db.get(Company, contact.company_id) if contact.company_id else None
+    entity = db.get(Entity, invoice.entity_id)
+    organization = db.get(Organization, entity.organization_id)
+    entity_state = organization.state_code or state_code_from_gstin(organization.gstin)
+    company_state = state_code_from_gstin(company.gstin) if company else None
+    totals = _compute_totals(db, invoice.line_items, entity_state, company_state)
+    return _render_line_items_pdf("TAX INVOICE", invoice.invoice_number, invoice.line_items, contact, company, organization, totals, tax_invoice=True)
+
+
+@router.post("/{quote_id}/convert-to-invoice", response_model=SalesInvoiceOut)
 def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Reuses the exact same Invoice pipeline SMS billing uses -- create_draft_invoice +
-    issue_invoice, which already handles Zoho Books sync (if the organization is linked) with no
-    extra code needed here. Tally isn't wired in (no cloud API to call -- see the plan's own note
-    on this); an XML-export path for Tally is a separate, later addition."""
+    """Issues a real, tenant-to-client GST Tax Invoice (SalesInvoice) from an accepted quote --
+    genuinely different from the platform Invoice model (models.py), which only ever bills the
+    CRM tenant itself, never their own client. Line items are copied as-is from the quote (same
+    snapshot discipline as everywhere else in this module: a later Product/DiscountRule edit must
+    never change an already-issued document's numbers)."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     quote = db.get(Quote, quote_id)
@@ -722,16 +784,83 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
     if quote.converted_invoice_id:
         raise HTTPException(status_code=409, detail="This quote has already been converted to an invoice")
 
-    out = _quote_out(db, quote)
-    invoice = create_draft_invoice(
-        db, entity, type="crm_quote", base_amount=round(out.subtotal - out.discount_total, 2), gst_amount=round(out.cgst + out.sgst + out.igst, 2),
-        reference=quote.id, notes=f"Converted from quote {quote.quote_number or quote.id}",
-    )
-    issue_invoice(db, invoice)
+    invoice = SalesInvoice(entity_id=entity.id, deal_id=quote.deal_id, quote_id=quote.id, line_items=quote.line_items, created_by_user_id=user.id)
+    db.add(invoice)
+    db.flush()
+
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS sales_invoice_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('sales_invoice_number_seq')")).scalar()
+    invoice.invoice_number = f"SINV-{datetime.now(timezone.utc).year}-{seq_val:06d}"
+
+    pdf_bytes = _get_sales_invoice_pdf_bytes(db, invoice)
+    directory = os.path.join(settings.uploads_dir, "crm_sales_invoices")
+    os.makedirs(directory, exist_ok=True)
+    pdf_path = os.path.join(directory, f"{invoice.id}.pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(pdf_bytes)
+    invoice.pdf_path = pdf_path
+
     quote.converted_invoice_id = invoice.id
     db.commit()
-    db.refresh(quote)
-    return _quote_out(db, quote)
+    db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
+
+
+@router.get("/invoices/{invoice_id}/pdf")
+def download_sales_invoice_pdf(invoice_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    invoice = db.get(SalesInvoice, invoice_id)
+    if not invoice or invoice.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    pdf_bytes = _get_sales_invoice_pdf_bytes(db, invoice)
+    return Response(content=pdf_bytes, media_type="application/pdf", headers={"Content-Disposition": f"attachment; filename={invoice.invoice_number or invoice.id}.pdf"})
+
+
+@router.post("/invoices/{invoice_id}/send-whatsapp", response_model=SalesInvoiceOut)
+def send_sales_invoice_via_whatsapp(invoice_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    invoice = db.get(SalesInvoice, invoice_id)
+    if not invoice or invoice.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    deal = db.get(Deal, invoice.deal_id)
+    contact = db.get(CrmContact, deal.contact_id)
+    if not contact.phone:
+        raise HTTPException(status_code=422, detail="This contact has no phone number to send to")
+    wa_id = "".join(ch for ch in contact.phone if ch.isdigit())
+    connection = db.get(WabaConnection, entity.id)
+    if not connection or connection.status != "connected":
+        raise HTTPException(status_code=422, detail="Connect a WhatsApp number before sending invoices")
+
+    pdf_bytes = _get_sales_invoice_pdf_bytes(db, invoice)
+    from .waba_dispatch import send_whatsapp_media
+    from .waba_meta import MetaApiError
+    try:
+        send_whatsapp_media(db, entity.id, wa_id, pdf_bytes, f"{invoice.invoice_number}.pdf", "application/pdf", "document", f"Tax Invoice {invoice.invoice_number}", sent_by_user_id=user.id)
+    except (DomainError, MetaApiError) as exc:
+        raise HTTPException(status_code=422, detail=f"Could not send this invoice: {exc}") from exc
+
+    invoice.sent_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
+
+
+@router.post("/invoices/{invoice_id}/mark-paid", response_model=SalesInvoiceOut)
+def mark_sales_invoice_paid(invoice_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    invoice = db.get(SalesInvoice, invoice_id)
+    if not invoice or invoice.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status == "paid":
+        raise HTTPException(status_code=409, detail="This invoice is already marked paid")
+    invoice.status = "paid"
+    invoice.paid_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
 
 
 @router.post("/{quote_id}/status/{status}", response_model=QuoteOut)

@@ -34,7 +34,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import GST_RATE, DomainError, channel_active, expected_order_paise, flag_suspicious_payment, get_platform_razorpay_keys, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
+from .services import DomainError, channel_active, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -231,7 +231,7 @@ def simulate_subscription_payment(user: User = Depends(require_user), db: Sessio
     subscription.paid_at = datetime.now(timezone.utc)
     fees = resolve_channel_fees(db, "sms")
     if float(fees.subscription_price) > 0:
-        gst_amount = round(float(fees.subscription_price) * GST_RATE, 2)
+        gst_amount = round(float(fees.subscription_price) * get_gst_rate(db), 2)
         invoice = create_draft_invoice(db, entity, type="channel_subscription", base_amount=float(fees.subscription_price), gst_amount=gst_amount)
         issue_invoice(db, invoice)
     db.commit()
@@ -255,7 +255,7 @@ def quote_dlt_request(user: User = Depends(require_user), db: Session = Depends(
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     combined = float(fees.dlt_platform_fee) + float(fees.dlt_service_fee)
-    gst_amount = round(combined * GST_RATE, 2)
+    gst_amount = round(combined * get_gst_rate(db), 2)
     return DltRequestQuoteResponse(
         combined_fee=combined, gst_amount=gst_amount, total_amount=round(combined + gst_amount, 2),
         telemarketer_name=TEXTZI_TELEMARKETER_NAME, telemarketer_id=TEXTZI_TELEMARKETER_ID,
@@ -366,7 +366,7 @@ def submit_dlt_request(
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     combined = float(fees.dlt_platform_fee) + float(fees.dlt_service_fee)
-    gst_amount = round(combined * GST_RATE, 2)
+    gst_amount = round(combined * get_gst_rate(db), 2)
     request_row = DltOnboardingRequest(
         entity_id=entity.id,
         status="pending_payment",
@@ -504,7 +504,7 @@ def verify_dlt_request_payment(request_id: str, payload: RazorpayVerifyRequest, 
         # at "created" (nothing committed yet) so the customer or an admin can safely retry/
         # reconcile once Razorpay is reachable again, rather than getting an opaque 500.
         raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
-    expected_paise = expected_order_paise(order)
+    expected_paise = expected_order_paise(db, order)
     if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
         flag_suspicious_payment(
             db, order, entity,
