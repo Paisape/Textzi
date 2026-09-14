@@ -23,16 +23,17 @@ from .config import settings
 from .database import get_db
 from .invoicing import _safe_text
 from .models import (
-    BundleItem, Company, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, PriceList, PriceListEntry,
+    BundleItem, Company, CreditNote, CrmContact, CrmSettings, Deal, DiscountRule, Entity, Organization, PriceList, PriceListEntry,
     Product, Quote, SalesInvoice, User, WabaConnection,
 )
 from .permissions import require_channel_scope, require_page_scope_for, require_plan_feature
 from .schemas import (
     BundleItemOut, DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, PriceListCreateRequest,
     PriceListEntryOut, PriceListEntrySetRequest, PriceListOut, PriceListUpdateRequest, ProductCreateRequest, ProductOut,
-    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut, SalesInvoiceOut,
+    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut, SalesInvoiceCancelRequest,
+    SalesInvoiceCreateRequest, SalesInvoiceOut, SalesInvoiceRecordPaymentRequest,
 )
-from .services import DomainError, channel_active, get_gst_rate, notify_user, resolve_user_entity, state_code_from_gstin
+from .services import DomainError, channel_active, get_gst_rate, indian_financial_year_label, notify_user, resolve_user_entity, state_code_from_gstin
 
 router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-quotes")), Depends(require_plan_feature("crm", "crm-quotes"))])
 
@@ -697,7 +698,7 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
     if not quote.quote_number:
         db.execute(text("CREATE SEQUENCE IF NOT EXISTS quote_number_seq"))
         seq_val = db.execute(text("SELECT nextval('quote_number_seq')")).scalar()
-        quote.quote_number = f"QUO-{datetime.now(timezone.utc).year}-{seq_val:06d}"
+        quote.quote_number = f"QUO-{indian_financial_year_label(datetime.now(timezone.utc))}-{seq_val:06d}"
 
     pdf_bytes = _get_pdf_bytes(db, quote)
     directory = os.path.join(settings.uploads_dir, "crm_quotes")
@@ -744,11 +745,13 @@ def _sales_invoice_out(db: Session, invoice: SalesInvoice) -> SalesInvoiceOut:
     entity_state = (organization.state_code or state_code_from_gstin(organization.gstin)) if organization else None
     company_state = state_code_from_gstin(company.gstin) if company else None
     totals = _compute_totals(db, invoice.line_items, entity_state, company_state)
+    amount_paid = float(invoice.amount_paid)
     return SalesInvoiceOut(
         id=invoice.id, deal_id=invoice.deal_id, quote_id=invoice.quote_id, invoice_number=invoice.invoice_number,
         line_items=invoice.line_items, status=invoice.status,
         subtotal=totals["subtotal"], discount_total=totals["discount_total"],
         cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
+        amount_paid=amount_paid, balance_due=round(max(0.0, totals["total"] - amount_paid), 2),
         has_pdf=bool(invoice.pdf_path), created_at=invoice.created_at.isoformat(),
         sent_at=invoice.sent_at.isoformat() if invoice.sent_at else None,
         paid_at=invoice.paid_at.isoformat() if invoice.paid_at else None,
@@ -765,6 +768,30 @@ def _get_sales_invoice_pdf_bytes(db: Session, invoice: SalesInvoice) -> bytes:
     company_state = state_code_from_gstin(company.gstin) if company else None
     totals = _compute_totals(db, invoice.line_items, entity_state, company_state)
     return _render_line_items_pdf("TAX INVOICE", invoice.invoice_number, invoice.line_items, contact, company, organization, totals, tax_invoice=True)
+
+
+def _issue_sales_invoice(db: Session, entity: Entity, deal_id: str, line_items: list, user_id: str | None, quote_id: str | None = None) -> SalesInvoice:
+    """Shared by convert_quote_to_invoice and create_direct_sales_invoice -- both produce the
+    same real, sequence-numbered SalesInvoice + PDF, differing only in where line_items/quote_id
+    come from. More than one invoice can exist per Deal (milestone/partial billing across
+    multiple invoices is allowed); the only real constraint is a given Quote converts at most
+    once (enforced by the caller checking quote.converted_invoice_id first)."""
+    invoice = SalesInvoice(entity_id=entity.id, deal_id=deal_id, quote_id=quote_id, line_items=line_items, created_by_user_id=user_id)
+    db.add(invoice)
+    db.flush()
+
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS sales_invoice_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('sales_invoice_number_seq')")).scalar()
+    invoice.invoice_number = f"SINV-{indian_financial_year_label(datetime.now(timezone.utc))}-{seq_val:06d}"
+
+    pdf_bytes = _get_sales_invoice_pdf_bytes(db, invoice)
+    directory = os.path.join(settings.uploads_dir, "crm_sales_invoices")
+    os.makedirs(directory, exist_ok=True)
+    pdf_path = os.path.join(directory, f"{invoice.id}.pdf")
+    with open(pdf_path, "wb") as f:
+        f.write(pdf_bytes)
+    invoice.pdf_path = pdf_path
+    return invoice
 
 
 @router.post("/{quote_id}/convert-to-invoice", response_model=SalesInvoiceOut)
@@ -784,23 +811,30 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
     if quote.converted_invoice_id:
         raise HTTPException(status_code=409, detail="This quote has already been converted to an invoice")
 
-    invoice = SalesInvoice(entity_id=entity.id, deal_id=quote.deal_id, quote_id=quote.id, line_items=quote.line_items, created_by_user_id=user.id)
-    db.add(invoice)
-    db.flush()
-
-    db.execute(text("CREATE SEQUENCE IF NOT EXISTS sales_invoice_number_seq"))
-    seq_val = db.execute(text("SELECT nextval('sales_invoice_number_seq')")).scalar()
-    invoice.invoice_number = f"SINV-{datetime.now(timezone.utc).year}-{seq_val:06d}"
-
-    pdf_bytes = _get_sales_invoice_pdf_bytes(db, invoice)
-    directory = os.path.join(settings.uploads_dir, "crm_sales_invoices")
-    os.makedirs(directory, exist_ok=True)
-    pdf_path = os.path.join(directory, f"{invoice.id}.pdf")
-    with open(pdf_path, "wb") as f:
-        f.write(pdf_bytes)
-    invoice.pdf_path = pdf_path
-
+    invoice = _issue_sales_invoice(db, entity, quote.deal_id, quote.line_items, user.id, quote_id=quote.id)
     quote.converted_invoice_id = invoice.id
+    db.commit()
+    db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
+
+
+@router.post("/deals/{deal_id}/invoices", response_model=SalesInvoiceOut)
+def create_direct_sales_invoice(deal_id: str, payload: SalesInvoiceCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Issues a SalesInvoice straight against a Deal, no Quote/negotiation step needed -- for a
+    simple direct sale, or for milestone/partial billing (a second, third, ... invoice against
+    the same deal; nothing here limits a Deal to one invoice, matching real-world "bill in
+    stages" use cases a strict one-quote-one-invoice rule would otherwise block)."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    deal = db.scalar(select(Deal).where(Deal.id == deal_id, Deal.entity_id == entity.id))
+    if not deal:
+        raise HTTPException(status_code=404, detail="Deal not found")
+    if not payload.line_items:
+        raise HTTPException(status_code=422, detail="At least one line item is required")
+    price_list_id = _deal_price_list_id(db, deal)
+    line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
+
+    invoice = _issue_sales_invoice(db, entity, deal.id, line_items, user.id)
     db.commit()
     db.refresh(invoice)
     return _sales_invoice_out(db, invoice)
@@ -847,17 +881,63 @@ def send_sales_invoice_via_whatsapp(invoice_id: str, user: User = Depends(requir
     return _sales_invoice_out(db, invoice)
 
 
-@router.post("/invoices/{invoice_id}/mark-paid", response_model=SalesInvoiceOut)
-def mark_sales_invoice_paid(invoice_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+@router.post("/invoices/{invoice_id}/record-payment", response_model=SalesInvoiceOut)
+def record_sales_invoice_payment(invoice_id: str, payload: SalesInvoiceRecordPaymentRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Records one payment against this invoice (milestone/partial payments supported -- call
+    this more than once for the same invoice as further payments come in). status becomes
+    "partially_paid" once amount_paid is positive but under the total, "paid" once it reaches or
+    exceeds it (paid_at set the moment it first crosses that line, never re-set by a later call)."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     invoice = db.get(SalesInvoice, invoice_id)
     if not invoice or invoice.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status == "cancelled":
+        raise HTTPException(status_code=409, detail="This invoice has been cancelled")
     if invoice.status == "paid":
-        raise HTTPException(status_code=409, detail="This invoice is already marked paid")
-    invoice.status = "paid"
-    invoice.paid_at = datetime.now(timezone.utc)
+        raise HTTPException(status_code=409, detail="This invoice is already fully paid")
+
+    out = _sales_invoice_out(db, invoice)
+    invoice.amount_paid = round(float(invoice.amount_paid) + payload.amount, 2)
+    if invoice.amount_paid >= out.total:
+        invoice.status = "paid"
+        invoice.paid_at = datetime.now(timezone.utc)
+    else:
+        invoice.status = "partially_paid"
+    db.commit()
+    db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
+
+
+@router.post("/invoices/{invoice_id}/cancel", response_model=SalesInvoiceOut)
+def cancel_sales_invoice(invoice_id: str, payload: SalesInvoiceCancelRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Cancels an issued/partially-paid SalesInvoice via a real GST credit note (CreditNote,
+    models.py) rather than deleting it -- the original invoice number/PDF stay exactly as issued
+    (GST law: numbers are never reused/edited), matching the platform-side admin.cancel_invoice_
+    admin's own reasoning. Credit-notes the invoice's full total regardless of how much was
+    actually collected -- correcting a partially-paid invoice still requires reversing the whole
+    original sale, not just the unpaid remainder."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    invoice = db.get(SalesInvoice, invoice_id)
+    if not invoice or invoice.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    if invoice.status == "cancelled":
+        raise HTTPException(status_code=409, detail="This invoice is already cancelled")
+
+    out = _sales_invoice_out(db, invoice)
+    note = CreditNote(
+        entity_id=entity.id, sales_invoice_id=invoice.id,
+        amount=round(out.subtotal - out.discount_total, 2), gst_amount=round(out.cgst + out.sgst + out.igst, 2),
+        reason=payload.reason, created_by_user_id=user.id,
+    )
+    db.add(note)
+    db.flush()
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS credit_note_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('credit_note_number_seq')")).scalar()
+    note.credit_note_number = f"CN-{indian_financial_year_label(datetime.now(timezone.utc))}-{seq_val:06d}"
+
+    invoice.status = "cancelled"
     db.commit()
     db.refresh(invoice)
     return _sales_invoice_out(db, invoice)

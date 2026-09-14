@@ -38,8 +38,10 @@ type SalesInvoice = {
   deal_id: string
   quote_id: string | null
   invoice_number: string | null
-  status: 'issued' | 'paid' | 'cancelled'
+  status: 'issued' | 'partially_paid' | 'paid' | 'cancelled'
   total: number
+  amount_paid: number
+  balance_due: number
   has_pdf: boolean
   created_at: string
   sent_at: string | null
@@ -339,15 +341,60 @@ async function sendInvoiceWhatsapp(invoice: SalesInvoice) {
   }
 }
 
-async function markInvoicePaid(invoice: SalesInvoice) {
-  busy.value = invoice.id
-  actionError.value = ''
+const recordPaymentDialog = ref(false)
+const recordPaymentInvoice = ref<SalesInvoice | null>(null)
+const recordPaymentAmount = ref<number | null>(null)
+const recordPaymentError = ref('')
+
+function openRecordPayment(invoice: SalesInvoice) {
+  recordPaymentInvoice.value = invoice
+  recordPaymentAmount.value = invoice.balance_due
+  recordPaymentError.value = ''
+  recordPaymentDialog.value = true
+}
+
+async function confirmRecordPayment() {
+  if (!recordPaymentInvoice.value || !recordPaymentAmount.value)
+    return
+  busy.value = recordPaymentInvoice.value.id
+  recordPaymentError.value = ''
   try {
-    const updated = await $api<SalesInvoice>(`/v1/crm/quotes/invoices/${invoice.id}/mark-paid`, { method: 'POST' })
-    Object.assign(invoice, updated)
+    const updated = await $api<SalesInvoice>(`/v1/crm/quotes/invoices/${recordPaymentInvoice.value.id}/record-payment`, { method: 'POST', body: { amount: recordPaymentAmount.value } })
+    Object.assign(recordPaymentInvoice.value, updated)
+    recordPaymentDialog.value = false
   }
   catch (error: any) {
-    actionError.value = extractErrorMessage(error, 'Could not mark this invoice paid.')
+    recordPaymentError.value = extractErrorMessage(error, 'Could not record this payment.')
+  }
+  finally {
+    busy.value = null
+  }
+}
+
+const cancelInvoiceDialog = ref(false)
+const cancelInvoiceTarget = ref<SalesInvoice | null>(null)
+const cancelInvoiceReason = ref('')
+const cancelInvoiceError = ref('')
+
+function openCancelInvoice(invoice: SalesInvoice) {
+  cancelInvoiceTarget.value = invoice
+  cancelInvoiceReason.value = ''
+  cancelInvoiceError.value = ''
+  cancelInvoiceDialog.value = true
+}
+
+async function confirmCancelInvoice() {
+  if (!cancelInvoiceTarget.value || cancelInvoiceReason.value.trim().length < 3)
+    return
+  busy.value = cancelInvoiceTarget.value.id
+  cancelInvoiceError.value = ''
+  try {
+    const updated = await $api<SalesInvoice>(`/v1/crm/quotes/invoices/${cancelInvoiceTarget.value.id}/cancel`, { method: 'POST', body: { reason: cancelInvoiceReason.value.trim() } })
+    Object.assign(cancelInvoiceTarget.value, updated)
+    cancelInvoiceDialog.value = false
+  }
+  catch (error: any) {
+    cancelInvoiceError.value = extractErrorMessage(error, 'Could not cancel this invoice.')
   }
   finally {
     busy.value = null
@@ -449,12 +496,13 @@ onMounted(async () => {
                 Issue tax invoice
               </VBtn>
               <template v-if="quote.converted_invoice_id && invoiceForQuote(quote)">
-                <VChip size="small" :color="invoiceForQuote(quote)!.status === 'paid' ? 'success' : 'default'" variant="tonal">
-                  {{ invoiceForQuote(quote)!.invoice_number }} · {{ invoiceForQuote(quote)!.status }}
+                <VChip size="small" :color="invoiceForQuote(quote)!.status === 'paid' ? 'success' : invoiceForQuote(quote)!.status === 'cancelled' ? 'error' : invoiceForQuote(quote)!.status === 'partially_paid' ? 'warning' : 'default'" variant="tonal">
+                  {{ invoiceForQuote(quote)!.invoice_number }} · {{ invoiceForQuote(quote)!.status.replace('_', ' ') }}
                 </VChip>
                 <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === invoiceForQuote(quote)!.id" title="Download tax invoice" @click="downloadInvoicePdf(invoiceForQuote(quote)!)" />
                 <VBtn icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Send tax invoice via WhatsApp" @click="sendInvoiceWhatsapp(invoiceForQuote(quote)!)" />
-                <VBtn v-if="invoiceForQuote(quote)!.status !== 'paid'" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Mark paid" @click="markInvoicePaid(invoiceForQuote(quote)!)" />
+                <VBtn v-if="!['paid', 'cancelled'].includes(invoiceForQuote(quote)!.status)" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Record payment" @click="openRecordPayment(invoiceForQuote(quote)!)" />
+                <VBtn v-if="invoiceForQuote(quote)!.status !== 'cancelled'" icon="tabler-ban" size="small" variant="text" color="error" :loading="busy === invoiceForQuote(quote)!.id" title="Cancel (issues a credit note)" @click="openCancelInvoice(invoiceForQuote(quote)!)" />
               </template>
               <VBtn v-if="quote.status === 'draft'" icon="tabler-trash" size="small" variant="text" :loading="busy === quote.id" title="Delete" @click="removeQuote(quote)" />
             </div>
@@ -519,6 +567,52 @@ onMounted(async () => {
         </VBtn>
         <VBtn color="primary" :loading="saving" :disabled="!form.deal_id" @click="save">
           {{ editingQuoteId ? 'Save' : 'Create' }}
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="recordPaymentDialog" max-width="360" persistent>
+    <VCard title="Record a payment">
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="recordPaymentError" type="error" variant="tonal" density="compact">
+          {{ recordPaymentError }}
+        </VAlert>
+        <p v-if="recordPaymentInvoice" class="text-body-2 text-medium-emphasis mb-0">
+          Balance due: {{ inr(recordPaymentInvoice.balance_due) }}
+        </p>
+        <VTextField v-model.number="recordPaymentAmount" label="Amount received" type="number" min="0.01" density="compact" autofocus />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="recordPaymentDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="!!busy" :disabled="!recordPaymentAmount || recordPaymentAmount <= 0" @click="confirmRecordPayment">
+          Record
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="cancelInvoiceDialog" max-width="420" persistent>
+    <VCard title="Cancel this tax invoice">
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="cancelInvoiceError" type="error" variant="tonal" density="compact">
+          {{ cancelInvoiceError }}
+        </VAlert>
+        <p class="text-body-2 text-medium-emphasis mb-0">
+          A credit note will be issued for the full invoice amount. The original invoice number stays valid and unchanged, as required by GST law.
+        </p>
+        <VTextField v-model="cancelInvoiceReason" label="Reason" density="compact" autofocus />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="cancelInvoiceDialog = false">
+          Keep invoice
+        </VBtn>
+        <VBtn color="error" :loading="!!busy" :disabled="cancelInvoiceReason.trim().length < 3" @click="confirmCancelInvoice">
+          Cancel & issue credit note
         </VBtn>
       </VCardActions>
     </VCard>

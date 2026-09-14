@@ -1079,6 +1079,23 @@ class InvoiceAdminOut(InvoiceOut):
     zoho_sync_error: str | None
 
 
+class CreditNoteOut(BaseModel):
+    id: str
+    entity_id: str
+    invoice_id: str | None
+    sales_invoice_id: str | None
+    credit_note_number: str | None
+    amount: float
+    gst_amount: float
+    total_amount: float
+    reason: str
+    created_at: str
+
+
+class InvoiceCancelRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
+
+
 class WalletLedgerEntryOut(BaseModel):
     id: str
     channel: str
@@ -2866,10 +2883,17 @@ class PublicQuoteSignRequest(BaseModel):
 
 
 class SalesInvoiceCreateRequest(BaseModel):
-    deal_id: str
-    quote_id: str | None = None
-    # Omitted (both None) only when quote_id is set -- the quote's own line_items are copied as-is.
-    line_items: list[QuoteLineItem] | None = None
+    # Backs the direct-sale path (POST /deals/{deal_id}/invoices, no Quote involved) -- deal_id
+    # comes from the URL path, not repeated here.
+    line_items: list[QuoteLineItem]
+
+
+class SalesInvoiceRecordPaymentRequest(BaseModel):
+    amount: float = Field(gt=0)
+
+
+class SalesInvoiceCancelRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=300)
 
 
 class SalesInvoiceOut(BaseModel):
@@ -2885,6 +2909,8 @@ class SalesInvoiceOut(BaseModel):
     sgst: float
     igst: float
     total: float
+    amount_paid: float
+    balance_due: float
     has_pdf: bool
     created_at: str
     sent_at: str | None

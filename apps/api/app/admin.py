@@ -18,9 +18,9 @@ from .channels import _mark_dlt_request_paid
 from .config import settings
 from .database import get_db
 from .email_service import render_email, send_email
-from .invoicing import _safe_text, create_draft_invoice, issue_invoice
+from .invoicing import _safe_text, create_draft_invoice, issue_credit_note, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BankTransferTopupRequest, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BankTransferTopupRequest, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, CreditNote, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
     PageView, PlatformPaymentMethodConfig, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
 )
@@ -29,7 +29,7 @@ from .schemas import (
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
     AdminGrantPlanRequest, BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, ChannelSubscriptionStatusOut, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     PaymentMethodConfigOut, PaymentMethodConfigUpdate,
-    DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceOut,
+    CreditNoteOut, DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceCancelRequest, InvoiceOut,
     MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
     PlatformMessageTelemetryOut, ProfileChangeRequestAdminOut, ProfileChangeRequestStatusUpdate, RateCardAssignmentOut, RateCardAssignmentRequest, RateCardCreate, RateCardMinRechargeUpdate, RateCardOut,
     RateCardPublicSettingsUpdate, RateCardSlabOut, RateCardSlabsReplace, RechargeDetailOut, TeamInviteResponse, TeamMemberOut, TemplateAdminDetailOut, TemplateCreate,
@@ -1267,6 +1267,38 @@ def reject_invoice_admin(invoice_id: str, request: Request, authorization: str |
     db.commit()
     db.refresh(invoice)
     return _invoice_admin_out(db, invoice)
+
+
+def _credit_note_out(note: CreditNote) -> CreditNoteOut:
+    return CreditNoteOut(
+        id=note.id, entity_id=note.entity_id, invoice_id=note.invoice_id, sales_invoice_id=note.sales_invoice_id,
+        credit_note_number=note.credit_note_number, amount=float(note.amount), gst_amount=float(note.gst_amount),
+        total_amount=round(float(note.amount) + float(note.gst_amount), 2), reason=note.reason, created_at=note.created_at.isoformat(),
+    )
+
+
+@router.post("/invoices/{invoice_id}/cancel", response_model=CreditNoteOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def cancel_invoice_admin(invoice_id: str, payload: InvoiceCancelRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Cancels an already-ISSUED invoice via a real GST credit note -- distinct from `reject`
+    above, which only ever handles a still-draft invoice that never became a real document.
+    The original invoice's number/PDF stay exactly as issued (GST law: numbers are never
+    reused/edited); this just correctly marks the sale as reversed."""
+    invoice = db.get(Invoice, invoice_id)
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    try:
+        note = issue_credit_note(db, invoice, payload.reason, actor_email=_caller_email(authorization, db))
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _credit_note_out(note)
+
+
+@router.get("/credit-notes", response_model=list[CreditNoteOut], dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
+def list_credit_notes_admin(entity_id: str | None = None, db: Session = Depends(get_db)):
+    query = select(CreditNote).order_by(CreditNote.created_at.desc())
+    if entity_id:
+        query = query.where(CreditNote.entity_id == entity_id)
+    return [_credit_note_out(n) for n in db.scalars(query).all()]
 
 
 @router.post("/invoices/issue-all-drafts", dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])

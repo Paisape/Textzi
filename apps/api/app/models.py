@@ -805,6 +805,28 @@ class Invoice(Base):
     zoho_payment_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
 
 
+class CreditNote(Base):
+    """A real GST credit note against a previously-issued Invoice (platform billing) or
+    SalesInvoice (a CRM tenant's own downstream tax invoice) -- GST law requires a credit note
+    when a sale is refunded/reversed/cancelled, not silent deletion or leaving the original
+    document standing uncorrected. Exactly one of invoice_id/sales_invoice_id is set (the other
+    null), never both -- the two documents live in separate tables with separate numbering
+    series, so a credit note against one can never accidentally reference the other.
+    Sequentially numbered ("CN-{fy}-{seq}", its own dedicated sequence, never reusing
+    invoice_number_seq/sales_invoice_number_seq -- those number two unrelated document types)."""
+    __tablename__ = "credit_notes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    invoice_id: Mapped[str | None] = mapped_column(ForeignKey("invoices.id"), nullable=True)
+    sales_invoice_id: Mapped[str | None] = mapped_column(ForeignKey("sales_invoices.id"), nullable=True)
+    credit_note_number: Mapped[str | None] = mapped_column(String(24), nullable=True, unique=True)
+    amount: Mapped[float] = mapped_column(Numeric(14, 2))
+    gst_amount: Mapped[float] = mapped_column(Numeric(14, 2))
+    reason: Mapped[str] = mapped_column(String(300))
+    created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Invitation(Base):
     """A pending invite. Two flavors share this one table and the one accept endpoint:
     organization_id set = an existing org member inviting a teammate (accepting inherits that
@@ -2122,12 +2144,16 @@ class Quote(Base):
 class SalesInvoice(Base):
     """A real GST Tax Invoice the CRM tenant issues to THEIR OWN client (the deal's Company/
     CrmContact) -- genuinely different from Invoice (models.py, Textzi billing the tenant itself).
-    Distinct from Quote too: a Quote is a proforma sent before the sale; a SalesInvoice is created
-    once (usually from an accepted Quote, optionally standalone against a Deal directly) and is
-    the actual tax document handed to the paying client, with its own sequence-numbered
-    invoice_number ("SINV-{year}-{seq}", never reusing invoice_number_seq/quote_number_seq --
+    Distinct from Quote too: a Quote is a proforma sent before the sale; a SalesInvoice is the
+    actual tax document handed to the paying client, with its own sequence-numbered
+    invoice_number ("SINV-{fy}-{seq}", never reusing invoice_number_seq/quote_number_seq --
     those number two unrelated document series and mixing them would break the "sequentially
     numbered without gaps" GST requirement for each series independently).
+    quote_id is nullable: an invoice usually comes from converting an accepted Quote
+    (convert_quote_to_invoice), but can also be created directly against a Deal with no Quote at
+    all (create_direct_sales_invoice) for a simple sale that never needed a negotiation step --
+    more than one SalesInvoice can exist per Deal either way (milestone/partial billing), the
+    only real constraint is a given Quote converts to at most one invoice.
     line_items snapshotted the same way Quote.line_items are -- editing a Product/DiscountRule
     later must never change an already-issued invoice's numbers."""
     __tablename__ = "sales_invoices"
@@ -2137,7 +2163,12 @@ class SalesInvoice(Base):
     quote_id: Mapped[str | None] = mapped_column(ForeignKey("quotes.id"), nullable=True)
     invoice_number: Mapped[str | None] = mapped_column(String(24), nullable=True, unique=True)
     line_items: Mapped[list] = mapped_column(JSON, default=list)
-    status: Mapped[str] = mapped_column(String(20), default="issued")  # "issued" | "paid" | "cancelled"
+    status: Mapped[str] = mapped_column(String(20), default="issued")  # "issued" | "partially_paid" | "paid" | "cancelled"
+    # Running total recorded against this invoice -- a real milestone/partial-payment can be
+    # recorded any number of times via record_payment (crm_quotes.py); status flips to
+    # "partially_paid" once > 0 and < total, "paid" once >= total. paid_at is set the moment it
+    # first reaches "paid" (not touched by an earlier partial payment).
+    amount_paid: Mapped[float] = mapped_column(Numeric(14, 2), default=0)
     pdf_path: Mapped[str | None] = mapped_column(String(500), nullable=True)
     created_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

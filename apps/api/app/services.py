@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Invoice, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -81,6 +81,17 @@ def get_gst_rate(db: Session) -> float:
     if row and row.gst_rate is not None:
         return float(row.gst_rate)
     return GST_RATE
+
+
+def indian_financial_year_label(when: datetime) -> str:
+    """India's GST financial year runs April 1 - March 31, not the calendar year -- invoice
+    numbering conventionally resets/is scoped at this boundary (e.g. "FY2025-26"), not Jan 1.
+    Returns a compact "YYYY-YY" label (e.g. "2026-27" for any date from 2026-04-01 through
+    2027-03-31) for use as an invoice-number prefix component. Uniqueness itself still comes
+    entirely from the underlying Postgres sequence, same as before this existed -- this only
+    changes the cosmetic year label to match standard Indian practice."""
+    year = when.year if when.month >= 4 else when.year - 1
+    return f"{year}-{str(year + 1)[-2:]}"
 
 
 # A real GSTIN is 15 chars: 2-digit state code, 10-char PAN (5 letters, 4 digits, 1 letter), a
@@ -850,6 +861,21 @@ def flag_refunded_payment(db: Session, order: PaymentOrder, entity: Entity, paym
         f"Payment order {order.id} refunded on Razorpay: {reason} (wallet reversal {reversal_log_text})",
         user_id=user.id if user else None, actor_email=user.email if user else None,
     )
+
+    # GST requires a credit note against the original invoice, not just a silent wallet reversal
+    # -- the invoice itself must never be left standing as a valid-looking issued document for
+    # money that's since been refunded. Local import: invoicing.py already imports from
+    # services.py at module level, so importing it back here at module level would cycle.
+    from .invoicing import issue_credit_note
+    invoice = db.scalar(select(Invoice).where(Invoice.reference == order.id, Invoice.status == "issued"))
+    credit_note_text = "no matching issued invoice was found to credit-note"
+    if invoice:
+        try:
+            note = issue_credit_note(db, invoice, f"Razorpay refund on order {order.id}: {reason}", user_id=user.id if user else None, actor_email=user.email if user else None)
+            credit_note_text = f"credit note {note.credit_note_number} issued against invoice {invoice.invoice_number}"
+        except ValueError as exc:
+            credit_note_text = f"could not issue a credit note: {exc}"
+
     info = get_platform_company_info(db)
     reversal_email_text = {
         "not_applicable": "No wallet credit was ever applied for this order, so there was nothing to reverse.",
@@ -862,7 +888,8 @@ def flag_refunded_payment(db: Session, order: PaymentOrder, entity: Entity, paym
         html_body=render_email(
             "A previously-paid order was refunded",
             f"<p>Order <strong>{order.id}</strong> (entity {entity.id}) shows as refunded on Razorpay: {reason}</p>"
-            f"<p>{reversal_email_text}</p>",
+            f"<p>{reversal_email_text}</p>"
+            f"<p>{credit_note_text.capitalize()}.</p>",
         ),
     )
 

@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from .config import settings
 from .email_service import render_email, send_email
-from .models import Entity, Invoice, Organization
-from .services import PlatformCompanyInfo, get_platform_company_info, resolve_primary_user, sac_code_for_invoice_type, state_code_from_gstin
+from .models import CreditNote, Entity, Invoice, Organization
+from .services import PlatformCompanyInfo, get_platform_company_info, indian_financial_year_label, log_activity, resolve_primary_user, sac_code_for_invoice_type, state_code_from_gstin
 from .zoho_books import sync_invoice_to_zoho
 
 INVOICE_TYPE_LABELS = {
@@ -328,11 +328,13 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
 
     # A Postgres sequence, not a count-then-increment query, so two invoices issued at the same
     # instant can never compute the same number -- nextval() is atomic regardless of concurrent
-    # transactions. The year is cosmetic; uniqueness comes entirely from the sequence.
-    year = datetime.now(timezone.utc).year
+    # transactions. The FY label is cosmetic (Apr-Mar Indian GST year, not calendar year --
+    # see indian_financial_year_label); uniqueness comes entirely from the sequence, which never
+    # resets, so numbers stay globally unique across FY boundaries too.
+    fy = indian_financial_year_label(datetime.now(timezone.utc))
     db.execute(text("CREATE SEQUENCE IF NOT EXISTS invoice_number_seq"))
     seq_val = db.execute(text("SELECT nextval('invoice_number_seq')")).scalar()
-    invoice.invoice_number = f"INV-{year}-{seq_val:06d}"
+    invoice.invoice_number = f"INV-{fy}-{seq_val:06d}"
     invoice.status = "issued"
     invoice.issued_at = datetime.now(timezone.utc)
     db.commit()
@@ -385,3 +387,51 @@ def issue_invoice(db: Session, invoice: Invoice) -> Invoice:
             attachment_filename=f"{invoice.invoice_number}.pdf",
         )
     return invoice
+
+
+def issue_credit_note(db: Session, invoice: Invoice, reason: str, user_id: str | None = None, actor_email: str | None = None) -> CreditNote:
+    """The GST-correct response to a refund/reversal on an already-issued Invoice: never delete
+    or silently edit the original document (its number must stay valid and unique forever, per
+    GST law) -- instead issue a credit note for the full amount and flip the invoice to
+    "cancelled". A cancelled invoice's own PDF is untouched (still the original record of what
+    was charged); the credit note is the correcting document, exactly like Tally/Zoho/ClearTax's
+    own credit-note flow."""
+    if invoice.status != "issued":
+        raise ValueError(f"Can only credit-note an issued invoice (this one is '{invoice.status}')")
+    entity = db.get(Entity, invoice.entity_id)
+    organization = db.get(Organization, entity.organization_id)
+
+    note = CreditNote(
+        entity_id=invoice.entity_id, invoice_id=invoice.id, amount=invoice.base_amount, gst_amount=invoice.gst_amount, reason=reason,
+    )
+    db.add(note)
+    db.flush()
+
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS credit_note_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('credit_note_number_seq')")).scalar()
+    note.credit_note_number = f"CN-{indian_financial_year_label(datetime.now(timezone.utc))}-{seq_val:06d}"
+
+    invoice.status = "cancelled"
+    log_activity(
+        db, organization.id, "invoice_cancelled_credit_note_issued",
+        f"Invoice {invoice.invoice_number} cancelled, credit note {note.credit_note_number} issued for Rs.{float(invoice.total_amount):.2f}: {reason}",
+        user_id=user_id, actor_email=actor_email,
+    )
+    db.commit()
+    db.refresh(note)
+
+    primary_user = resolve_primary_user(db, organization.id)
+    if primary_user:
+        send_email(
+            db,
+            to=primary_user.email,
+            subject=f"Credit note {note.credit_note_number} for invoice {invoice.invoice_number}",
+            html_body=render_email(
+                "A credit note has been issued",
+                f"<p>Hi {html.escape(primary_user.full_name)},</p>"
+                f"<p>Invoice <b>{invoice.invoice_number}</b> (Rs. {float(invoice.total_amount):.2f}) has been cancelled and "
+                f"credit note <b>{note.credit_note_number}</b> issued in its place.</p>"
+                f"<p>Reason: {html.escape(reason)}</p>",
+            ),
+        )
+    return note
