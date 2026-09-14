@@ -39,6 +39,15 @@ def sanitize_rich_text(html: str) -> str:
     return nh3.clean(html, tags=_RICH_TEXT_ALLOWED_TAGS, attributes=_RICH_TEXT_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
 
 
+def strip_html_tags(html: str) -> str:
+    """Reduces a rich-text message body (webchat/email, both stored as HTML) to plain text for a
+    one-line list preview -- nh3.clean with an empty tag allowlist drops every tag but keeps the
+    text content, so "<p>hi</p><p></p>" becomes "hi" instead of showing the raw markup. Collapses
+    the whitespace left behind by stripped block tags (e.g. the trailing empty <p></p> above)
+    rather than showing an odd run of blank space."""
+    return " ".join(nh3.clean(html, tags=set(), attributes={}).split())
+
+
 def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
     """Shared by every KYC/certificate-style upload across the app (DLT documents, PE
     certificates, and the company GST certificate) -- extension allowlist, size cap, and always a

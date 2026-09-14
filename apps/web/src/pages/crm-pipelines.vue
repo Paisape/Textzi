@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { useDragAndDrop } from '@formkit/drag-and-drop/vue'
+
 definePage({
   meta: {
     layout: 'default',
@@ -54,6 +56,22 @@ const form = reactive({ name: '', stages: [] as PipelineStage[] })
 const stageNameInput = ref('')
 const saving = ref(false)
 
+// --- Drag-to-reorder stages (@formkit/drag-and-drop, same pattern as crm-dashboards.vue) ---
+const [stageListRef, orderedStages] = useDragAndDrop<PipelineStage>([])
+let suppressReorderSync = false
+
+watch(orderedStages, (newOrder) => {
+  if (suppressReorderSync)
+    return
+  form.stages = newOrder
+})
+
+function syncStageOrder() {
+  suppressReorderSync = true
+  orderedStages.value = [...form.stages]
+  nextTick(() => { suppressReorderSync = false })
+}
+
 function openCreate() {
   editingId.value = null
   form.name = ''
@@ -66,6 +84,7 @@ function openCreate() {
   ]
   stageNameInput.value = ''
   dialog.value = true
+  nextTick(syncStageOrder)
 }
 
 function openEdit(pipeline: Pipeline) {
@@ -74,6 +93,7 @@ function openEdit(pipeline: Pipeline) {
   form.stages = pipeline.stages.map(s => ({ ...s, required_fields: [...(s.required_fields || [])], required_approval_user_ids: [...(s.required_approval_user_ids || [])] }))
   stageNameInput.value = ''
   dialog.value = true
+  nextTick(syncStageOrder)
 }
 
 function addStage() {
@@ -81,19 +101,12 @@ function addStage() {
   if (name && !form.stages.some(s => s.name === name))
     form.stages.push({ name, probability: 50, forecast_category: 'pipeline', required_fields: [], required_approval_user_ids: [] })
   stageNameInput.value = ''
+  syncStageOrder()
 }
 
 function removeStage(name: string) {
   form.stages = form.stages.filter(s => s.name !== name)
-}
-
-function moveStage(index: number, direction: -1 | 1) {
-  const target = index + direction
-  if (target < 0 || target >= form.stages.length)
-    return
-  const stages = [...form.stages]
-  ;[stages[index], stages[target]] = [stages[target], stages[index]]
-  form.stages = stages
+  syncStageOrder()
 }
 
 async function save() {
@@ -210,31 +223,33 @@ onMounted(loadAll)
             </VBtn>
           </template>
         </VTextField>
-        <div v-for="(stage, index) in form.stages" :key="stage.name" class="border rounded pa-2">
-          <div class="d-flex align-center gap-3">
-            <div class="d-flex flex-column">
-              <VBtn icon="tabler-chevron-up" variant="text" size="x-small" :disabled="index === 0" @click="moveStage(index, -1)" />
-              <VBtn icon="tabler-chevron-down" variant="text" size="x-small" :disabled="index === form.stages.length - 1" @click="moveStage(index, 1)" />
+        <p v-if="form.stages.length > 1" class="text-caption text-medium-emphasis mb-0">
+          Drag a stage by its handle to reorder.
+        </p>
+        <div ref="stageListRef">
+          <div v-for="stage in orderedStages" :key="stage.name" class="border rounded pa-2 mb-2">
+            <div class="d-flex align-center gap-3">
+              <VIcon icon="tabler-grip-vertical" class="cursor-grab text-medium-emphasis" />
+              <span class="text-body-2" style="min-width: 100px;">{{ formatLabel(stage.name) }}</span>
+              <VTextField
+                v-model.number="stage.probability" label="Probability %" type="number" min="0" max="100"
+                density="compact" hide-details style="max-width: 130px;"
+              />
+              <VSelect
+                v-model="stage.forecast_category" :items="forecastCategories" label="Forecast"
+                density="compact" hide-details style="max-width: 150px;"
+              />
+              <VBtn icon="tabler-x" variant="text" size="small" @click="removeStage(stage.name)" />
             </div>
-            <span class="text-body-2" style="min-width: 100px;">{{ formatLabel(stage.name) }}</span>
-            <VTextField
-              v-model.number="stage.probability" label="Probability %" type="number" min="0" max="100"
-              density="compact" hide-details style="max-width: 130px;"
+            <VSelect
+              v-model="stage.required_fields" :items="REQUIRED_FIELD_OPTIONS" label="Required to leave this stage (optional)"
+              density="compact" hide-details multiple chips closable-chips class="mt-2"
             />
             <VSelect
-              v-model="stage.forecast_category" :items="forecastCategories" label="Forecast"
-              density="compact" hide-details style="max-width: 150px;"
+              v-model="stage.required_approval_user_ids" :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+              label="Needs approval from (optional)" density="compact" hide-details multiple chips closable-chips class="mt-2"
             />
-            <VBtn icon="tabler-x" variant="text" size="small" @click="removeStage(stage.name)" />
           </div>
-          <VSelect
-            v-model="stage.required_fields" :items="REQUIRED_FIELD_OPTIONS" label="Required to leave this stage (optional)"
-            density="compact" hide-details multiple chips closable-chips class="mt-2"
-          />
-          <VSelect
-            v-model="stage.required_approval_user_ids" :items="users.map(u => ({ title: u.full_name, value: u.id }))"
-            label="Needs approval from (optional)" density="compact" hide-details multiple chips closable-chips class="mt-2"
-          />
         </div>
       </VCardText>
       <VCardActions>

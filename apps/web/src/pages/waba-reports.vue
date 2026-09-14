@@ -28,23 +28,32 @@ const reports = ref<Reports | null>(null)
 const templateRows = ref<TemplateRow[]>([])
 const loading = ref(false)
 const loadError = ref('')
+const templateAnalyticsError = ref('')
 
 async function load() {
   loading.value = true
   loadError.value = ''
+  templateAnalyticsError.value = ''
   try {
-    const [reportsResult, templateResult] = await Promise.all([
-      $api<Reports>('/v1/waba/reports', { params: { days: days.value } }),
-      $api<{ templates: TemplateRow[] }>('/v1/waba/reports/template-analytics', { params: { days: days.value } }),
-    ])
-    reports.value = reportsResult
-    templateRows.value = templateResult.templates
+    reports.value = await $api<Reports>('/v1/waba/reports', { params: { days: days.value } })
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load reports.')
   }
   finally {
     loading.value = false
+  }
+  // Separate call, separate failure mode: this one calls Meta's own template-analytics endpoint
+  // live (not cached DB aggregation like /v1/waba/reports above), so a broken/expired WhatsApp
+  // token only blunts the template table, not the entire reports page -- previously bundled into
+  // one Promise.all, so a Meta-side failure here blanked out the whole page including stats that
+  // had nothing to do with Meta at all.
+  try {
+    const templateResult = await $api<{ templates: TemplateRow[] }>('/v1/waba/reports/template-analytics', { params: { days: days.value } })
+    templateRows.value = templateResult.templates
+  }
+  catch (error: any) {
+    templateAnalyticsError.value = extractErrorMessage(error, 'Could not load template analytics from Meta.')
   }
 }
 
@@ -266,7 +275,10 @@ onMounted(load)
             <h2 class="text-h6 mb-3">
               Template performance
             </h2>
-            <VTable density="compact">
+            <VAlert v-if="templateAnalyticsError" type="warning" variant="tonal" density="compact" class="mb-3">
+              {{ templateAnalyticsError }}
+            </VAlert>
+            <VTable v-else density="compact">
               <thead>
                 <tr>
                   <th>Template</th>
@@ -290,7 +302,7 @@ onMounted(load)
                 </tr>
               </tbody>
             </VTable>
-            <p v-if="!templateRows.length" class="text-medium-emphasis text-center pa-4 mb-0">
+            <p v-if="!templateAnalyticsError && !templateRows.length" class="text-medium-emphasis text-center pa-4 mb-0">
               No template sends in this range.
             </p>
           </VCardText>

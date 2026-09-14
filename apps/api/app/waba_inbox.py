@@ -36,7 +36,7 @@ from .schemas import (
 from . import waba_media
 from .permissions import require_channel_scope_any
 from .security import decrypt_secret
-from .services import DomainError, channel_active, get_platform_waba_settings, plan_feature_active, resolve_user_entity
+from .services import DomainError, channel_active, get_platform_waba_settings, plan_feature_active, resolve_user_entity, strip_html_tags
 from .waba_dispatch import (
     mark_conversation_read, send_whatsapp_contact, send_whatsapp_interactive_buttons, send_whatsapp_interactive_list,
     send_whatsapp_location, send_whatsapp_media, send_whatsapp_product, send_whatsapp_product_list, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
@@ -90,7 +90,11 @@ def _conversation_out(db: Session, conversation: Conversation, contact: Contact,
     unread = bool(conversation.last_message_at and (not conversation.last_read_at or conversation.last_read_at < conversation.last_message_at))
     preview = None
     if latest_message:
-        preview = latest_message.body if latest_message.body else f"[{latest_message.message_type}]"
+        # strip_html_tags is a no-op on plain text (WhatsApp's own body has no tags to strip), so
+        # this is safe to apply regardless of channel -- webchat/email bodies are real HTML
+        # (Tiptap-authored), and without this a list preview showed raw markup like
+        # "<p>hi</p><p></p>" instead of "hi".
+        preview = strip_html_tags(latest_message.body) if latest_message.body else f"[{latest_message.message_type}]"
         if latest_message.is_private:
             preview = f"Note: {preview}"
     # Computed at read time rather than a background job -- a breach only needs to be visible

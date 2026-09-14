@@ -33,20 +33,20 @@ const templates = ref<Template[]>([])
 const conversationLabels = ref<Label[]>([])
 const loading = ref(false)
 const loadError = ref('')
+const templatesError = ref('')
 
 async function loadAll() {
   loading.value = true
   loadError.value = ''
+  templatesError.value = ''
   try {
-    const [campaignResult, segmentResult, templateResult, labelResult] = await Promise.all([
+    const [campaignResult, segmentResult, labelResult] = await Promise.all([
       $api<Campaign[]>('/v1/waba/campaigns'),
       $api<Segment[]>('/v1/waba/segments'),
-      $api<Template[]>('/v1/waba/templates'),
       $api<Label[]>('/v1/waba/labels', { params: { scope: 'contact' } }),
     ])
     campaigns.value = campaignResult
     segments.value = segmentResult
-    templates.value = templateResult.filter(t => t.status === 'APPROVED')
     conversationLabels.value = labelResult
   }
   catch (error: any) {
@@ -54,6 +54,16 @@ async function loadAll() {
   }
   finally {
     loading.value = false
+  }
+  // Separate call: /v1/waba/templates calls Meta live, so a broken/expired token here must not
+  // wipe out campaigns/segments/labels that loaded fine above -- previously one Promise.all, so
+  // this one call's failure silently dropped everything else too.
+  try {
+    const templateResult = await $api<Template[]>('/v1/waba/templates')
+    templates.value = templateResult.filter(t => t.status === 'APPROVED')
+  }
+  catch (error: any) {
+    templatesError.value = extractErrorMessage(error, 'Could not load templates from Meta.')
   }
 }
 
@@ -261,6 +271,9 @@ onMounted(loadAll)
 
   <VAlert v-if="loadError" type="error" variant="tonal" class="mb-4">
     {{ loadError }}
+  </VAlert>
+  <VAlert v-if="templatesError" type="warning" variant="tonal" class="mb-4">
+    {{ templatesError }} New campaigns can't be created until this is fixed -- existing campaigns/segments above are unaffected.
   </VAlert>
 
   <VTabs v-model="activeTab" class="mb-6">
