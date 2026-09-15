@@ -72,6 +72,19 @@ def _strip_inline_text_colors(html: str) -> str:
     return _CSS_COLOR_PROPERTY_RE.sub("", html)
 
 
+def _email_html_attribute_filter(tag: str, attr: str, value: str) -> str | None:
+    """nh3's url_schemes allowlist is global to both href and src (no per-tag control) -- a real
+    inbound email regularly embeds a logo/signature image as a data: URI (confirmed live: this
+    is exactly what silently rendered as a broken image before this fix, since data was never in
+    the scheme allowlist at all), which needs data: allowed on img src. But allowing data: on `a`
+    href too would let a link itself carry a data:text/html payload -- a real, known phishing/XSS
+    vector (a browser can render/execute a data: URI's content when a link is followed), not a
+    theoretical one. This filter is what makes the allowlist below only apply data: to img."""
+    if tag == "a" and attr == "href" and value.strip().lower().startswith("data:"):
+        return None
+    return value
+
+
 def sanitize_email_html(html: str) -> str:
     """Wider allowlist than sanitize_rich_text, for a real inbound email body (untrusted -- from
     an external sender, same threat model as webchat, just a much broader legitimate-content
@@ -80,7 +93,10 @@ def sanitize_email_html(html: str) -> str:
     does regardless of the allowlist passed to it. Also strips the sender's own inline text/
     background colors (see _strip_inline_text_colors) -- this app's own theme (light or dark)
     should always win, not whatever color a random external sender happened to pick."""
-    cleaned = nh3.clean(html, tags=_EMAIL_HTML_ALLOWED_TAGS, attributes=_EMAIL_HTML_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
+    cleaned = nh3.clean(
+        html, tags=_EMAIL_HTML_ALLOWED_TAGS, attributes=_EMAIL_HTML_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow",
+        url_schemes={"http", "https", "mailto", "data"}, attribute_filter=_email_html_attribute_filter,
+    )
     return _strip_inline_text_colors(cleaned)
 
 

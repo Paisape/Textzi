@@ -129,6 +129,29 @@ async function downloadAttachment(messageId: string, index: number, filename: st
   }
 }
 
+function isPreviewable(contentType: string) {
+  return contentType.startsWith('image/') || contentType === 'application/pdf'
+}
+
+async function previewAttachment(messageId: string, index: number) {
+  const key = `${messageId}:${index}`
+  downloadingAttachment.value = key
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/email/messages/${messageId}/attachments/${index}`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    // Deliberately never revoked -- the new tab needs the object URL to stay valid for as long
+    // as it's open, and there's no reliable "tab closed" hook to revoke it on; a few leaked blob
+    // URLs per session is a non-issue compared to a preview tab going blank mid-view.
+    window.open(url, '_blank')
+  }
+  catch {
+    // Same low-stakes failure as downloadAttachment -- no dedicated error banner needed.
+  }
+  finally {
+    downloadingAttachment.value = null
+  }
+}
+
 async function selectThread(id: string) {
   threadLoading.value = true
   threadError.value = ''
@@ -543,9 +566,18 @@ onMounted(() => {
                 v-for="(att, i) in m.payload.attachments" :key="i"
                 variant="tonal" size="small" prepend-icon="tabler-paperclip"
                 :disabled="downloadingAttachment === `${m.id}:${i}`"
-                @click="downloadAttachment(m.id, i, att.filename)"
               >
                 {{ att.filename }} <span class="text-caption text-medium-emphasis ms-1">({{ formatFileSize(att.size) }})</span>
+                <template #append>
+                  <VBtn
+                    v-if="isPreviewable(att.content_type)" icon="tabler-eye" size="x-small" variant="text" density="compact" class="ms-1"
+                    title="View" @click="previewAttachment(m.id, i)"
+                  />
+                  <VBtn
+                    icon="tabler-download" size="x-small" variant="text" density="compact" class="ms-1"
+                    title="Download" @click="downloadAttachment(m.id, i, att.filename)"
+                  />
+                </template>
               </VChip>
             </div>
           </div>
