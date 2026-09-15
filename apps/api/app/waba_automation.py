@@ -53,6 +53,12 @@ def _apply_action(db: Session, entity_id: str, contact: Contact, conversation: C
         if not db.get(ConversationLabel, (conversation.id, rule.action_value)):
             db.add(ConversationLabel(conversation_id=conversation.id, label_id=rule.action_value))
     elif rule.action_type == "reply":
+        # WhatsApp-only -- apply_rules is now also called for inbound email (crm_email.py, for the
+        # assign/label actions, which are channel-agnostic), and an email contact has no wa_id.
+        # Skip cleanly rather than crash on a None wa_id; a real per-channel auto-reply (email)
+        # isn't built and isn't what this action was ever for.
+        if not contact.wa_id:
+            return
         canned = db.get(CannedResponse, rule.action_value)
         if not canned:
             return

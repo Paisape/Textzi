@@ -6,13 +6,15 @@ same way quotes/sequences are: a CRM-plan capability (_require_crm), not a separ
 channel.
 
 Deliberately its own module, never importing from or importing into dispatch.py/providers.py/
-webhooks.py (SMS) or waba_dispatch.py/waba_meta.py/waba_webhooks.py (WhatsApp) -- it writes to the
-same shared Contact/Conversation/ConversationMessage tables those already use (channel="email"),
-since those tables were designed from the start to be channel-agnostic (Contact's own docstring:
-"WhatsApp today (identified by wa_id), email accounts later (identified by email address
-instead)"), not by importing WhatsApp's module code. It does import crm_email_graph.py
-one-directionally (that module never imports this one back), same pattern as every other
-CRM-to-channel touchpoint."""
+webhooks.py (SMS) or waba_dispatch.py/waba_meta.py/waba_webhooks.py (WhatsApp's own send/receive
+pipeline) -- it writes to the same shared Contact/Conversation/ConversationMessage tables those
+already use (channel="email"), since those tables were designed from the start to be
+channel-agnostic (Contact's own docstring: "WhatsApp today (identified by wa_id), email accounts
+later (identified by email address instead)"), not by importing WhatsApp's module code. It does
+import crm_email_graph.py, waba_automation.py (apply_rules -- assign/label actions are
+channel-agnostic, only the WhatsApp-specific "reply" action no-ops for an email contact, see its
+own guard) and waba_realtime.py one-directionally (none of those import this one back), same
+pattern as every other CRM-to-channel touchpoint."""
 import base64
 import imaplib
 import logging
@@ -53,6 +55,7 @@ from .schemas import (
 )
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity, sanitize_email_html
+from .waba_automation import apply_rules
 from .waba_realtime import notify_new_reply
 
 logger = logging.getLogger("textzi.crm_email")
@@ -421,10 +424,12 @@ def test_email_account(user: User = Depends(require_user), db: Session = Depends
     return EmailAccountTestResult(ok=error is None, error=error)
 
 
-def _find_or_create_contact(db: Session, entity_id: str, email_address: str, display_name: str | None) -> Contact:
+def _find_or_create_contact(db: Session, entity_id: str, email_address: str, display_name: str | None) -> tuple[Contact, bool]:
+    """Returns (contact, is_new) -- is_new feeds apply_rules' own new_contact trigger (see the two
+    inbound call sites below), same shape as waba_webhooks._resolve_contact's own return value."""
     contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.email == email_address))
     if contact:
-        return contact
+        return contact, False
     contact = Contact(entity_id=entity_id, email=email_address, name=display_name)
     db.add(contact)
     # A manual send racing the scheduled inbound poll (or two overlapping polls) for the same
@@ -437,7 +442,8 @@ def _find_or_create_contact(db: Session, entity_id: str, email_address: str, dis
         contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.email == email_address))
         if not contact:
             raise
-    return contact
+        return contact, False
+    return contact, True
 
 
 def _find_or_create_conversation(db: Session, entity_id: str, contact_id: str) -> Conversation:
@@ -497,7 +503,7 @@ def send_email(
         if not contact or contact.entity_id != entity.id or not contact.email:
             raise HTTPException(status_code=404, detail="Contact not found or has no email address")
     elif payload.to_email:
-        contact = _find_or_create_contact(db, entity.id, payload.to_email, payload.to_name)
+        contact, _is_new = _find_or_create_contact(db, entity.id, payload.to_email, payload.to_name)
     else:
         raise HTTPException(status_code=422, detail="Provide either contact_id or to_email")
 
@@ -653,7 +659,7 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
             from_name, from_email = parseaddr(_decode(msg.get("From")))
             if not from_email:
                 continue
-            contact = _find_or_create_contact(db, account.entity_id, from_email, from_name or None)
+            contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_name or None)
             conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
             conversation.last_message_at = datetime.now(timezone.utc)
             body_text, is_html = _extract_body(msg)
@@ -663,6 +669,11 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
                 body=body_text, payload={"subject": _decode(msg.get("Subject")), "is_html": is_html, "attachments": attachments},
             ))
             db.flush()
+            # Before notify_new_reply, not after -- a new_contact/assign automation rule must run
+            # first so notify_new_reply (which only notifies whoever is CURRENTLY assigned) can
+            # actually see the auto-assignment. Same bug/fix already applied to the WhatsApp
+            # inbound path (waba_webhooks.py) for the identical reason.
+            apply_rules(db, account.entity_id, contact, conversation, body_text if not is_html else None, is_new_contact, False)
             notify_new_reply(db, account.entity_id, conversation, contact, "email")
         account.last_synced_at = datetime.now(timezone.utc)
         account.status = "connected"
@@ -689,7 +700,7 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
     from_email = from_field.get("address")
     if not from_email:
         return
-    contact = _find_or_create_contact(db, account.entity_id, from_email, from_field.get("name"))
+    contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_field.get("name"))
     conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
     conversation.last_message_at = datetime.now(timezone.utc)
     body_field = message.get("body") or {}
@@ -716,6 +727,7 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
         body=body_content, payload={"subject": message.get("subject") or "", "is_html": is_html, "attachments": attachments},
     ))
     db.flush()
+    apply_rules(db, account.entity_id, contact, conversation, body_content if not is_html else None, is_new_contact, False)
     notify_new_reply(db, account.entity_id, conversation, contact, "email")
 
 
