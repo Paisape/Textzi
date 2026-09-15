@@ -10,6 +10,8 @@ type Contact = { id: string, wa_id: string | null, email: string | null, name: s
 type DirectoryEntry = {
   contact: Contact
   conversation_id: string | null
+  channel: string | null
+  assigned_user_id: string | null
   last_message_at: string | null
   last_reply_at: string | null
   is_ticket: boolean
@@ -18,8 +20,10 @@ type DirectoryEntry = {
   lead_id: string | null
   customer_id: string | null
 }
+type AssignableUser = { id: string, full_name: string }
 
 const entries = ref<DirectoryEntry[]>([])
+const users = ref<AssignableUser[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const search = ref('')
@@ -29,11 +33,26 @@ const search = ref('')
 // review and either confirm or leave them, rather than them being silently lost.
 const showUnconfirmed = ref(false)
 
+const CHANNEL_LABEL: Record<string, string> = { whatsapp: 'WhatsApp', email: 'Email', webchat: 'Webchat' }
+
+function sourceLabel(entry: DirectoryEntry) {
+  return entry.channel ? (CHANNEL_LABEL[entry.channel] || entry.channel) : '—'
+}
+
+function ownerName(entry: DirectoryEntry) {
+  return users.value.find(u => u.id === entry.assigned_user_id)?.full_name || 'Unassigned'
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    entries.value = await $api<DirectoryEntry[]>('/v1/waba/contacts-directory', { params: { include_unconfirmed: showUnconfirmed.value } })
+    const [entryResult, userResult] = await Promise.all([
+      $api<DirectoryEntry[]>('/v1/waba/contacts-directory', { params: { include_unconfirmed: showUnconfirmed.value } }),
+      $api<AssignableUser[]>('/v1/waba/assignable-users').catch(() => []),
+    ])
+    entries.value = entryResult
+    users.value = userResult
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load customers.')
@@ -173,6 +192,8 @@ onMounted(load)
         <tr>
           <th>Name</th>
           <th>Mobile no</th>
+          <th>Source</th>
+          <th>Owner</th>
           <th>Last message</th>
           <th>Last reply</th>
           <th>Status</th>
@@ -188,6 +209,8 @@ onMounted(load)
             </VChip>
           </td>
           <td>{{ entry.contact.wa_id || entry.contact.email || '—' }}</td>
+          <td>{{ sourceLabel(entry) }}</td>
+          <td>{{ ownerName(entry) }}</td>
           <td>{{ formatDate(entry.last_message_at) }}</td>
           <td>{{ formatDate(entry.last_reply_at) }}</td>
           <td>

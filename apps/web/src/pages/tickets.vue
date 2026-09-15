@@ -19,6 +19,7 @@ type Contact = {
   labels: Label[]
   company_id: string | null
   consent_given_at: string | null
+  crm_contact_id: string | null
   created_at: string
 }
 type Company = { id: string, name: string }
@@ -709,7 +710,10 @@ onMounted(() => {
         <p v-if="selected.contact.email" class="text-caption text-medium-emphasis mb-1">
           {{ selected.contact.email }}
         </p>
-        <RouterLink :to="`/waba-customers/${selected.contact.id}`" class="text-caption d-inline-block mb-2">
+        <RouterLink
+          :to="selected.contact.crm_contact_id ? `/crm-contacts/${selected.contact.crm_contact_id}` : `/waba-customers/${selected.contact.id}`"
+          class="text-caption d-inline-block mb-2"
+        >
           View full customer profile →
         </RouterLink>
 

@@ -1186,6 +1186,8 @@ def list_contacts_directory(include_unconfirmed: bool = False, user: User = Depe
         out.append(ContactDirectoryEntryOut(
             contact=_contact_out(db, contact),
             conversation_id=conversation.id if conversation else None,
+            channel=conversation.channel if conversation else None,
+            assigned_user_id=conversation.assigned_user_id if conversation else None,
             last_message_at=conversation.last_message_at.isoformat() if conversation and conversation.last_message_at else None,
             last_reply_at=last_replies[conversation.id].isoformat() if conversation and conversation.id in last_replies else None,
             is_ticket=bool(conversation and conversation.is_ticket),

@@ -3493,6 +3493,8 @@ class TicketSummary(BaseModel):
 class ContactDirectoryEntryOut(BaseModel):
     contact: ContactOut
     conversation_id: str | None
+    channel: str | None
+    assigned_user_id: str | None
     last_message_at: str | None
     last_reply_at: str | None
     is_ticket: bool
