@@ -3560,6 +3560,17 @@ class CustomerLogEntryOut(BaseModel):
     at: str
 
 
+class CustomerNoteOut(BaseModel):
+    id: str
+    body: str
+    user_name: str | None
+    created_at: str
+
+
+class CustomerNoteCreateRequest(BaseModel):
+    body: str = Field(min_length=1, max_length=5000)
+
+
 class StatusCountAmount(BaseModel):
     count: int
     amount: float
@@ -3581,6 +3592,7 @@ class CustomerSummaryOut(BaseModel):
     emails: list[ActivityMessageOut]
     waba_contact_id: str | None
     log: list[CustomerLogEntryOut]
+    customer_notes: list[CustomerNoteOut]
     total_deal_value: float
     total_invoiced: float
     total_paid: float

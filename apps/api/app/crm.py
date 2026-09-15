@@ -26,14 +26,14 @@ from .database import SessionLocal, get_db
 from .email_service import render_email, send_email
 from .models import (
     Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
-    Customer, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesInvoice, SalesTarget, SavedReport, SavedView, ScoringRule,
+    Customer, CustomerNote, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesInvoice, SalesTarget, SavedReport, SavedView, ScoringRule,
     Task, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
-    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
+    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerNoteCreateRequest, CustomerNoteOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
     DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
@@ -1017,6 +1017,14 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
     tasks = db.scalars(select(Task).where(Task.contact_id == customer.contact_id).order_by(Task.due_at.asc().nulls_last())).all()
     customer_detail = CustomerDetailOut(**_customer_out(customer, contact).model_dump(), tasks=[_task_out(t) for t in tasks])
 
+    customer_note_rows = db.scalars(select(CustomerNote).where(CustomerNote.customer_id == customer.id).order_by(CustomerNote.created_at.desc())).all()
+    note_user_ids = {n.user_id for n in customer_note_rows if n.user_id}
+    note_user_names = {u.id: u.full_name for u in db.scalars(select(User).where(User.id.in_(note_user_ids))).all()} if note_user_ids else {}
+    customer_notes = [
+        CustomerNoteOut(id=n.id, body=n.body, user_name=note_user_names.get(n.user_id), created_at=n.created_at.isoformat())
+        for n in customer_note_rows
+    ]
+
     deals = db.scalars(select(Deal).where(Deal.contact_id == customer.contact_id).order_by(Deal.created_at.desc())).all()
     deal_ids = [d.id for d in deals]
     quotes = db.scalars(select(Quote).where(Quote.deal_id.in_(deal_ids)).order_by(Quote.created_at.desc())).all() if deal_ids else []
@@ -1053,6 +1061,9 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
         log.append(CustomerLogEntryOut(kind="invoice_issued", label=f"Invoice {invoice.invoice_number or invoice.id} issued", at=invoice.created_at.isoformat()))
     for attachment in attachments:
         log.append(CustomerLogEntryOut(kind="attachment_uploaded", label=f"File uploaded: {attachment.filename}", at=attachment.created_at.isoformat()))
+    for note in customer_notes:
+        who = note.user_name or "Someone"
+        log.append(CustomerLogEntryOut(kind="note_added", label=f"{who} added a note", at=note.created_at))
     log.sort(key=lambda entry: entry.at, reverse=True)
 
     return CustomerSummaryOut(
@@ -1065,6 +1076,7 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
         emails=emails,
         waba_contact_id=waba_contact_id,
         log=log,
+        customer_notes=customer_notes,
         total_deal_value=sum(float(d.value or 0) for d in deals),
         total_invoiced=sum(i.total for i in invoice_outs),
         total_paid=sum(i.amount_paid for i in invoice_outs),
@@ -1072,6 +1084,20 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
         invoices_by_status=invoices_by_status,
         quotes_by_status=quotes_by_status,
     )
+
+
+@router.post("/customers/{customer_id}/notes", response_model=CustomerNoteOut)
+def create_customer_note(customer_id: str, payload: CustomerNoteCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    customer = db.get(Customer, customer_id)
+    if not customer or customer.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    note = CustomerNote(customer_id=customer.id, user_id=user.id, body=payload.body.strip())
+    db.add(note)
+    db.commit()
+    db.refresh(note)
+    return CustomerNoteOut(id=note.id, body=note.body, user_name=user.full_name, created_at=note.created_at.isoformat())
 
 
 @router.patch("/customers/{customer_id}", response_model=CustomerOut)

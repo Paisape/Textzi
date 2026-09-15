@@ -33,6 +33,7 @@ type Attachment = { id: string, filename: string, uploaded_by_user_id: string | 
 type ActivityMessage = { id: string, channel: string, direction: 'inbound' | 'outbound', message_type: string, body: string | null, created_at: string }
 type LogEntry = { kind: string, label: string, at: string }
 type StatusCountAmount = { count: number, amount: number }
+type CustomerNote = { id: string, body: string, user_name: string | null, created_at: string }
 type CustomerSummary = {
   customer: CustomerDetail
   deals: Deal[]
@@ -43,6 +44,7 @@ type CustomerSummary = {
   emails: ActivityMessage[]
   waba_contact_id: string | null
   log: LogEntry[]
+  customer_notes: CustomerNote[]
   total_deal_value: number
   total_invoiced: number
   total_paid: number
@@ -52,10 +54,13 @@ type CustomerSummary = {
 }
 type AssignableUser = { id: string, full_name: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
+type PipelineStage = { name: string, probability: number, forecast_category: string }
+type Pipeline = { id: string, name: string, stages: PipelineStage[] }
 
 const summary = ref<CustomerSummary | null>(null)
 const users = ref<AssignableUser[]>([])
 const customFields = ref<CustomField[]>([])
+const pipelines = ref<Pipeline[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const activeTab = ref('summary')
@@ -64,14 +69,16 @@ async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [summaryResult, userResult, fieldResult] = await Promise.all([
+    const [summaryResult, userResult, fieldResult, pipelineResult] = await Promise.all([
       $api<CustomerSummary>(`/v1/crm/customers/${route.params.id}/summary`),
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
       $api<CustomField[]>('/v1/crm/custom-fields?applies_to=customer'),
+      $api<Pipeline[]>('/v1/crm/pipelines').catch(() => []),
     ])
     summary.value = summaryResult
     users.value = userResult
     customFields.value = fieldResult
+    pipelines.value = pipelineResult
     addRecentlyViewed({
       type: 'customer', id: summaryResult.customer.id,
       label: summaryResult.customer.contact.name || summaryResult.customer.contact.phone || summaryResult.customer.contact.email || 'Unknown',
@@ -107,15 +114,23 @@ function formatDateTime(iso: string) {
   return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
 }
 
-async function updateNotes(notes: string) {
-  if (!summary.value)
+const newNoteBody = ref('')
+const addingNote = ref(false)
+
+async function addNote() {
+  if (!summary.value || !newNoteBody.value.trim())
     return
+  addingNote.value = true
   try {
-    const updated = await $api<Customer>(`/v1/crm/customers/${summary.value.customer.id}`, { method: 'PATCH', body: { notes } })
-    summary.value.customer = { ...summary.value.customer, ...updated }
+    const created = await $api<CustomerNote>(`/v1/crm/customers/${summary.value.customer.id}/notes`, { method: 'POST', body: { body: newNoteBody.value.trim() } })
+    summary.value.customer_notes.unshift(created)
+    newNoteBody.value = ''
   }
   catch (error: any) {
-    loadError.value = extractErrorMessage(error, 'Could not save notes.')
+    loadError.value = extractErrorMessage(error, 'Could not add this note.')
+  }
+  finally {
+    addingNote.value = false
   }
 }
 
@@ -293,14 +308,99 @@ function sendEmail() {
   router.push({ name: 'crm-email', query })
 }
 
+// Was a navigation to crm-deals?new=1&contact_id=... -- confirmed with the user this should
+// complete inline instead, same as every other quick action on this page. The contact is already
+// known (unlike crm-deals/index.vue's own "New deal" button, which needs to find-or-create one),
+// so this dialog only asks for the deal's own fields.
+const newDealDialog = ref(false)
+const newDealForm = reactive({ dealName: '', pipeline_id: null as string | null, stage: '', value: null as number | null, probability: null as number | null, owner_user_id: null as string | null })
+const newDealSaving = ref(false)
+const newDealError = ref('')
+
 function newDeal() {
+  const defaultPipeline = pipelines.value[0] || null
+  newDealForm.dealName = ''
+  newDealForm.pipeline_id = defaultPipeline?.id || null
+  newDealForm.stage = defaultPipeline?.stages[0]?.name || 'inquiry'
+  newDealForm.value = null
+  newDealForm.probability = defaultPipeline?.stages[0]?.probability ?? null
+  newDealForm.owner_user_id = null
+  newDealError.value = ''
+  newDealDialog.value = true
+}
+
+const newTaskDialog = ref(false)
+const newTaskForm = reactive({ title: '', type: 'follow_up' as 'call' | 'meeting' | 'follow_up' | 'other', due_at: '', assigned_user_id: null as string | null, priority: 'normal' as 'low' | 'normal' | 'high' })
+const newTaskSaving = ref(false)
+const newTaskError = ref('')
+
+function openNewTaskDialog() {
+  newTaskForm.title = ''
+  newTaskForm.type = 'follow_up'
+  newTaskForm.due_at = ''
+  newTaskForm.assigned_user_id = null
+  newTaskForm.priority = 'normal'
+  newTaskError.value = ''
+  newTaskDialog.value = true
+}
+
+async function createTaskInline() {
+  if (!summary.value || !newTaskForm.title.trim())
+    return
+  newTaskSaving.value = true
+  newTaskError.value = ''
+  try {
+    const created = await $api<Task>('/v1/crm/tasks', {
+      method: 'POST',
+      body: {
+        contact_id: summary.value.customer.contact.id,
+        title: newTaskForm.title.trim(),
+        type: newTaskForm.type,
+        due_at: newTaskForm.due_at || null,
+        assigned_user_id: newTaskForm.assigned_user_id,
+        priority: newTaskForm.priority,
+      },
+    })
+    summary.value.customer.tasks.unshift(created)
+    newTaskDialog.value = false
+  }
+  catch (error: any) {
+    newTaskError.value = extractErrorMessage(error, 'Could not create this task.')
+  }
+  finally {
+    newTaskSaving.value = false
+  }
+}
+
+async function createDealInline() {
   if (!summary.value)
     return
-  const contact = summary.value.customer.contact
-  const query: Record<string, string> = { new: '1', contact_id: contact.id }
-  if (contact.name)
-    query.name = contact.name
-  router.push({ name: 'crm-deals', query })
+  newDealSaving.value = true
+  newDealError.value = ''
+  try {
+    const created = await $api<Deal>('/v1/crm/deals', {
+      method: 'POST',
+      body: {
+        contact_id: summary.value.customer.contact.id,
+        deal_name: newDealForm.dealName.trim() || null,
+        pipeline_id: newDealForm.pipeline_id,
+        stage: newDealForm.stage,
+        value: newDealForm.value,
+        probability: newDealForm.probability,
+        owner_user_id: newDealForm.owner_user_id,
+      },
+    })
+    summary.value.deals.unshift(created)
+    summary.value.open_deal_count += created.status === 'open' ? 1 : 0
+    summary.value.total_deal_value += created.value || 0
+    newDealDialog.value = false
+  }
+  catch (error: any) {
+    newDealError.value = extractErrorMessage(error, 'Could not create this deal.')
+  }
+  finally {
+    newDealSaving.value = false
+  }
 }
 
 function openWabaTimeline() {
@@ -563,7 +663,7 @@ onMounted(load)
                 <VListItem prepend-icon="tabler-file-invoice" @click="newQuote">
                   New quote / invoice
                 </VListItem>
-                <VListItem prepend-icon="tabler-checklist" @click="router.push('/crm-tasks')">
+                <VListItem prepend-icon="tabler-checklist" @click="openNewTaskDialog">
                   New task
                 </VListItem>
                 <VListItem prepend-icon="tabler-mail" @click="sendEmail">
@@ -628,7 +728,7 @@ onMounted(load)
               </VCardText>
             </VCard>
 
-            <VCard title="Tasks">
+            <VCard title="Tasks" class="mb-4">
               <VList v-if="summary.customer.tasks.length" density="compact">
                 <VListItem v-for="task in summary.customer.tasks" :key="task.id" style="cursor: pointer;" @click="router.push('/crm-tasks')">
                   <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
@@ -641,6 +741,25 @@ onMounted(load)
               </VList>
               <p v-else class="text-medium-emphasis text-center pa-6">
                 No tasks yet.
+              </p>
+            </VCard>
+
+            <VCard title="Recent notes">
+              <template #append>
+                <VBtn size="small" variant="text" @click="activeTab = 'notes'">
+                  View all
+                </VBtn>
+              </template>
+              <VList v-if="summary.customer_notes.length" density="compact">
+                <VListItem v-for="note in summary.customer_notes.slice(0, 3)" :key="note.id">
+                  <VListItemTitle style="white-space: pre-wrap;">
+                    {{ note.body }}
+                  </VListItemTitle>
+                  <VListItemSubtitle>{{ note.user_name || 'Unknown' }} · {{ formatDateTime(note.created_at) }}</VListItemSubtitle>
+                </VListItem>
+              </VList>
+              <p v-else class="text-medium-emphasis text-center pa-6">
+                No notes yet.
               </p>
             </VCard>
           </VCol>
@@ -820,13 +939,28 @@ onMounted(load)
       </VWindowItem>
 
       <VWindowItem value="notes">
-        <VCard>
+        <VCard class="mb-4">
           <VCardText>
-            <VTextarea
-              :model-value="summary.customer.notes || ''" rows="6" density="compact" placeholder="Add notes about this customer..."
-              @blur="(e: FocusEvent) => updateNotes((e.target as HTMLTextAreaElement).value)"
-            />
+            <VTextarea v-model="newNoteBody" rows="3" density="compact" placeholder="Add a note about this customer..." />
+            <div class="d-flex justify-end mt-2">
+              <VBtn size="small" :loading="addingNote" :disabled="!newNoteBody.trim()" @click="addNote">
+                Add note
+              </VBtn>
+            </div>
           </VCardText>
+        </VCard>
+        <VCard>
+          <VList v-if="summary.customer_notes.length" density="compact">
+            <VListItem v-for="note in summary.customer_notes" :key="note.id">
+              <VListItemTitle style="white-space: pre-wrap;">
+                {{ note.body }}
+              </VListItemTitle>
+              <VListItemSubtitle>{{ note.user_name || 'Unknown' }} · {{ formatDateTime(note.created_at) }}</VListItemSubtitle>
+            </VListItem>
+          </VList>
+          <p v-else class="text-medium-emphasis text-center pa-6 mb-0">
+            No notes yet.
+          </p>
         </VCard>
       </VWindowItem>
 
@@ -897,6 +1031,74 @@ onMounted(load)
         </VBtn>
         <VBtn color="primary" :loading="convertingToTicket" @click="convertToTicket">
           Create ticket
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="newDealDialog" max-width="480">
+    <VCard title="New deal">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="newDealDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VAlert v-if="newDealError" type="error" variant="tonal" density="compact">
+          {{ newDealError }}
+        </VAlert>
+        <VTextField v-model="newDealForm.dealName" label="Deal name (optional -- defaults to contact name)" density="compact" autofocus />
+        <VSelect
+          v-model="newDealForm.pipeline_id" label="Pipeline" density="compact"
+          :items="pipelines.map(p => ({ title: p.name, value: p.id }))"
+        />
+        <VSelect
+          v-model="newDealForm.stage" label="Stage" density="compact"
+          :items="(pipelines.find(p => p.id === newDealForm.pipeline_id)?.stages || []).map(s => s.name)"
+        />
+        <VTextField v-model.number="newDealForm.value" label="Value (₹)" type="number" density="compact" />
+        <VTextField v-model.number="newDealForm.probability" label="Probability (%)" type="number" density="compact" />
+        <VSelect
+          v-model="newDealForm.owner_user_id" label="Owner" density="compact" clearable
+          :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="newDealDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="newDealSaving" @click="createDealInline">
+          Create deal
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="newTaskDialog" max-width="480">
+    <VCard title="New task">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="newTaskDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VAlert v-if="newTaskError" type="error" variant="tonal" density="compact">
+          {{ newTaskError }}
+        </VAlert>
+        <VTextField v-model="newTaskForm.title" label="Title" density="compact" autofocus />
+        <VSelect v-model="newTaskForm.type" label="Type" :items="['call', 'meeting', 'follow_up', 'other']" density="compact" class="text-capitalize" />
+        <VTextField v-model="newTaskForm.due_at" label="Due" type="datetime-local" density="compact" />
+        <VSelect v-model="newTaskForm.priority" label="Priority" :items="['low', 'normal', 'high']" density="compact" class="text-capitalize" />
+        <VSelect
+          v-model="newTaskForm.assigned_user_id" label="Assign to" density="compact" clearable
+          :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+          placeholder="Unassigned"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="newTaskDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="newTaskSaving" :disabled="!newTaskForm.title.trim()" @click="createTaskInline">
+          Create task
         </VBtn>
       </VCardActions>
     </VCard>

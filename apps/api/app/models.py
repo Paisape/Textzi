@@ -2092,9 +2092,26 @@ class Customer(Base):
     deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), nullable=True)
     converted_from_conversation_id: Mapped[str | None] = mapped_column(ForeignKey("conversations.id"), nullable=True)
     owner_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    # Kept for backward compatibility with any existing data/reports -- the real notes UI now
+    # reads/writes CustomerNote instead (see its own docstring for why a single overwritable
+    # field wasn't enough: confirmed live as a real gap, no record of who wrote a note or when,
+    # and an edit silently destroyed whatever was there before).
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     custom_fields: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class CustomerNote(Base):
+    """A real note history for a Customer -- append-only, one row per note, each stamped with who
+    wrote it and when (confirmed live as a real gap: Customer.notes was a single free-text field
+    with no author/timestamp at all, and every edit silently overwrote whatever was there
+    before). Matches Zoho/Freshdesk's own Notes tab shape."""
+    __tablename__ = "customer_notes"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    customer_id: Mapped[str] = mapped_column(ForeignKey("customers.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class Notification(Base):
