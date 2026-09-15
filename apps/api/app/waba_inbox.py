@@ -81,7 +81,8 @@ def _contact_out(db: Session, contact: Contact) -> ContactOut:
 def _crm_contact_out(contact: CrmContact) -> CrmContactOut:
     return CrmContactOut(
         id=contact.id, name=contact.name, phone=contact.phone, email=contact.email, title=contact.title,
-        company_id=contact.company_id, source=contact.source, custom_fields=contact.custom_fields or {},
+        company_id=contact.company_id, owner_user_id=contact.owner_user_id, address=contact.address,
+        reports_to_id=contact.reports_to_id, source=contact.source, custom_fields=contact.custom_fields or {},
         consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
         consent_source=contact.consent_source, created_at=contact.created_at.isoformat(),
     )
