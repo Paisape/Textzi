@@ -2,6 +2,7 @@
 definePage({
   meta: {
     layout: 'default',
+    layoutWrapperClasses: 'layout-content-width-fluid',
     channel: 'crm',
   },
 })
@@ -24,30 +25,52 @@ type Customer = {
   created_at: string
 }
 type CustomerDetail = Customer & { tasks: Task[] }
+type Deal = { id: string, name: string | null, stage: string, status: 'open' | 'won' | 'lost', value: number | null, probability: number | null, expected_close_date: string | null, created_at: string }
+type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number }
+type Quote = { id: string, quote_number: string | null, status: 'draft' | 'sent' | 'accepted' | 'rejected', total: number, created_at: string, sent_at: string | null }
+type SalesInvoice = { id: string, invoice_number: string | null, status: 'issued' | 'partially_paid' | 'paid' | 'cancelled', total: number, amount_paid: number, balance_due: number, created_at: string }
+type Attachment = { id: string, filename: string, uploaded_by_user_id: string | null, created_at: string }
+type ActivityMessage = { id: string, channel: string, direction: 'inbound' | 'outbound', message_type: string, body: string | null, created_at: string }
+type LogEntry = { kind: string, label: string, at: string }
+type CustomerSummary = {
+  customer: CustomerDetail
+  deals: Deal[]
+  quotes: Quote[]
+  invoices: SalesInvoice[]
+  attachments: Attachment[]
+  tickets: ActivityMessage[]
+  emails: ActivityMessage[]
+  log: LogEntry[]
+  total_deal_value: number
+  total_invoiced: number
+  total_paid: number
+  open_deal_count: number
+}
 type AssignableUser = { id: string, full_name: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
 
-const detail = ref<CustomerDetail | null>(null)
+const summary = ref<CustomerSummary | null>(null)
 const users = ref<AssignableUser[]>([])
 const customFields = ref<CustomField[]>([])
 const loading = ref(false)
 const loadError = ref('')
+const activeTab = ref('summary')
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    const [detailResult, userResult, fieldResult] = await Promise.all([
-      $api<CustomerDetail>(`/v1/crm/customers/${route.params.id}`),
+    const [summaryResult, userResult, fieldResult] = await Promise.all([
+      $api<CustomerSummary>(`/v1/crm/customers/${route.params.id}/summary`),
       $api<AssignableUser[]>('/v1/waba/assignable-users'),
       $api<CustomField[]>('/v1/crm/custom-fields?applies_to=customer'),
     ])
-    detail.value = detailResult
+    summary.value = summaryResult
     users.value = userResult
     customFields.value = fieldResult
     addRecentlyViewed({
-      type: 'customer', id: detailResult.id,
-      label: detailResult.contact.name || detailResult.contact.phone || detailResult.contact.email || 'Unknown',
+      type: 'customer', id: summaryResult.customer.id,
+      label: summaryResult.customer.contact.name || summaryResult.customer.contact.phone || summaryResult.customer.contact.email || 'Unknown',
       sublabel: 'Customer',
     })
   }
@@ -60,7 +83,7 @@ async function load() {
 }
 
 function initial() {
-  const c = detail.value?.contact
+  const c = summary.value?.customer.contact
   return (c?.name || c?.phone || c?.email || '?').slice(0, 1).toUpperCase()
 }
 
@@ -68,12 +91,24 @@ function ownerName(ownerUserId: string | null) {
   return users.value.find(u => u.id === ownerUserId)?.full_name || 'Unassigned'
 }
 
+function inr(value: number) {
+  return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(value)
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function formatDateTime(iso: string) {
+  return new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })
+}
+
 async function updateNotes(notes: string) {
-  if (!detail.value)
+  if (!summary.value)
     return
   try {
-    const updated = await $api<Customer>(`/v1/crm/customers/${detail.value.id}`, { method: 'PATCH', body: { notes } })
-    detail.value = { ...detail.value, ...updated }
+    const updated = await $api<Customer>(`/v1/crm/customers/${summary.value.customer.id}`, { method: 'PATCH', body: { notes } })
+    summary.value.customer = { ...summary.value.customer, ...updated }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not save notes.')
@@ -81,11 +116,11 @@ async function updateNotes(notes: string) {
 }
 
 async function updateOwner(ownerUserId: string | null) {
-  if (!detail.value)
+  if (!summary.value)
     return
   try {
-    const updated = await $api<Customer>(`/v1/crm/customers/${detail.value.id}`, { method: 'PATCH', body: { owner_user_id: ownerUserId } })
-    detail.value = { ...detail.value, ...updated }
+    const updated = await $api<Customer>(`/v1/crm/customers/${summary.value.customer.id}`, { method: 'PATCH', body: { owner_user_id: ownerUserId } })
+    summary.value.customer = { ...summary.value.customer, ...updated }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not reassign this customer.')
@@ -93,12 +128,12 @@ async function updateOwner(ownerUserId: string | null) {
 }
 
 async function updateCustomField(name: string, value: any) {
-  if (!detail.value)
+  if (!summary.value)
     return
-  const custom_fields = { ...detail.value.custom_fields, [name]: value }
+  const custom_fields = { ...summary.value.customer.custom_fields, [name]: value }
   try {
-    const updated = await $api<Customer>(`/v1/crm/customers/${detail.value.id}`, { method: 'PATCH', body: { custom_fields } })
-    detail.value = { ...detail.value, ...updated }
+    const updated = await $api<Customer>(`/v1/crm/customers/${summary.value.customer.id}`, { method: 'PATCH', body: { custom_fields } })
+    summary.value.customer = { ...summary.value.customer, ...updated }
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not save this field.')
@@ -108,11 +143,11 @@ async function updateCustomField(name: string, value: any) {
 const deleting = ref(false)
 
 async function deleteCustomer() {
-  if (!detail.value)
+  if (!summary.value)
     return
   deleting.value = true
   try {
-    await $api(`/v1/crm/customers/${detail.value.id}`, { method: 'DELETE' })
+    await $api(`/v1/crm/customers/${summary.value.customer.id}`, { method: 'DELETE' })
     router.push({ name: 'crm-customers' })
   }
   catch (error: any) {
@@ -122,6 +157,82 @@ async function deleteCustomer() {
     deleting.value = false
   }
 }
+
+// --- Files (multiple) -----------------------------------------------------------------------
+
+const uploading = ref(false)
+const fileInput = ref<HTMLInputElement>()
+
+async function onFilesSelected(event: Event) {
+  const files = Array.from((event.target as HTMLInputElement).files || [])
+  ;(event.target as HTMLInputElement).value = ''
+  if (!files.length || !summary.value)
+    return
+  uploading.value = true
+  try {
+    for (const file of files) {
+      const formData = new FormData()
+      formData.append('file', file)
+      const attachment = await $api<Attachment>(`/v1/crm/contacts/${summary.value.customer.contact.id}/attachments`, { method: 'POST', body: formData })
+      summary.value.attachments.unshift(attachment)
+    }
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not upload one or more files.')
+  }
+  finally {
+    uploading.value = false
+  }
+}
+
+async function downloadAttachment(attachment: Attachment) {
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/attachments/${attachment.id}/download`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = attachment.filename
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not download this file.')
+  }
+}
+
+async function downloadQuotePdf(quote: Quote) {
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/quotes/${quote.id}/pdf`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${quote.quote_number || quote.id}.pdf`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not download this quote.')
+  }
+}
+
+async function downloadInvoicePdf(invoice: SalesInvoice) {
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/quotes/invoices/${invoice.id}/pdf`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `${invoice.invoice_number || invoice.id}.pdf`
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not download this invoice.')
+  }
+}
+
+const QUOTE_STATUS_COLOR: Record<string, string> = { draft: undefined as any, sent: 'primary', accepted: 'success', rejected: 'error' }
+const INVOICE_STATUS_COLOR: Record<string, string> = { issued: 'primary', partially_paid: 'warning', paid: 'success', cancelled: 'error' }
+const DEAL_STATUS_COLOR: Record<string, string> = { open: 'primary', won: 'success', lost: 'error' }
 
 onMounted(load)
 </script>
@@ -140,114 +251,371 @@ onMounted(load)
 
   <VProgressLinear v-if="loading" indeterminate class="mb-4" />
 
-  <VRow v-if="detail">
-    <VCol cols="12" md="8">
-      <VCard class="mb-4">
-        <VCardText class="d-flex align-center gap-4">
-          <VAvatar color="primary" variant="tonal" size="56">
-            <span class="text-h6">{{ initial() }}</span>
-          </VAvatar>
-          <div class="flex-grow-1">
+  <template v-if="summary">
+    <VCard class="mb-4">
+      <VCardText class="d-flex align-center flex-wrap gap-4">
+        <VAvatar color="primary" variant="tonal" size="56">
+          <span class="text-h6">{{ initial() }}</span>
+        </VAvatar>
+        <div class="flex-grow-1">
+          <p class="text-h6 mb-0">
+            {{ summary.customer.contact.name || summary.customer.contact.phone || summary.customer.contact.email || 'Unknown' }}
+          </p>
+          <p v-if="summary.customer.contact.title" class="text-body-2 text-medium-emphasis mb-0">
+            {{ summary.customer.contact.title }}
+          </p>
+          <p class="text-body-2 text-medium-emphasis mb-0">
+            {{ summary.customer.contact.phone || summary.customer.contact.email || '—' }} · Owner: {{ ownerName(summary.customer.owner_user_id) }}
+          </p>
+        </div>
+        <div class="d-flex flex-wrap ga-6">
+          <div class="text-center">
+            <p class="text-caption text-medium-emphasis mb-0">
+              Deal value
+            </p>
             <p class="text-h6 mb-0">
-              {{ detail.contact.name || detail.contact.phone || detail.contact.email || 'Unknown' }}
-            </p>
-            <p v-if="detail.contact.title" class="text-body-2 text-medium-emphasis mb-0">
-              {{ detail.contact.title }}
-            </p>
-            <p class="text-body-2 text-medium-emphasis mb-0">
-              {{ detail.contact.phone || detail.contact.email || '—' }}
+              {{ inr(summary.total_deal_value) }}
             </p>
           </div>
-        </VCardText>
-        <VDivider />
-        <VCardText class="d-flex flex-wrap gap-3">
-          <RouterLink :to="`/crm-contacts/${detail.contact.id}`" class="d-flex align-center gap-2 text-body-2">
-            <VIcon icon="tabler-user" size="16" />
-            View contact
-          </RouterLink>
-          <RouterLink v-if="detail.deal_id" :to="`/crm-deals/${detail.deal_id}`" class="d-flex align-center gap-2 text-body-2">
-            <VIcon icon="tabler-briefcase" size="16" />
-            View originating deal
-          </RouterLink>
-        </VCardText>
-      </VCard>
-
-      <VCard v-if="customFields.length" class="mb-4" title="Custom fields">
-        <VCardText class="d-flex flex-column gap-4">
-          <template v-for="field in customFields" :key="field.id">
-            <VSelect
-              v-if="field.field_type === 'dropdown'"
-              :model-value="detail.custom_fields[field.name]" :label="field.name" :items="field.options" density="compact" hide-details clearable
-              @update:model-value="(v: string) => updateCustomField(field.name, v)"
-            />
-            <VTextField
-              v-else
-              :model-value="detail.custom_fields[field.name]" :label="field.name"
-              :type="field.field_type === 'number' ? 'number' : field.field_type === 'date' ? 'date' : 'text'" density="compact" hide-details
-              @blur="(e: FocusEvent) => updateCustomField(field.name, (e.target as HTMLInputElement).value)"
-            />
-          </template>
-        </VCardText>
-      </VCard>
-
-      <VCard class="mb-4" title="Notes">
-        <VCardText>
-          <VTextarea
-            :model-value="detail.notes || ''" rows="3" density="compact" placeholder="Add notes about this customer..."
-            @blur="(e: FocusEvent) => updateNotes((e.target as HTMLTextAreaElement).value)"
-          />
-        </VCardText>
-      </VCard>
-
-      <VCard title="Tasks">
-        <VList v-if="detail.tasks.length" density="compact">
-          <VListItem v-for="task in detail.tasks" :key="task.id">
-            <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
-              {{ task.title }}
-            </VListItemTitle>
-            <VListItemSubtitle>
-              {{ task.type }} · {{ task.due_at ? new Date(task.due_at).toLocaleDateString() : 'no due date' }}
-            </VListItemSubtitle>
-          </VListItem>
-        </VList>
-        <p v-else class="text-medium-emphasis text-center pa-6">
-          No tasks yet.
-        </p>
-      </VCard>
-    </VCol>
-
-    <VCol cols="12" md="4">
-      <VCard class="mb-4" title="Details">
-        <VCardText class="d-flex flex-column gap-4">
-          <div>
-            <p class="text-caption text-medium-emphasis mb-1">
-              Owner
+          <div class="text-center">
+            <p class="text-caption text-medium-emphasis mb-0">
+              Invoiced
             </p>
-            <VSelect
-              :model-value="detail.owner_user_id"
-              :items="users.map(u => ({ title: u.full_name, value: u.id }))"
-              placeholder="Unassigned" density="compact" hide-details clearable
-              @update:model-value="updateOwner"
-            />
-          </div>
-          <div>
-            <p class="text-caption text-medium-emphasis mb-1">
-              Created
-            </p>
-            <p class="mb-0">
-              {{ new Date(detail.created_at).toLocaleDateString() }}
+            <p class="text-h6 mb-0">
+              {{ inr(summary.total_invoiced) }}
             </p>
           </div>
-        </VCardText>
-      </VCard>
+          <div class="text-center">
+            <p class="text-caption text-medium-emphasis mb-0">
+              Paid
+            </p>
+            <p class="text-h6 mb-0">
+              {{ inr(summary.total_paid) }}
+            </p>
+          </div>
+          <div class="text-center">
+            <p class="text-caption text-medium-emphasis mb-0">
+              Open deals
+            </p>
+            <p class="text-h6 mb-0">
+              {{ summary.open_deal_count }}
+            </p>
+          </div>
+        </div>
+      </VCardText>
+      <VDivider />
+      <VCardText class="d-flex flex-wrap gap-3">
+        <RouterLink :to="`/crm-contacts/${summary.customer.contact.id}`" class="d-flex align-center gap-2 text-body-2">
+          <VIcon icon="tabler-user" size="16" />
+          View contact
+        </RouterLink>
+        <RouterLink v-if="summary.customer.deal_id" :to="`/crm-deals/${summary.customer.deal_id}`" class="d-flex align-center gap-2 text-body-2">
+          <VIcon icon="tabler-briefcase" size="16" />
+          View originating deal
+        </RouterLink>
+        <a v-if="summary.customer.contact.email" :href="`mailto:${summary.customer.contact.email}`" class="d-flex align-center gap-2 text-body-2">
+          <VIcon icon="tabler-mail" size="16" />
+          Send email
+        </a>
+      </VCardText>
+    </VCard>
 
-      <VCard title="Actions">
-        <VCardText>
-          <VBtn color="error" variant="tonal" block :loading="deleting" @click="deleteCustomer">
-            Delete customer
-          </VBtn>
-        </VCardText>
-      </VCard>
-    </VCol>
-  </VRow>
+    <VTabs v-model="activeTab" class="mb-4">
+      <VTab value="summary">
+        Summary
+      </VTab>
+      <VTab value="deals">
+        Deals ({{ summary.deals.length }})
+      </VTab>
+      <VTab value="quotes">
+        Quotes ({{ summary.quotes.length }})
+      </VTab>
+      <VTab value="invoices">
+        Invoices ({{ summary.invoices.length }})
+      </VTab>
+      <VTab value="tickets">
+        Tickets ({{ summary.tickets.length }})
+      </VTab>
+      <VTab value="emails">
+        Emails ({{ summary.emails.length }})
+      </VTab>
+      <VTab value="notes">
+        Notes
+      </VTab>
+      <VTab value="files">
+        Files ({{ summary.attachments.length }})
+      </VTab>
+      <VTab value="log">
+        Log
+      </VTab>
+    </VTabs>
+
+    <VWindow v-model="activeTab">
+      <VWindowItem value="summary">
+        <VRow>
+          <VCol cols="12" md="8">
+            <VCard v-if="customFields.length" class="mb-4" title="Custom fields">
+              <VCardText class="d-flex flex-column gap-4">
+                <template v-for="field in customFields" :key="field.id">
+                  <VSelect
+                    v-if="field.field_type === 'dropdown'"
+                    :model-value="summary.customer.custom_fields[field.name]" :label="field.name" :items="field.options" density="compact" hide-details clearable
+                    @update:model-value="(v: string) => updateCustomField(field.name, v)"
+                  />
+                  <VTextField
+                    v-else
+                    :model-value="summary.customer.custom_fields[field.name]" :label="field.name"
+                    :type="field.field_type === 'number' ? 'number' : field.field_type === 'date' ? 'date' : 'text'" density="compact" hide-details
+                    @blur="(e: FocusEvent) => updateCustomField(field.name, (e.target as HTMLInputElement).value)"
+                  />
+                </template>
+              </VCardText>
+            </VCard>
+
+            <VCard title="Tasks">
+              <VList v-if="summary.customer.tasks.length" density="compact">
+                <VListItem v-for="task in summary.customer.tasks" :key="task.id">
+                  <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
+                    {{ task.title }}
+                  </VListItemTitle>
+                  <VListItemSubtitle>
+                    {{ task.type }} · {{ task.due_at ? formatDate(task.due_at) : 'no due date' }}
+                  </VListItemSubtitle>
+                </VListItem>
+              </VList>
+              <p v-else class="text-medium-emphasis text-center pa-6">
+                No tasks yet.
+              </p>
+            </VCard>
+          </VCol>
+
+          <VCol cols="12" md="4">
+            <VCard class="mb-4" title="Details">
+              <VCardText class="d-flex flex-column gap-4">
+                <div>
+                  <p class="text-caption text-medium-emphasis mb-1">
+                    Owner
+                  </p>
+                  <VSelect
+                    :model-value="summary.customer.owner_user_id"
+                    :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+                    placeholder="Unassigned" density="compact" hide-details clearable
+                    @update:model-value="updateOwner"
+                  />
+                </div>
+                <div>
+                  <p class="text-caption text-medium-emphasis mb-1">
+                    Created
+                  </p>
+                  <p class="mb-0">
+                    {{ formatDate(summary.customer.created_at) }}
+                  </p>
+                </div>
+              </VCardText>
+            </VCard>
+
+            <VCard title="Actions">
+              <VCardText>
+                <VBtn color="error" variant="tonal" block :loading="deleting" @click="deleteCustomer">
+                  Delete customer
+                </VBtn>
+              </VCardText>
+            </VCard>
+          </VCol>
+        </VRow>
+      </VWindowItem>
+
+      <VWindowItem value="deals">
+        <VCard>
+          <VTable>
+            <thead>
+              <tr>
+                <th>Deal</th>
+                <th>Stage</th>
+                <th>Status</th>
+                <th>Value</th>
+                <th>Expected close</th>
+                <th>Created</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="deal in summary.deals" :key="deal.id" style="cursor: pointer;" @click="router.push(`/crm-deals/${deal.id}`)">
+                <td>{{ deal.name || '(unnamed)' }}</td>
+                <td>{{ deal.stage }}</td>
+                <td>
+                  <VChip size="small" :color="DEAL_STATUS_COLOR[deal.status]" variant="tonal">
+                    {{ deal.status }}
+                  </VChip>
+                </td>
+                <td>{{ deal.value != null ? inr(deal.value) : '—' }}</td>
+                <td>{{ deal.expected_close_date ? formatDate(deal.expected_close_date) : '—' }}</td>
+                <td>{{ formatDate(deal.created_at) }}</td>
+              </tr>
+            </tbody>
+          </VTable>
+          <p v-if="!summary.deals.length" class="text-medium-emphasis text-center pa-6 mb-0">
+            No deals yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="quotes">
+        <VCard>
+          <VTable>
+            <thead>
+              <tr>
+                <th>Quote</th>
+                <th>Status</th>
+                <th>Total</th>
+                <th>Sent</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="quote in summary.quotes" :key="quote.id">
+                <td>{{ quote.quote_number || '(draft)' }}</td>
+                <td>
+                  <VChip size="small" :color="QUOTE_STATUS_COLOR[quote.status]" variant="tonal">
+                    {{ quote.status }}
+                  </VChip>
+                </td>
+                <td>{{ inr(quote.total) }}</td>
+                <td>{{ quote.sent_at ? formatDate(quote.sent_at) : '—' }}</td>
+                <td class="text-end">
+                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click="downloadQuotePdf(quote)" />
+                </td>
+              </tr>
+            </tbody>
+          </VTable>
+          <p v-if="!summary.quotes.length" class="text-medium-emphasis text-center pa-6 mb-0">
+            No quotes yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="invoices">
+        <VCard>
+          <VTable>
+            <thead>
+              <tr>
+                <th>Invoice</th>
+                <th>Status</th>
+                <th>Total</th>
+                <th>Paid</th>
+                <th>Balance due</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="invoice in summary.invoices" :key="invoice.id">
+                <td>{{ invoice.invoice_number || '(unissued)' }}</td>
+                <td>
+                  <VChip size="small" :color="INVOICE_STATUS_COLOR[invoice.status]" variant="tonal">
+                    {{ invoice.status.replace('_', ' ') }}
+                  </VChip>
+                </td>
+                <td>{{ inr(invoice.total) }}</td>
+                <td>{{ inr(invoice.amount_paid) }}</td>
+                <td>{{ inr(invoice.balance_due) }}</td>
+                <td class="text-end">
+                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click="downloadInvoicePdf(invoice)" />
+                </td>
+              </tr>
+            </tbody>
+          </VTable>
+          <p v-if="!summary.invoices.length" class="text-medium-emphasis text-center pa-6 mb-0">
+            No invoices yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="tickets">
+        <VCard>
+          <VList v-if="summary.tickets.length" density="compact">
+            <VListItem v-for="m in summary.tickets" :key="m.id">
+              <template #prepend>
+                <VIcon :icon="m.direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'" :color="m.direction === 'outbound' ? 'primary' : 'success'" size="16" />
+              </template>
+              <VListItemTitle>{{ m.body || `[${m.message_type}]` }}</VListItemTitle>
+              <VListItemSubtitle>{{ m.channel }} · {{ formatDateTime(m.created_at) }}</VListItemSubtitle>
+            </VListItem>
+          </VList>
+          <p v-else class="text-medium-emphasis text-center pa-6 mb-0">
+            No WhatsApp/ticket activity yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="emails">
+        <VCard>
+          <VList v-if="summary.emails.length" density="compact">
+            <VListItem v-for="m in summary.emails" :key="m.id">
+              <template #prepend>
+                <VIcon :icon="m.direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'" :color="m.direction === 'outbound' ? 'primary' : 'success'" size="16" />
+              </template>
+              <VListItemTitle>{{ m.body || '(no content)' }}</VListItemTitle>
+              <VListItemSubtitle>{{ formatDateTime(m.created_at) }}</VListItemSubtitle>
+            </VListItem>
+          </VList>
+          <p v-else class="text-medium-emphasis text-center pa-6 mb-0">
+            No email activity yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="notes">
+        <VCard>
+          <VCardText>
+            <VTextarea
+              :model-value="summary.customer.notes || ''" rows="6" density="compact" placeholder="Add notes about this customer..."
+              @blur="(e: FocusEvent) => updateNotes((e.target as HTMLTextAreaElement).value)"
+            />
+          </VCardText>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="files">
+        <VCard>
+          <VCardText class="d-flex justify-space-between align-center">
+            <span class="text-body-2 text-medium-emphasis">Upload one or more files -- visible to your whole team.</span>
+            <VBtn size="small" prepend-icon="tabler-upload" :loading="uploading" @click="fileInput?.click()">
+              Upload files
+            </VBtn>
+            <input ref="fileInput" type="file" multiple class="d-none" @change="onFilesSelected">
+          </VCardText>
+          <VDivider />
+          <VList v-if="summary.attachments.length" density="compact">
+            <VListItem v-for="attachment in summary.attachments" :key="attachment.id" @click="downloadAttachment(attachment)">
+              <template #prepend>
+                <VIcon icon="tabler-paperclip" size="18" />
+              </template>
+              <VListItemTitle>{{ attachment.filename }}</VListItemTitle>
+              <VListItemSubtitle>{{ formatDateTime(attachment.created_at) }}</VListItemSubtitle>
+            </VListItem>
+          </VList>
+          <p v-else class="text-medium-emphasis text-center pa-6 mb-0">
+            No files yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+
+      <VWindowItem value="log">
+        <VCard>
+          <VTimeline v-if="summary.log.length" density="compact" side="end" class="pa-4">
+            <VTimelineItem v-for="(entry, i) in summary.log" :key="i" size="x-small" dot-color="primary">
+              <p class="mb-0">
+                {{ entry.label }}
+              </p>
+              <p class="text-caption text-medium-emphasis mb-0">
+                {{ formatDateTime(entry.at) }}
+              </p>
+            </VTimelineItem>
+          </VTimeline>
+          <p v-else class="text-medium-emphasis text-center pa-6 mb-0">
+            No activity yet.
+          </p>
+        </VCard>
+      </VWindowItem>
+    </VWindow>
+  </template>
 </template>

@@ -3533,6 +3533,33 @@ class ActivityMessageOut(BaseModel):
     created_at: str
 
 
+class CustomerLogEntryOut(BaseModel):
+    kind: str
+    label: str
+    at: str
+
+
+class CustomerSummaryOut(BaseModel):
+    """Backs the WHMCS-style tabbed customer detail page -- one call aggregating everything
+    scoped to this customer's contact: every Deal they've ever had (not just Customer.deal_id,
+    which is only the one deal that happened to convert them -- a repeat/renewal customer can have
+    more), every Quote/SalesInvoice against those deals, tasks, file attachments, WhatsApp/email
+    conversation history split into tickets vs. plain messages, and a computed activity log (same
+    on-the-fly-from-real-rows shape as get_crm_home's own activity feed, just contact-scoped)."""
+    customer: CustomerDetailOut
+    deals: list[DealOut]
+    quotes: list[QuoteOut]
+    invoices: list[SalesInvoiceOut]
+    attachments: list[AttachmentOut]
+    tickets: list[ActivityMessageOut]
+    emails: list[ActivityMessageOut]
+    log: list[CustomerLogEntryOut]
+    total_deal_value: float
+    total_invoiced: float
+    total_paid: float
+    open_deal_count: int
+
+
 class LeadDetailOut(BaseModel):
     lead: LeadOut
     company: CompanyOut | None

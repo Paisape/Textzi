@@ -20,20 +20,20 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .auth import require_user
-from .crm_quotes import _quote_out
+from .crm_quotes import _quote_out, _sales_invoice_out
 from .crm_sequences import apply_lead_routing
 from .database import SessionLocal, get_db
 from .email_service import render_email, send_email
 from .models import (
     Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
-    Customer, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesTarget, SavedReport, SavedView, ScoringRule,
+    Customer, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesInvoice, SalesTarget, SavedReport, SavedView, ScoringRule,
     Task, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
-    CustomerCreateRequest, CustomerDetailOut, CustomerOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
+    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
     DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
@@ -998,6 +998,64 @@ def get_customer(customer_id: str, user: User = Depends(require_user), db: Sessi
     tasks = db.scalars(select(Task).where(Task.contact_id == customer.contact_id).order_by(Task.due_at.asc().nulls_last())).all()
     base = _customer_out(customer, contact)
     return CustomerDetailOut(**base.model_dump(), tasks=[_task_out(t) for t in tasks])
+
+
+@router.get("/customers/{customer_id}/summary", response_model=CustomerSummaryOut)
+def get_customer_summary(customer_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """One call backing the tabbed customer detail page -- everything scoped to this customer's
+    CrmContact, aggregated from the real rows already owned by Deal/Quote/SalesInvoice/Task/
+    Attachment/Conversation, not a parallel "customer record" duplicating any of it."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    customer = db.get(Customer, customer_id)
+    if not customer or customer.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Customer not found")
+    contact = db.get(CrmContact, customer.contact_id)
+    if not contact:
+        raise HTTPException(status_code=404, detail="Customer's contact record is missing")
+
+    tasks = db.scalars(select(Task).where(Task.contact_id == customer.contact_id).order_by(Task.due_at.asc().nulls_last())).all()
+    customer_detail = CustomerDetailOut(**_customer_out(customer, contact).model_dump(), tasks=[_task_out(t) for t in tasks])
+
+    deals = db.scalars(select(Deal).where(Deal.contact_id == customer.contact_id).order_by(Deal.created_at.desc())).all()
+    deal_ids = [d.id for d in deals]
+    quotes = db.scalars(select(Quote).where(Quote.deal_id.in_(deal_ids)).order_by(Quote.created_at.desc())).all() if deal_ids else []
+    invoices = db.scalars(select(SalesInvoice).where(SalesInvoice.deal_id.in_(deal_ids)).order_by(SalesInvoice.created_at.desc())).all() if deal_ids else []
+    attachments = db.scalars(select(Attachment).where(Attachment.contact_id == customer.contact_id).order_by(Attachment.created_at.desc())).all()
+
+    waba_contact_id, recent_messages = _recent_activity(db, entity.id, customer.contact_id, limit=50)
+    tickets = [m for m in recent_messages if m.channel != "email"]
+    emails = [m for m in recent_messages if m.channel == "email"]
+
+    invoice_outs = [_sales_invoice_out(db, i) for i in invoices]
+    log: list[CustomerLogEntryOut] = [CustomerLogEntryOut(kind="customer_created", label="Became a customer", at=customer.created_at.isoformat())]
+    for deal in deals:
+        log.append(CustomerLogEntryOut(kind="deal_created", label=f"Deal created: {deal.name or deal.stage}", at=deal.created_at.isoformat()))
+    for quote in quotes:
+        if quote.sent_at:
+            log.append(CustomerLogEntryOut(kind="quote_sent", label=f"Quote {quote.quote_number or quote.id} sent", at=quote.sent_at.isoformat()))
+        if quote.signed_at:
+            log.append(CustomerLogEntryOut(kind="quote_signed", label=f"Quote {quote.quote_number or quote.id} {quote.status}", at=quote.signed_at.isoformat()))
+    for invoice in invoices:
+        log.append(CustomerLogEntryOut(kind="invoice_issued", label=f"Invoice {invoice.invoice_number or invoice.id} issued", at=invoice.created_at.isoformat()))
+    for attachment in attachments:
+        log.append(CustomerLogEntryOut(kind="attachment_uploaded", label=f"File uploaded: {attachment.filename}", at=attachment.created_at.isoformat()))
+    log.sort(key=lambda entry: entry.at, reverse=True)
+
+    return CustomerSummaryOut(
+        customer=customer_detail,
+        deals=[_deal_out(d, contact) for d in deals],
+        quotes=[_quote_out(db, q) for q in quotes],
+        invoices=invoice_outs,
+        attachments=[_attachment_out(a) for a in attachments],
+        tickets=tickets,
+        emails=emails,
+        log=log,
+        total_deal_value=sum(float(d.value or 0) for d in deals),
+        total_invoiced=sum(i.total for i in invoice_outs),
+        total_paid=sum(i.amount_paid for i in invoice_outs),
+        open_deal_count=sum(1 for d in deals if d.status == "open"),
+    )
 
 
 @router.patch("/customers/{customer_id}", response_model=CustomerOut)
