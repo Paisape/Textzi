@@ -133,22 +133,36 @@ function isPreviewable(contentType: string) {
   return contentType.startsWith('image/') || contentType === 'application/pdf'
 }
 
-async function previewAttachment(messageId: string, index: number) {
+const previewDialog = ref(false)
+const previewUrl = ref('')
+const previewType = ref<'image' | 'pdf'>('image')
+const previewFilename = ref('')
+
+async function previewAttachment(messageId: string, index: number, filename: string, contentType: string) {
   const key = `${messageId}:${index}`
   downloadingAttachment.value = key
   try {
     const blob = await $api<Blob, 'blob'>(`/v1/crm/email/messages/${messageId}/attachments/${index}`, { responseType: 'blob' })
-    const url = URL.createObjectURL(blob)
-    // Deliberately never revoked -- the new tab needs the object URL to stay valid for as long
-    // as it's open, and there's no reliable "tab closed" hook to revoke it on; a few leaked blob
-    // URLs per session is a non-issue compared to a preview tab going blank mid-view.
-    window.open(url, '_blank')
+    if (previewUrl.value)
+      URL.revokeObjectURL(previewUrl.value)
+    previewUrl.value = URL.createObjectURL(blob)
+    previewType.value = contentType === 'application/pdf' ? 'pdf' : 'image'
+    previewFilename.value = filename
+    previewDialog.value = true
   }
   catch {
     // Same low-stakes failure as downloadAttachment -- no dedicated error banner needed.
   }
   finally {
     downloadingAttachment.value = null
+  }
+}
+
+function closePreview() {
+  previewDialog.value = false
+  if (previewUrl.value) {
+    URL.revokeObjectURL(previewUrl.value)
+    previewUrl.value = ''
   }
 }
 
@@ -571,7 +585,7 @@ onMounted(() => {
                 <template #append>
                   <VBtn
                     v-if="isPreviewable(att.content_type)" icon="tabler-eye" size="x-small" variant="text" density="compact" class="ms-1"
-                    title="View" @click="previewAttachment(m.id, i)"
+                    title="View" @click="previewAttachment(m.id, i, att.filename, att.content_type)"
                   />
                   <VBtn
                     icon="tabler-download" size="x-small" variant="text" density="compact" class="ms-1"
@@ -717,6 +731,21 @@ onMounted(() => {
           Send
         </VBtn>
       </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="previewDialog" max-width="900" @update:model-value="(v) => { if (!v) closePreview() }">
+    <VCard>
+      <VToolbar density="compact" color="transparent">
+        <VToolbarTitle class="text-body-1">
+          {{ previewFilename }}
+        </VToolbarTitle>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="closePreview" />
+      </VToolbar>
+      <VCardText class="pt-0 text-center" style="max-block-size: 80vh; overflow: auto;">
+        <img v-if="previewType === 'image'" :src="previewUrl" style="max-inline-size: 100%; max-block-size: 75vh;">
+        <iframe v-else :src="previewUrl" style="inline-size: 100%; block-size: 75vh; border: 0;" />
+      </VCardText>
     </VCard>
   </VDialog>
 </template>
