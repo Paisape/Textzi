@@ -1756,6 +1756,7 @@ class ConversationOut(BaseModel):
     last_message_at: str | None
     last_read_at: str | None
     last_message_preview: str | None = None
+    last_message_direction: str | None = None  # "inbound" | "outbound" -- who sent the most recent message
     unread: bool = False
     is_ticket: bool = False
     ticket_number: str | None = None

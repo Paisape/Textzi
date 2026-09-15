@@ -25,6 +25,7 @@ type EmailThread = {
   status: string
   unread: boolean
   last_message_preview: string | null
+  last_message_direction: 'inbound' | 'outbound' | null
   last_message_at: string | null
   created_at: string
   is_ticket: boolean
@@ -79,12 +80,20 @@ function latestSubject(thread: EmailThreadDetail) {
   return withSubject?.payload?.subject || '(no subject)'
 }
 
-// Real per-message flag, set by the backend at write time (services.sanitize_rich_text has
-// already stripped anything unsafe from inbound HTML before it ever reaches here) -- a message's
-// direction alone doesn't determine this: a Microsoft Graph inbound message is HTML by default,
-// and a plain-text-only sender's inbound message isn't, so this can't be inferred from direction.
+// Real per-message flag, set by the backend at write time -- a message's direction alone doesn't
+// determine this: a Microsoft Graph inbound message is HTML by default, and a plain-text-only
+// sender's inbound message isn't, so this can't be inferred from direction. Messages stored
+// before this flag existed have no payload.is_html at all (not false -- absent) -- for those,
+// sniff the body itself: a real HTML document starts with a tag, not plain prose, so this is a
+// safe, one-time fallback for old data rather than something new messages ever need to rely on.
+function looksLikeHtml(body: string | null) {
+  return !!body && /^\s*<(!doctype|html|body|table|div|p|span|h[1-6])[\s>]/i.test(body)
+}
+
 function isHtml(m: EmailMessage) {
-  return m.payload?.is_html ?? m.direction === 'outbound'
+  if (m.payload?.is_html !== undefined)
+    return m.payload.is_html
+  return m.direction === 'outbound' || looksLikeHtml(m.body)
 }
 
 async function selectThread(id: string) {
@@ -323,6 +332,12 @@ onMounted(() => {
               {{ contactLabel(thread.contact) }}
             </VListItemTitle>
             <VListItemSubtitle :class="thread.unread ? 'font-weight-medium text-high-emphasis' : ''">
+              <VIcon
+                v-if="thread.last_message_direction"
+                :icon="thread.last_message_direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'"
+                :color="thread.last_message_direction === 'outbound' ? 'primary' : 'success'"
+                size="12" class="me-1"
+              />
               {{ subjectFor(thread) }}
             </VListItemSubtitle>
             <template #append>
