@@ -303,9 +303,14 @@ def _handle_inbound_messages(db: Session, connection: WabaConnection, value: dic
         db.flush()
         if message_type == "order":
             _create_order_record(db, connection.entity_id, contact.id, conversation.id, message, wamid, payload or {})
-        notify_new_reply(db, connection.entity_id, conversation, contact, "whatsapp")
         _maybe_send_business_hours_reply(db, connection, contact, conversation, created_at)
+        # apply_rules before notify_new_reply -- a "new_contact" trigger can auto-assign this very
+        # conversation (action_type="assign"), and notify_new_reply only ever notifies whoever is
+        # currently assigned. Checking before the auto-assign ran meant the very first message on
+        # a brand-new, auto-assigned conversation was always silently skipped -- confirmed as a
+        # real bug, not a hypothetical one, by reading the two functions together.
         apply_rules(db, connection.entity_id, contact, conversation, body, is_new_contact, is_outside_business_hours(db, connection.entity_id, created_at))
+        notify_new_reply(db, connection.entity_id, conversation, contact, "whatsapp")
         created.append((connection.entity_id, message))
     return created
 
