@@ -33,9 +33,18 @@ from .schemas import (
     ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut, SalesInvoiceCancelRequest,
     SalesInvoiceCreateRequest, SalesInvoiceOut, SalesInvoiceRecordPaymentRequest,
 )
-from .services import DomainError, channel_active, get_gst_rate, indian_financial_year_label, notify_user, resolve_user_entity, state_code_from_gstin
+from .services import DomainError, channel_active, get_gst_rate, indian_financial_year_label, notify_user as _notify_user_row, resolve_user_entity, state_code_from_gstin
+from .waba_realtime import publish_notification
 
 router = APIRouter(prefix="/v1/crm/quotes", tags=["crm-quotes"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope_for("crm-quotes")), Depends(require_plan_feature("crm", "crm-quotes"))])
+
+
+def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None):
+    """Same live-push wrapper as crm.py's own -- see its docstring for why the push lives at this
+    layer instead of inside services.notify_user itself."""
+    notification = _notify_user_row(db, entity_id, user_id, notif_type, title, body, link)
+    publish_notification(entity_id, user_id, notification.id, notif_type, title, body, link)
+    return notification
 
 
 def _resolve_entity(db: Session, user: User) -> Entity:
@@ -720,6 +729,8 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
 
     quote.status = "sent"
     quote.sent_at = datetime.now(timezone.utc)
+    if deal.owner_user_id and deal.owner_user_id != user.id:
+        notify_user(db, entity.id, deal.owner_user_id, "quote_sent", "Quote sent", f"{quote.quote_number} was sent to {contact.name or contact.phone}", "/crm-quotes")
     db.commit()
     db.refresh(quote)
     return _quote_out(db, quote)
@@ -813,6 +824,9 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
 
     invoice = _issue_sales_invoice(db, entity, quote.deal_id, quote.line_items, user.id, quote_id=quote.id)
     quote.converted_invoice_id = invoice.id
+    deal = db.get(Deal, quote.deal_id)
+    if deal and deal.owner_user_id and deal.owner_user_id != user.id:
+        notify_user(db, entity.id, deal.owner_user_id, "invoice_generated", "Invoice generated", f"{invoice.invoice_number} was generated from {quote.quote_number}", "/crm-quotes")
     db.commit()
     db.refresh(invoice)
     return _sales_invoice_out(db, invoice)
@@ -835,6 +849,9 @@ def create_direct_sales_invoice(deal_id: str, payload: SalesInvoiceCreateRequest
     line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
 
     invoice = _issue_sales_invoice(db, entity, deal.id, line_items, user.id)
+    if deal.owner_user_id and deal.owner_user_id != user.id:
+        deal_contact = db.get(CrmContact, deal.contact_id)
+        notify_user(db, entity.id, deal.owner_user_id, "invoice_generated", "Invoice generated", f"{invoice.invoice_number} was generated for {deal_contact.name if deal_contact else 'your deal'}", "/crm-quotes")
     db.commit()
     db.refresh(invoice)
     return _sales_invoice_out(db, invoice)

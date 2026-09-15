@@ -34,7 +34,7 @@ from .models import Contact, Conversation, ConversationMessage, CsatResponse, Ti
 from .schemas import PublicTurnstileConfigOut, WebchatCsatRequest, WebchatHistoryMessageOut, WebchatHistoryResponse, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
 from .services import client_ip, get_platform_turnstile_settings, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
 from .turnstile import require_turnstile
-from .waba_realtime import message_payload, publish_event
+from .waba_realtime import message_payload, notify_new_reply, publish_event
 from .webchat_widget_js import WIDGET_JS
 
 logger = logging.getLogger("textzi.webchat")
@@ -321,6 +321,7 @@ def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, reques
         visit.contact_id = contact.id
         visit.conversation_id = conversation.id
 
+    notify_new_reply(db, settings_row.entity_id, conversation, contact, "webchat")
     db.commit()
     db.refresh(message)
     publish_event(settings_row.entity_id, {"type": "message", "message": message_payload(message)})
@@ -363,6 +364,7 @@ async def send_visitor_media(
         visit.contact_id = contact.id
         visit.conversation_id = conversation.id
 
+    notify_new_reply(db, settings_row.entity_id, conversation, contact, "webchat")
     db.commit()
     db.refresh(message)
     publish_event(settings_row.entity_id, {"type": "message", "message": message_payload(message)})

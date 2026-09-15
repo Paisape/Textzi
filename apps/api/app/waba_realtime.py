@@ -48,6 +48,37 @@ def publish_event(entity_id: str, event: dict) -> None:
         logger.warning("waba realtime: could not publish event for entity_id=%s", entity_id, exc_info=True)
 
 
+def notify_new_reply(db: Session, entity_id: str, conversation, contact, channel: str) -> None:
+    """Called from every inbound-message entry point (WhatsApp webhook, email poll/webhook,
+    webchat) right after the new ConversationMessage is created -- notifies whoever the
+    conversation is assigned to that a new reply landed, so they don't have to keep the inbox open
+    to know. A no-op if nobody's assigned yet (an unassigned conversation has no one specific
+    person to page)."""
+    if not conversation.assigned_user_id:
+        return
+    from .services import notify_user
+    who = contact.name or getattr(contact, "wa_id", None) or getattr(contact, "email", None) or "Someone"
+    what = conversation.ticket_number if getattr(conversation, "is_ticket", False) else None
+    title = f"New reply on {what}" if what else "New reply"
+    link = "/tickets" if getattr(conversation, "is_ticket", False) else ("/crm-email" if channel == "email" else "/inbox")
+    notification = notify_user(db, entity_id, conversation.assigned_user_id, "new_reply", title, f"{who} replied", link)
+    publish_notification(entity_id, conversation.assigned_user_id, notification.id, "new_reply", title, f"{who} replied", link)
+
+
+def publish_notification(entity_id: str, user_id: str, notification_id: str, notif_type: str, title: str, body: str, link: str | None) -> None:
+    """Live-pushes a just-created Notification row (services.notify_user already wrote it to the
+    DB) over this same per-entity Redis channel every connected browser tab already subscribes to.
+    Every tab on this entity receives the event; the frontend filters by user_id itself (same
+    shape as the existing "presence" event, which every tab also receives and filters locally) --
+    simpler than a second, per-user channel, and the payload carries nothing a teammate couldn't
+    already see by opening the assigned record directly."""
+    publish_event(entity_id, {
+        "type": "notification", "user_id": user_id, "notification": {
+            "id": notification_id, "type": notif_type, "title": title, "body": body, "link": link,
+        },
+    })
+
+
 def authenticate_query_token(db: Session, token: str) -> User | None:
     if not token:
         return None

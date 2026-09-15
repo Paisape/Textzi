@@ -48,9 +48,22 @@ from .schemas import (
     TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormOut, WebFormUpdateRequest,
 )
 from .permissions import require_channel_scope, require_page_scope, require_plan_feature_by_path
-from .services import DomainError, channel_active, log_activity, notify_user, resolve_user_entity, save_upload
+from .services import DomainError, channel_active, log_activity, notify_user as _notify_user_row, resolve_user_entity, save_upload
+from .waba_realtime import publish_notification
 
 logger = logging.getLogger("textzi.crm")
+
+
+def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None) -> Notification:
+    """Thin wrapper around services.notify_user that also live-pushes the notification over the
+    realtime socket every dashboard tab already holds open (NavBarNotifications.vue), so the bell
+    updates and plays a sound immediately instead of only on next page load. services.py itself
+    can't import waba_realtime (shared by both the SMS and WhatsApp pipelines, must stay isolated
+    from WABA-specific modules) -- this module already imports WABA one-directionally elsewhere,
+    so the push lives here instead."""
+    notification = _notify_user_row(db, entity_id, user_id, notif_type, title, body, link)
+    publish_notification(entity_id, user_id, notification.id, notif_type, title, body, link)
+    return notification
 
 router = APIRouter(prefix="/v1/crm", tags=["crm"], dependencies=[Depends(require_channel_scope("crm")), Depends(require_page_scope()), Depends(require_plan_feature_by_path("crm"))])
 

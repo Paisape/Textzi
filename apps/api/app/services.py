@@ -1261,16 +1261,23 @@ def require_channel_active(db: Session, entity_id: str, channel: str = "sms") ->
         raise DomainError(f"Activate the {channel.upper()} channel (complete DLT registration) before using this feature")
 
 
-def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None) -> None:
+def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None) -> Notification:
     """Creates the in-app Notification row (always), and additionally emails the user if this
     entity's CrmSettings.notify_email is on. SMS/WhatsApp aren't sent here -- see Notification's
-    own docstring for why (no DLT/template registration to send arbitrary text through yet)."""
-    db.add(Notification(entity_id=entity_id, user_id=user_id, type=notif_type, title=title, body=body, link=link))
+    own docstring for why (no DLT/template registration to send arbitrary text through yet).
+    Returns the created row (its id, not yet committed) so a caller can also live-push it over the
+    realtime socket -- see waba_realtime.publish_notification, called alongside this at each call
+    site rather than from here, since this module (shared by both the SMS and WhatsApp pipelines)
+    must never import a WABA-specific module."""
+    notification = Notification(entity_id=entity_id, user_id=user_id, type=notif_type, title=title, body=body, link=link)
+    db.add(notification)
+    db.flush()
     settings_row = db.get(CrmSettings, entity_id)
     if settings_row and settings_row.notify_email:
         user = db.get(User, user_id)
         if user and user.email:
             send_email(db, user.email, title, render_email(title, f"<p>{body}</p>"))
+    return notification
 
 
 def check_message_quota(db: Session, entity_id: str, channel: str) -> None:

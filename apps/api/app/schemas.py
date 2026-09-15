@@ -3211,7 +3211,10 @@ class EmailAccountUpdateRequest(BaseModel):
 
 
 class EmailSignatureUpdateRequest(BaseModel):
-    signature_html: str = Field(default="", max_length=20000)
+    # Generous cap, not the compose body's typical size -- a signature commonly embeds a logo as
+    # an inline base64 image (TiptapEditor's allow-image mode), which alone can run well past a
+    # few KB of text even for a modest-sized PNG.
+    signature_html: str = Field(default="", max_length=300000)
 
 
 class UserEmailSignatureOut(BaseModel):

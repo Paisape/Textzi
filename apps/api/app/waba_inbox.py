@@ -36,13 +36,13 @@ from .schemas import (
 from . import waba_media
 from .permissions import require_channel_scope_any
 from .security import decrypt_secret
-from .services import DomainError, channel_active, get_platform_waba_settings, plan_feature_active, resolve_user_entity, strip_html_tags
+from .services import DomainError, channel_active, get_platform_waba_settings, notify_user, plan_feature_active, resolve_user_entity, strip_html_tags
 from .waba_dispatch import (
     mark_conversation_read, send_whatsapp_contact, send_whatsapp_interactive_buttons, send_whatsapp_interactive_list,
     send_whatsapp_location, send_whatsapp_media, send_whatsapp_product, send_whatsapp_product_list, send_whatsapp_reaction, send_whatsapp_template, send_whatsapp_text,
 )
 from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates, upload_template_header_media
-from .waba_realtime import authenticate_query_token, message_payload, publish_event
+from .waba_realtime import authenticate_query_token, message_payload, publish_event, publish_notification
 from .webchat_realtime import publish_to_visitor
 
 # Shared inbox module -- owns the Conversation/Task/ticket tables both the plain WhatsApp inbox
@@ -294,6 +294,11 @@ def _maybe_send_csat_request(db: Session, entity_id: str, conversation: Conversa
     db.add(CsatResponse(conversation_id=conversation.id, entity_id=entity_id))
 
 
+def _notify_and_push(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None) -> None:
+    notification = notify_user(db, entity_id, user_id, notif_type, title, body, link)
+    publish_notification(entity_id, user_id, notification.id, notif_type, title, body, link)
+
+
 @router.put("/conversations/{conversation_id}", response_model=ConversationOut)
 def update_conversation(conversation_id: str, payload: ConversationUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     try:
@@ -307,6 +312,11 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
         if just_resolved:
             conversation.resolved_at = datetime.now(timezone.utc)
             _maybe_send_csat_request(db, entity.id, conversation, contact, user.id)
+            if conversation.is_ticket and conversation.assigned_user_id and conversation.assigned_user_id != user.id:
+                # Notify whoever's assigned, not the person who just resolved it (usually the
+                # same person, but a lead/supervisor can resolve on someone else's behalf).
+                link = "/tickets" if conversation.channel != "email" else "/crm-email"
+                _notify_and_push(db, entity.id, conversation.assigned_user_id, "ticket_resolved", "Ticket resolved", f"{conversation.ticket_number or 'Your ticket'} for {contact.name or contact.wa_id or contact.email or 'a contact'} was resolved", link)
         elif payload.status != "resolved":
             # Reopened -- resolved_at should reflect the conversation's CURRENT resolved state,
             # not a stale timestamp from a previous resolve/reopen cycle.
@@ -326,6 +336,10 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
                 ) or 0
                 if open_count >= assignee.max_open_conversations:
                     raise HTTPException(status_code=422, detail=f"{assignee.full_name} is at their {assignee.max_open_conversations}-conversation capacity limit")
+            if payload.assigned_user_id != conversation.assigned_user_id and payload.assigned_user_id != user.id:
+                what = "Ticket" if conversation.is_ticket else "Conversation"
+                link = ("/tickets" if conversation.is_ticket else "/inbox") if conversation.channel != "email" else "/crm-email"
+                _notify_and_push(db, entity.id, payload.assigned_user_id, "ticket_assigned" if conversation.is_ticket else "conversation_assigned", f"{what} assigned to you", f"{conversation.ticket_number or contact.name or contact.wa_id or contact.email or 'A conversation'} was assigned to you", link)
         conversation.assigned_user_id = payload.assigned_user_id
     db.commit()
     db.refresh(conversation)

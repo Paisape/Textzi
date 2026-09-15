@@ -24,7 +24,7 @@ from .security import decrypt_secret, sign_webhook_payload
 from .services import client_ip, get_platform_waba_settings, get_platform_waba_webhook_verify_token, is_outside_business_hours, stamp_sla_due_at
 from .waba_automation import apply_rules
 from .waba_meta import MetaApiError, download_media_bytes, fetch_media_url
-from .waba_realtime import message_payload, publish_event
+from .waba_realtime import message_payload, notify_new_reply, publish_event
 
 logger = logging.getLogger("textzi.waba")
 
@@ -303,6 +303,7 @@ def _handle_inbound_messages(db: Session, connection: WabaConnection, value: dic
         db.flush()
         if message_type == "order":
             _create_order_record(db, connection.entity_id, contact.id, conversation.id, message, wamid, payload or {})
+        notify_new_reply(db, connection.entity_id, conversation, contact, "whatsapp")
         _maybe_send_business_hours_reply(db, connection, contact, conversation, created_at)
         apply_rules(db, connection.entity_id, contact, conversation, body, is_new_contact, is_outside_business_hours(db, connection.entity_id, created_at))
         created.append((connection.entity_id, message))

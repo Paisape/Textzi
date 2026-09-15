@@ -311,6 +311,36 @@ async function sendCompose() {
   }
 }
 
+// --- My signature (also editable here, not just in Manage CRM > Channels, so a teammate
+// without settings access can still set their own) ------------------------------------------
+
+const signatureDialog = ref(false)
+const signatureDraft = ref('')
+const signatureSaving = ref(false)
+const signatureError = ref('')
+
+function openSignatureDialog() {
+  signatureDraft.value = signatureHtml.value
+  signatureError.value = ''
+  signatureDialog.value = true
+}
+
+async function saveSignature() {
+  signatureSaving.value = true
+  signatureError.value = ''
+  try {
+    const result = await $api<{ signature_html: string | null }>('/v1/crm/email/my-signature', { method: 'PUT', body: { signature_html: signatureDraft.value } })
+    signatureHtml.value = result.signature_html || ''
+    signatureDialog.value = false
+  }
+  catch (error: any) {
+    signatureError.value = extractErrorMessage(error, 'Could not save your signature.')
+  }
+  finally {
+    signatureSaving.value = false
+  }
+}
+
 function formatDate(iso: string | null) {
   if (!iso)
     return ''
@@ -328,10 +358,43 @@ onMounted(() => {
     <h1 class="text-h4 mb-0">
       Email
     </h1>
-    <VBtn color="primary" prepend-icon="tabler-pencil" @click="openCompose">
-      Compose
-    </VBtn>
+    <div class="d-flex ga-2">
+      <VBtn variant="tonal" prepend-icon="tabler-signature" @click="openSignatureDialog">
+        My signature
+      </VBtn>
+      <VBtn color="primary" prepend-icon="tabler-pencil" @click="openCompose">
+        Compose
+      </VBtn>
+    </div>
   </div>
+
+  <VDialog v-model="signatureDialog" max-width="640">
+    <VCard title="My signature">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="signatureDialog = false" />
+      </template>
+      <VCardText>
+        <p class="text-body-2 text-medium-emphasis mb-3">
+          This mailbox is shared by your team -- this signature is yours alone and is added automatically to replies and messages you compose.
+        </p>
+        <VAlert v-if="signatureError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ signatureError }}
+        </VAlert>
+        <VCard variant="outlined">
+          <TiptapEditor v-model="signatureDraft" placeholder="e.g. Regards, Your Name, Your Title" allow-image />
+        </VCard>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="signatureDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="signatureSaving" @click="saveSignature">
+          Save
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
 
   <VAlert v-if="loadError" type="error" variant="tonal" class="mb-4" closable @click:close="loadError = ''">
     {{ loadError }}

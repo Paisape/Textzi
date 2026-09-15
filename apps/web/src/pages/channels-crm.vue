@@ -1735,7 +1735,9 @@ onMounted(() => {
                 <VAlert v-if="mySignatureSaved" type="success" variant="tonal" density="compact" class="mb-3" closable @click:close="mySignatureSaved = false">
                   Your signature is saved.
                 </VAlert>
-                <VTextarea v-model="mySignature" placeholder="e.g. Regards,&#10;Your Name&#10;Your Title" rows="4" density="compact" class="mb-3" />
+                <VCard variant="outlined" class="mb-3">
+                  <TiptapEditor v-model="mySignature" placeholder="e.g. Regards, Your Name, Your Title" allow-image />
+                </VCard>
                 <VBtn size="small" :loading="mySignatureSaving" @click="saveMySignature">
                   Save my signature
                 </VBtn>
@@ -1753,7 +1755,9 @@ onMounted(() => {
                 <VAlert v-if="signatureSaved" type="success" variant="tonal" density="compact" class="mb-3" closable @click:close="signatureSaved = false">
                   Team default signature saved.
                 </VAlert>
-                <VTextarea v-model="emailSignature" placeholder="e.g. Regards,&#10;The Team" rows="4" density="compact" class="mb-3" />
+                <VCard variant="outlined" class="mb-3">
+                  <TiptapEditor v-model="emailSignature" placeholder="e.g. Regards, The Team" allow-image />
+                </VCard>
                 <VBtn size="small" variant="tonal" :loading="signatureSaving" @click="saveEmailSignature">
                   Save team default
                 </VBtn>

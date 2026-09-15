@@ -47,6 +47,7 @@ from .schemas import (
 )
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity, sanitize_email_html
+from .waba_realtime import notify_new_reply
 
 logger = logging.getLogger("textzi.crm_email")
 
@@ -567,6 +568,8 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
                 conversation_id=conversation.id, direction="inbound", message_type="email",
                 body=body_text, payload={"subject": _decode(msg.get("Subject")), "is_html": is_html},
             ))
+            db.flush()
+            notify_new_reply(db, account.entity_id, conversation, contact, "email")
         account.last_synced_at = datetime.now(timezone.utc)
         account.status = "connected"
         account.last_error = None
@@ -601,6 +604,8 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
         conversation_id=conversation.id, direction="inbound", message_type="email",
         body=body_content, payload={"subject": message.get("subject") or "", "is_html": is_html},
     ))
+    db.flush()
+    notify_new_reply(db, account.entity_id, conversation, contact, "email")
 
 
 def _poll_one_graph_account(db: Session, account: EmailAccount) -> None:
