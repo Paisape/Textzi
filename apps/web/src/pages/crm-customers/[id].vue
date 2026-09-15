@@ -27,8 +27,8 @@ type Customer = {
 type CustomerDetail = Customer & { tasks: Task[] }
 type Deal = { id: string, name: string | null, stage: string, status: 'open' | 'won' | 'lost', value: number | null, probability: number | null, expected_close_date: string | null, created_at: string }
 type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number }
-type Quote = { id: string, quote_number: string | null, status: 'draft' | 'sent' | 'accepted' | 'rejected', total: number, created_at: string, sent_at: string | null }
-type SalesInvoice = { id: string, invoice_number: string | null, status: 'issued' | 'partially_paid' | 'paid' | 'cancelled', total: number, amount_paid: number, balance_due: number, created_at: string }
+type Quote = { id: string, quote_number: string | null, status: 'draft' | 'sent' | 'accepted' | 'rejected', total: number, created_at: string, sent_at: string | null, line_items: LineItem[] }
+type SalesInvoice = { id: string, invoice_number: string | null, status: 'issued' | 'partially_paid' | 'paid' | 'cancelled', total: number, amount_paid: number, balance_due: number, created_at: string, line_items: LineItem[] }
 type Attachment = { id: string, filename: string, uploaded_by_user_id: string | null, created_at: string }
 type ActivityMessage = { id: string, channel: string, direction: 'inbound' | 'outbound', message_type: string, body: string | null, created_at: string }
 type LogEntry = { kind: string, label: string, at: string }
@@ -248,6 +248,50 @@ function statusRow(byStatus: Record<string, { count: number, amount: number }>, 
   return byStatus[key] || { count: 0, amount: 0 }
 }
 
+// "Products/Services" (WHMCS's own term for what a customer is actually subscribed to/has
+// bought) -- this CRM has no separate subscription/product-catalog-per-customer concept, so this
+// is derived from what's actually been sold: line items on issued invoices (the real sale) plus
+// accepted quotes not yet converted to an invoice, deduplicated by description with quantities
+// summed. Draft/sent/rejected quotes and cancelled invoices are deliberately excluded -- those
+// were never actually sold.
+const subscribedServices = computed(() => {
+  if (!summary.value)
+    return []
+  const rows = new Map<string, { description: string, quantity: number, total: number }>()
+  const relevantLineSources = [
+    ...summary.value.invoices.filter(i => i.status !== 'cancelled').map(i => i.line_items),
+    ...summary.value.quotes.filter(q => q.status === 'accepted').map(q => q.line_items),
+  ]
+  for (const items of relevantLineSources) {
+    for (const item of items) {
+      const existing = rows.get(item.description)
+      const lineTotal = item.quantity * item.unit_price
+      if (existing) {
+        existing.quantity += item.quantity
+        existing.total += lineTotal
+      }
+      else {
+        rows.set(item.description, { description: item.description, quantity: item.quantity, total: lineTotal })
+      }
+    }
+  }
+  return [...rows.values()]
+})
+
+// Always available, even when this customer has no email on file yet -- deep-links into CRM
+// Email's own compose dialog (pre-filled with whatever name/email we do have) instead of a dead
+// mailto: link that only ever worked for a customer who already had an email saved.
+function sendEmail() {
+  if (!summary.value)
+    return
+  const query: Record<string, string> = { compose: '1' }
+  if (summary.value.customer.contact.name)
+    query.to_name = summary.value.customer.contact.name
+  if (summary.value.customer.contact.email)
+    query.to_email = summary.value.customer.contact.email
+  router.push({ name: 'crm-email', query })
+}
+
 onMounted(load)
 </script>
 
@@ -327,7 +371,7 @@ onMounted(load)
           <VIcon icon="tabler-briefcase" size="16" />
           View originating deal
         </RouterLink>
-        <a v-if="summary.customer.contact.email" :href="`mailto:${summary.customer.contact.email}`" class="d-flex align-center gap-2 text-body-2">
+        <a href="#" class="d-flex align-center gap-2 text-body-2" @click.prevent="sendEmail">
           <VIcon icon="tabler-mail" size="16" />
           Send email
         </a>
@@ -419,10 +463,44 @@ onMounted(load)
                 <VListItem prepend-icon="tabler-checklist" @click="router.push('/crm-tasks')">
                   New task
                 </VListItem>
-                <VListItem v-if="summary.customer.contact.email" prepend-icon="tabler-mail" :href="`mailto:${summary.customer.contact.email}`" tag="a">
+                <VListItem prepend-icon="tabler-mail" @click="sendEmail">
                   Send email
                 </VListItem>
               </VList>
+            </VCard>
+          </VCol>
+        </VRow>
+
+        <VRow class="mb-2">
+          <VCol cols="12">
+            <VCard title="Products / Services">
+              <VTable density="compact">
+                <thead>
+                  <tr>
+                    <th>Description</th>
+                    <th class="text-end">
+                      Quantity
+                    </th>
+                    <th class="text-end">
+                      Total
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="row in subscribedServices" :key="row.description">
+                    <td>{{ row.description }}</td>
+                    <td class="text-end">
+                      {{ row.quantity }}
+                    </td>
+                    <td class="text-end">
+                      {{ inr(row.total) }}
+                    </td>
+                  </tr>
+                </tbody>
+              </VTable>
+              <p v-if="!subscribedServices.length" class="text-medium-emphasis text-center pa-6 mb-0">
+                Nothing sold to this customer yet -- shows up here once a quote is accepted or an invoice is issued.
+              </p>
             </VCard>
           </VCol>
         </VRow>

@@ -335,6 +335,18 @@ function openCompose() {
   composeDialog.value = true
 }
 
+// Lets another page (e.g. the customer detail page's "Send email" quick action, for a customer
+// with no email on file yet) deep-link straight into a pre-filled compose dialog instead of
+// requiring the agent to already have an email address to click a mailto: link.
+const route = useRoute()
+if (route.query.compose === '1') {
+  openCompose()
+  if (typeof route.query.to_name === 'string')
+    composeForm.to_name = route.query.to_name
+  if (typeof route.query.to_email === 'string')
+    composeForm.to_email = route.query.to_email
+}
+
 function onComposeFilesSelected(event: Event) {
   const picked = Array.from((event.target as HTMLInputElement).files || [])
   composeFiles.value.push(...picked)
