@@ -311,9 +311,28 @@ function openWabaTimeline() {
 // Jumps into the actual WhatsApp inbox thread for this customer's linked WABA contact, same
 // "Open Chat" action already on the WABA customer page -- this page previously had no way back
 // to the live conversation at all once someone was converted to a Customer.
-function openChat() {
-  if (summary.value?.waba_contact_id)
-    router.push(`/inbox?conversation=${summary.value.waba_contact_id}`)
+// inbox.vue's own deep link reads ?conversation= as a real Conversation id, not a Contact id --
+// this page only has the contact id (CustomerSummaryOut.waba_contact_id), so resolve the real
+// conversation id first the same way openConvertDialog's own ticket flow already has to.
+const openingChat = ref(false)
+
+async function openChat() {
+  if (!summary.value?.waba_contact_id)
+    return
+  openingChat.value = true
+  try {
+    const contactDetail = await $api<{ conversation_id: string | null }>(`/v1/waba/contacts/${summary.value.waba_contact_id}/timeline`)
+    if (contactDetail.conversation_id)
+      router.push(`/inbox?conversation=${contactDetail.conversation_id}`)
+    else
+      loadError.value = 'This customer has no WhatsApp conversation yet.'
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not open this chat.')
+  }
+  finally {
+    openingChat.value = false
+  }
 }
 
 const convertDialog = ref(false)
@@ -440,7 +459,7 @@ onMounted(load)
       </VCardText>
       <VDivider />
       <VCardText class="d-flex flex-wrap gap-3">
-        <VBtn v-if="summary.waba_contact_id" color="primary" prepend-icon="tabler-message-2" @click="openChat">
+        <VBtn v-if="summary.waba_contact_id" color="primary" prepend-icon="tabler-message-2" :loading="openingChat" @click="openChat">
           Open Chat
         </VBtn>
         <VBtn v-if="summary.waba_contact_id" variant="tonal" prepend-icon="tabler-ticket" @click="openConvertDialog">
