@@ -42,7 +42,7 @@ from .models import Contact, Conversation, ConversationMessage, EmailAccount, En
 from .permissions import require_channel_scope, require_page_scope_for, require_plan_feature
 from .schemas import (
     EmailAccountOut, EmailAccountTestResult, EmailAccountUpdateRequest, EmailSendRequest,
-    MicrosoftAuthorizeUrlOut, MicrosoftOAuthCallbackRequest,
+    EmailSignatureUpdateRequest, MicrosoftAuthorizeUrlOut, MicrosoftOAuthCallbackRequest,
 )
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity, sanitize_email_html
@@ -78,6 +78,7 @@ def _account_out(account: EmailAccount | None) -> EmailAccountOut:
         imap_username=account.imap_username, imap_use_ssl=account.imap_use_ssl, status=account.status,
         last_error=account.last_error,
         last_synced_at=account.last_synced_at.isoformat() if account.last_synced_at else None,
+        signature_html=account.signature_html,
     )
 
 
@@ -127,6 +128,21 @@ def save_email_account(payload: EmailAccountUpdateRequest, user: User = Depends(
     account.ms_subscription_expires_at = None
     account.status = "unverified"
     account.last_error = None
+    db.commit()
+    db.refresh(account)
+    return _account_out(account)
+
+
+@router.put("/account/signature", response_model=EmailAccountOut)
+def save_email_signature(payload: EmailSignatureUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Kept as its own endpoint, separate from save_email_account, so it isn't wiped by a
+    reconnect and so it's usable regardless of provider (byo or microsoft_graph)."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    account = db.scalar(select(EmailAccount).where(EmailAccount.entity_id == entity.id))
+    if not account:
+        raise HTTPException(status_code=422, detail="Connect an email account first")
+    account.signature_html = payload.signature_html.strip() or None
     db.commit()
     db.refresh(account)
     return _account_out(account)

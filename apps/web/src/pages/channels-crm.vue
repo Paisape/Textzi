@@ -620,6 +620,7 @@ type EmailAccount = {
   status: string | null
   last_error: string | null
   last_synced_at: string | null
+  signature_html: string | null
 }
 
 const emailAccount = ref<EmailAccount | null>(null)
@@ -631,6 +632,27 @@ const emailSaving = ref(false)
 const emailTesting = ref(false)
 const emailError = ref('')
 const emailTestResult = ref<{ ok: boolean, error: string | null } | null>(null)
+
+const emailSignature = ref('')
+const signatureSaving = ref(false)
+const signatureError = ref('')
+const signatureSaved = ref(false)
+
+async function saveEmailSignature() {
+  signatureSaving.value = true
+  signatureError.value = ''
+  signatureSaved.value = false
+  try {
+    emailAccount.value = await $api<EmailAccount>('/v1/crm/email/account/signature', { method: 'PUT', body: { signature_html: emailSignature.value } })
+    signatureSaved.value = true
+  }
+  catch (error: any) {
+    signatureError.value = extractErrorMessage(error, 'Could not save the signature.')
+  }
+  finally {
+    signatureSaving.value = false
+  }
+}
 
 async function loadEmailAccount() {
   try {
@@ -647,6 +669,7 @@ async function loadEmailAccount() {
       emailForm.imap_username = emailAccount.value.imap_username || ''
       emailForm.imap_use_ssl = emailAccount.value.imap_use_ssl
     }
+    emailSignature.value = emailAccount.value.signature_html || ''
   }
   catch (error: any) {
     emailError.value = extractErrorMessage(error, 'Could not load the email account.')
@@ -1660,6 +1683,26 @@ onMounted(() => {
                     Disconnect
                   </VBtn>
                 </div>
+              </template>
+
+              <template v-if="emailAccount?.connected">
+                <VDivider class="my-4" />
+                <p class="text-subtitle-2 mb-2">
+                  Signature
+                </p>
+                <VAlert v-if="signatureError" type="error" variant="tonal" density="compact" class="mb-3">
+                  {{ signatureError }}
+                </VAlert>
+                <VAlert v-if="signatureSaved" type="success" variant="tonal" density="compact" class="mb-3" closable @click:close="signatureSaved = false">
+                  Signature saved.
+                </VAlert>
+                <VTextarea v-model="emailSignature" placeholder="e.g. Regards,&#10;Your Name&#10;Company" rows="4" density="compact" class="mb-3" />
+                <VBtn size="small" :loading="signatureSaving" @click="saveEmailSignature">
+                  Save signature
+                </VBtn>
+                <p class="text-caption text-medium-emphasis mt-2 mb-0">
+                  Added automatically to new replies and messages you compose (you can edit or remove it before sending).
+                </p>
               </template>
             </VCardText>
           </VCard>

@@ -12,6 +12,7 @@ import { useAuthStore } from '@/stores/auth'
 const authStore = useAuthStore()
 
 type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
+type EmailAccountInfo = { connected: boolean, signature_html?: string | null }
 type EmailMessage = {
   id: string
   direction: 'inbound' | 'outbound'
@@ -149,13 +150,23 @@ type Quote = { id: string, quote_number: string | null, deal_id: string }
 const cannedResponses = ref<CannedResponse[]>([])
 const quotes = ref<Quote[]>([])
 
+const signatureHtml = ref('')
+
 async function loadPickerData() {
-  const [cannedResult, quoteResult] = await Promise.all([
+  const [cannedResult, quoteResult, accountResult] = await Promise.all([
     $api<CannedResponse[]>('/v1/waba/canned-responses').catch(() => []),
     $api<Quote[]>('/v1/crm/quotes').catch(() => []),
+    $api<EmailAccountInfo>('/v1/crm/email/account').catch(() => null),
   ])
   cannedResponses.value = cannedResult
   quotes.value = quoteResult
+  signatureHtml.value = accountResult?.signature_html || ''
+}
+
+function withSignature(html: string) {
+  if (!signatureHtml.value)
+    return html
+  return html ? `${html}<p></p>${signatureHtml.value}` : signatureHtml.value
 }
 
 function resolveCannedBody(canned: CannedResponse, contactName: string | null) {
@@ -166,6 +177,8 @@ function resolveCannedBody(canned: CannedResponse, contactName: string | null) {
 
 const subject = ref('')
 const body = ref('')
+const cc = ref('')
+const showCc = ref(false)
 const replyFiles = ref<File[]>([])
 const replyQuoteId = ref<string | null>(null)
 const sending = ref(false)
@@ -173,7 +186,9 @@ const sendError = ref('')
 
 watch(selected, (thread) => {
   subject.value = thread ? `Re: ${latestSubject(thread)}` : ''
-  body.value = ''
+  body.value = thread ? withSignature('') : ''
+  cc.value = ''
+  showCc.value = false
   replyFiles.value = []
   replyQuoteId.value = null
 })
@@ -202,12 +217,16 @@ async function send() {
     formData.append('contact_id', selected.value.contact.id)
     formData.append('subject', subject.value.trim() || '(no subject)')
     formData.append('body', body.value)
+    if (cc.value.trim())
+      formData.append('cc', cc.value.trim())
     if (replyQuoteId.value)
       formData.append('quote_id', replyQuoteId.value)
     for (const file of replyFiles.value)
       formData.append('files', file)
     await $api('/v1/crm/email/send', { method: 'POST', body: formData })
-    body.value = ''
+    body.value = withSignature('')
+    cc.value = ''
+    showCc.value = false
     replyFiles.value = []
     replyQuoteId.value = null
     await selectThread(selected.value.id)
@@ -224,7 +243,8 @@ async function send() {
 // --- Compose (new email, not a reply) -----------------------------------------------------------
 
 const composeDialog = ref(false)
-const composeForm = reactive({ to_email: '', to_name: '', subject: '', body: '' })
+const composeForm = reactive({ to_email: '', to_name: '', subject: '', body: '', cc: '' })
+const composeShowCc = ref(false)
 const composeFiles = ref<File[]>([])
 const composeQuoteId = ref<string | null>(null)
 const composeSending = ref(false)
@@ -234,7 +254,9 @@ function openCompose() {
   composeForm.to_email = ''
   composeForm.to_name = ''
   composeForm.subject = ''
-  composeForm.body = ''
+  composeForm.body = withSignature('')
+  composeForm.cc = ''
+  composeShowCc.value = false
   composeFiles.value = []
   composeQuoteId.value = null
   composeError.value = ''
@@ -267,6 +289,8 @@ async function sendCompose() {
       formData.append('to_name', composeForm.to_name.trim())
     formData.append('subject', composeForm.subject.trim())
     formData.append('body', composeForm.body)
+    if (composeForm.cc.trim())
+      formData.append('cc', composeForm.cc.trim())
     if (composeQuoteId.value)
       formData.append('quote_id', composeQuoteId.value)
     for (const file of composeFiles.value)
@@ -427,7 +451,13 @@ onMounted(() => {
         <VAlert v-if="sendError" type="error" variant="tonal" density="compact" class="mb-3">
           {{ sendError }}
         </VAlert>
-        <VTextField v-model="subject" label="Subject" density="compact" class="mb-2" />
+        <div class="d-flex align-center ga-2 mb-2">
+          <VTextField v-model="subject" label="Subject" density="compact" hide-details class="flex-grow-1" />
+          <VBtn v-if="!showCc" size="small" variant="text" @click="showCc = true">
+            Cc
+          </VBtn>
+        </div>
+        <VTextField v-if="showCc" v-model="cc" label="Cc" placeholder="comma-separated email addresses" density="compact" class="mb-2" clearable @click:clear="cc = ''" />
         <VCard variant="outlined">
           <TiptapEditor v-model="body" placeholder="Write your reply..." allow-image />
         </VCard>
@@ -487,7 +517,13 @@ onMounted(() => {
         </VAlert>
         <VTextField v-model="composeForm.to_email" label="To (email)" density="compact" autofocus />
         <VTextField v-model="composeForm.to_name" label="Recipient name (optional)" density="compact" />
-        <VTextField v-model="composeForm.subject" label="Subject" density="compact" />
+        <div class="d-flex align-center ga-2">
+          <VTextField v-model="composeForm.subject" label="Subject" density="compact" hide-details class="flex-grow-1" />
+          <VBtn v-if="!composeShowCc" size="small" variant="text" @click="composeShowCc = true">
+            Cc
+          </VBtn>
+        </div>
+        <VTextField v-if="composeShowCc" v-model="composeForm.cc" label="Cc" placeholder="comma-separated email addresses" density="compact" clearable @click:clear="composeForm.cc = ''" />
         <VCard variant="outlined">
           <TiptapEditor v-model="composeForm.body" placeholder="Write your message..." allow-image />
         </VCard>

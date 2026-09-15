@@ -2517,6 +2517,9 @@ class EmailAccount(Base):
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    # HTML, appended below the composer body on send (see crm_email.py's send_email) -- kept
+    # separate from the connect/reconnect form so re-saving BYO/Graph credentials never wipes it.
+    signature_html: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class Segment(Base):

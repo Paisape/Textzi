@@ -3192,6 +3192,7 @@ class EmailAccountOut(BaseModel):
     status: str | None = None
     last_error: str | None = None
     last_synced_at: str | None = None
+    signature_html: str | None = None
 
 
 class EmailAccountUpdateRequest(BaseModel):
@@ -3207,6 +3208,10 @@ class EmailAccountUpdateRequest(BaseModel):
     imap_username: str = Field(min_length=1, max_length=255)
     imap_password: str = Field(min_length=1)
     imap_use_ssl: bool = True
+
+
+class EmailSignatureUpdateRequest(BaseModel):
+    signature_html: str = Field(default="", max_length=20000)
 
 
 class EmailAccountTestResult(BaseModel):
