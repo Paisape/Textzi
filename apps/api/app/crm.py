@@ -33,7 +33,7 @@ from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
-    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut,
+    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
     DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
@@ -1028,6 +1028,19 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
     emails = [m for m in recent_messages if m.channel == "email"]
 
     invoice_outs = [_sales_invoice_out(db, i) for i in invoices]
+    quote_outs = [_quote_out(db, q) for q in quotes]
+
+    invoices_by_status: dict[str, StatusCountAmount] = {}
+    for inv in invoice_outs:
+        entry = invoices_by_status.setdefault(inv.status, StatusCountAmount(count=0, amount=0))
+        entry.count += 1
+        entry.amount += inv.total
+    quotes_by_status: dict[str, StatusCountAmount] = {}
+    for q in quote_outs:
+        entry = quotes_by_status.setdefault(q.status, StatusCountAmount(count=0, amount=0))
+        entry.count += 1
+        entry.amount += q.total
+
     log: list[CustomerLogEntryOut] = [CustomerLogEntryOut(kind="customer_created", label="Became a customer", at=customer.created_at.isoformat())]
     for deal in deals:
         log.append(CustomerLogEntryOut(kind="deal_created", label=f"Deal created: {deal.name or deal.stage}", at=deal.created_at.isoformat()))
@@ -1045,7 +1058,7 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
     return CustomerSummaryOut(
         customer=customer_detail,
         deals=[_deal_out(d, contact) for d in deals],
-        quotes=[_quote_out(db, q) for q in quotes],
+        quotes=quote_outs,
         invoices=invoice_outs,
         attachments=[_attachment_out(a) for a in attachments],
         tickets=tickets,
@@ -1055,6 +1068,8 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
         total_invoiced=sum(i.total for i in invoice_outs),
         total_paid=sum(i.amount_paid for i in invoice_outs),
         open_deal_count=sum(1 for d in deals if d.status == "open"),
+        invoices_by_status=invoices_by_status,
+        quotes_by_status=quotes_by_status,
     )
 
 

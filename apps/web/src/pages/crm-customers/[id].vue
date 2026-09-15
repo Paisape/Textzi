@@ -32,6 +32,7 @@ type SalesInvoice = { id: string, invoice_number: string | null, status: 'issued
 type Attachment = { id: string, filename: string, uploaded_by_user_id: string | null, created_at: string }
 type ActivityMessage = { id: string, channel: string, direction: 'inbound' | 'outbound', message_type: string, body: string | null, created_at: string }
 type LogEntry = { kind: string, label: string, at: string }
+type StatusCountAmount = { count: number, amount: number }
 type CustomerSummary = {
   customer: CustomerDetail
   deals: Deal[]
@@ -45,6 +46,8 @@ type CustomerSummary = {
   total_invoiced: number
   total_paid: number
   open_deal_count: number
+  invoices_by_status: Record<string, StatusCountAmount>
+  quotes_by_status: Record<string, StatusCountAmount>
 }
 type AssignableUser = { id: string, full_name: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
@@ -234,6 +237,17 @@ const QUOTE_STATUS_COLOR: Record<string, string> = { draft: undefined as any, se
 const INVOICE_STATUS_COLOR: Record<string, string> = { issued: 'primary', partially_paid: 'warning', paid: 'success', cancelled: 'error' }
 const DEAL_STATUS_COLOR: Record<string, string> = { open: 'primary', won: 'success', lost: 'error' }
 
+// WHMCS's own Summary ordering (Paid, Draft, Unpaid/Due, ...) -- fixed row order so the card reads
+// the same every time regardless of which statuses this customer happens to have.
+const INVOICE_STATUS_ORDER = ['paid', 'partially_paid', 'issued', 'cancelled']
+const INVOICE_STATUS_LABEL: Record<string, string> = { paid: 'Paid', partially_paid: 'Partially paid', issued: 'Unpaid / Due', cancelled: 'Cancelled' }
+const QUOTE_STATUS_ORDER = ['accepted', 'sent', 'draft', 'rejected']
+const QUOTE_STATUS_LABEL: Record<string, string> = { accepted: 'Accepted', sent: 'Sent (awaiting reply)', draft: 'Draft', rejected: 'Rejected' }
+
+function statusRow(byStatus: Record<string, { count: number, amount: number }>, key: string) {
+  return byStatus[key] || { count: 0, amount: 0 }
+}
+
 onMounted(load)
 </script>
 
@@ -352,6 +366,67 @@ onMounted(load)
 
     <VWindow v-model="activeTab">
       <VWindowItem value="summary">
+        <VRow class="mb-2">
+          <VCol cols="12" md="4">
+            <VCard title="Invoices / Billing">
+              <VCardText>
+                <div v-for="key in INVOICE_STATUS_ORDER" :key="key" class="d-flex justify-space-between text-body-2 mb-2">
+                  <span>{{ INVOICE_STATUS_LABEL[key] }}</span>
+                  <span>{{ statusRow(summary.invoices_by_status, key).count }} ({{ inr(statusRow(summary.invoices_by_status, key).amount) }})</span>
+                </div>
+                <VDivider class="my-2" />
+                <div class="d-flex justify-space-between text-body-2 font-weight-medium mb-1">
+                  <span>Total invoiced</span>
+                  <span>{{ inr(summary.total_invoiced) }}</span>
+                </div>
+                <div class="d-flex justify-space-between text-body-2 font-weight-medium">
+                  <span>Total paid</span>
+                  <span>{{ inr(summary.total_paid) }}</span>
+                </div>
+              </VCardText>
+            </VCard>
+          </VCol>
+
+          <VCol cols="12" md="4">
+            <VCard title="Deals / Quotes">
+              <VCardText>
+                <div class="d-flex justify-space-between text-body-2 mb-2">
+                  <span>Open deals</span>
+                  <span>{{ summary.open_deal_count }}</span>
+                </div>
+                <div class="d-flex justify-space-between text-body-2 mb-2">
+                  <span>Total deal value</span>
+                  <span>{{ inr(summary.total_deal_value) }}</span>
+                </div>
+                <VDivider class="my-2" />
+                <div v-for="key in QUOTE_STATUS_ORDER" :key="key" class="d-flex justify-space-between text-body-2 mb-2">
+                  <span>{{ QUOTE_STATUS_LABEL[key] }}</span>
+                  <span>{{ statusRow(summary.quotes_by_status, key).count }} ({{ inr(statusRow(summary.quotes_by_status, key).amount) }})</span>
+                </div>
+              </VCardText>
+            </VCard>
+          </VCol>
+
+          <VCol cols="12" md="4">
+            <VCard title="Quick actions">
+              <VList density="compact">
+                <VListItem prepend-icon="tabler-briefcase" @click="router.push(`/crm-deals?new=1&contact_id=${summary.customer.contact.id}`)">
+                  New deal
+                </VListItem>
+                <VListItem prepend-icon="tabler-file-invoice" @click="router.push('/crm-quotes')">
+                  New quote / invoice
+                </VListItem>
+                <VListItem prepend-icon="tabler-checklist" @click="router.push('/crm-tasks')">
+                  New task
+                </VListItem>
+                <VListItem v-if="summary.customer.contact.email" prepend-icon="tabler-mail" :href="`mailto:${summary.customer.contact.email}`" tag="a">
+                  Send email
+                </VListItem>
+              </VList>
+            </VCard>
+          </VCol>
+        </VRow>
+
         <VRow>
           <VCol cols="12" md="8">
             <VCard v-if="customFields.length" class="mb-4" title="Custom fields">

@@ -3539,6 +3539,11 @@ class CustomerLogEntryOut(BaseModel):
     at: str
 
 
+class StatusCountAmount(BaseModel):
+    count: int
+    amount: float
+
+
 class CustomerSummaryOut(BaseModel):
     """Backs the WHMCS-style tabbed customer detail page -- one call aggregating everything
     scoped to this customer's contact: every Deal they've ever had (not just Customer.deal_id,
@@ -3558,6 +3563,11 @@ class CustomerSummaryOut(BaseModel):
     total_invoiced: float
     total_paid: float
     open_deal_count: int
+    # Per-status counts+amounts, WHMCS-summary-style ("Paid: 1 (Rs X)", "Unpaid/Due: 2 (Rs Y)",
+    # ...) -- computed once server-side so the Summary tab can render them directly rather than
+    # re-deriving from the raw invoices/quotes lists on every page load.
+    invoices_by_status: dict[str, StatusCountAmount]
+    quotes_by_status: dict[str, StatusCountAmount]
 
 
 class LeadDetailOut(BaseModel):
