@@ -16,7 +16,7 @@ type EmailMessage = {
   id: string
   direction: 'inbound' | 'outbound'
   body: string | null
-  payload: { subject?: string } | null
+  payload: { subject?: string, is_html?: boolean } | null
   created_at: string
 }
 type EmailThread = {
@@ -79,11 +79,12 @@ function latestSubject(thread: EmailThreadDetail) {
   return withSubject?.payload?.subject || '(no subject)'
 }
 
-// Outbound messages are always HTML (sent from the rich-text editor below); inbound mail is
-// always plain text (crm_email.py's _extract_body only ever stores text/plain) -- direction alone
-// is enough to know how to render a message, no separate flag needed.
+// Real per-message flag, set by the backend at write time (services.sanitize_rich_text has
+// already stripped anything unsafe from inbound HTML before it ever reaches here) -- a message's
+// direction alone doesn't determine this: a Microsoft Graph inbound message is HTML by default,
+// and a plain-text-only sender's inbound message isn't, so this can't be inferred from direction.
 function isHtml(m: EmailMessage) {
-  return m.direction === 'outbound'
+  return m.payload?.is_html ?? m.direction === 'outbound'
 }
 
 async function selectThread(id: string) {
@@ -367,14 +368,27 @@ onMounted(() => {
       </VAlert>
 
       <div class="flex-grow-1 overflow-y-auto pa-4">
-        <div v-for="m in selected.messages" :key="m.id" class="mb-4 pb-4" style="border-bottom: 1px solid rgba(var(--v-theme-on-surface), 0.08);">
+        <div
+          v-for="m in selected.messages" :key="m.id" class="mb-4 pb-4 pa-3 rounded"
+          :style="{
+            borderBottom: '1px solid rgba(var(--v-theme-on-surface), 0.08)',
+            borderInlineStart: `3px solid rgb(var(--v-theme-${m.direction === 'outbound' ? 'primary' : 'success'}))`,
+            backgroundColor: m.direction === 'outbound' ? 'rgba(var(--v-theme-primary), 0.04)' : 'transparent',
+          }"
+        >
           <div class="d-flex align-center ga-2 mb-2">
-            <VAvatar size="28" :color="m.direction === 'outbound' ? 'primary' : undefined" variant="tonal">
+            <VAvatar size="28" :color="m.direction === 'outbound' ? 'primary' : 'success'" variant="tonal">
               <span class="text-caption">{{ (m.direction === 'outbound' ? 'Y' : contactLabel(selected.contact)).slice(0, 1).toUpperCase() }}</span>
             </VAvatar>
-            <div>
-              <div class="text-body-2 font-weight-medium">
-                {{ m.direction === 'outbound' ? 'You' : contactLabel(selected.contact) }}
+            <div class="flex-grow-1">
+              <div class="d-flex align-center ga-2">
+                <span class="text-body-2 font-weight-medium">
+                  {{ m.direction === 'outbound' ? 'You' : contactLabel(selected.contact) }}
+                </span>
+                <VChip size="x-small" :color="m.direction === 'outbound' ? 'primary' : 'success'" variant="tonal">
+                  <VIcon :icon="m.direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'" size="12" start />
+                  {{ m.direction === 'outbound' ? 'Sent' : 'Received' }}
+                </VChip>
               </div>
               <div class="text-caption text-medium-emphasis">
                 {{ formatDate(m.created_at) }}
@@ -517,7 +531,21 @@ onMounted(() => {
 </template>
 
 <style scoped>
+.email-html-body {
+  overflow-x: auto;
+  max-inline-size: 100%;
+}
+
 .email-html-body :deep(p) {
   margin-block-end: 0.75rem;
+}
+
+.email-html-body :deep(img) {
+  max-inline-size: 100%;
+  block-size: auto;
+}
+
+.email-html-body :deep(table) {
+  max-inline-size: 100%;
 }
 </style>

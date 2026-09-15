@@ -45,7 +45,7 @@ from .schemas import (
     MicrosoftAuthorizeUrlOut, MicrosoftOAuthCallbackRequest,
 )
 from .security import decrypt_secret, encrypt_secret
-from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity
+from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity, sanitize_email_html
 
 logger = logging.getLogger("textzi.crm_email")
 
@@ -465,7 +465,7 @@ def send_email(
     conversation.last_message_at = datetime.now(timezone.utc)
     db.add(ConversationMessage(
         conversation_id=conversation.id, direction="outbound", message_type="email",
-        body=payload.body, payload={"subject": payload.subject, "to": contact.email, "cc": payload.cc, "attachments": [a[0] for a in attachments]},
+        body=payload.body, payload={"subject": payload.subject, "to": contact.email, "cc": payload.cc, "attachments": [a[0] for a in attachments], "is_html": True},
         sent_by_user_id=user.id,
     ))
     db.commit()
@@ -479,16 +479,34 @@ def _decode(value: str | None) -> str:
     return "".join(part.decode(enc or "utf-8", errors="replace") if isinstance(part, bytes) else part for part, enc in parts)
 
 
-def _extract_body(msg) -> str:
+def _extract_body(msg) -> tuple[str, bool]:
+    """Returns (body, is_html). Prefers a real text/plain part (most mail clients send both);
+    falls back to the text/html part -- sanitized, since this is untrusted content from an
+    external sender, same threat model as a webchat visitor's own input -- for an HTML-only
+    email that has no plain-text alternative at all (increasingly common; plenty of real mail
+    sent by services/marketing tools skips the plain-text part entirely, and previously this
+    returned an empty body for every one of those)."""
     if msg.is_multipart():
+        html_part = None
         for part in msg.walk():
-            if part.get_content_type() == "text/plain" and not part.get("Content-Disposition"):
+            if part.get("Content-Disposition"):
+                continue
+            if part.get_content_type() == "text/plain":
                 charset = part.get_content_charset() or "utf-8"
-                return part.get_payload(decode=True).decode(charset, errors="replace")
-        return ""
+                return part.get_payload(decode=True).decode(charset, errors="replace"), False
+            if part.get_content_type() == "text/html" and html_part is None:
+                html_part = part
+        if html_part is not None:
+            charset = html_part.get_content_charset() or "utf-8"
+            raw_html = html_part.get_payload(decode=True).decode(charset, errors="replace")
+            return sanitize_email_html(raw_html), True
+        return "", False
     charset = msg.get_content_charset() or "utf-8"
     payload = msg.get_payload(decode=True)
-    return payload.decode(charset, errors="replace") if payload else ""
+    text = payload.decode(charset, errors="replace") if payload else ""
+    if msg.get_content_type() == "text/html":
+        return sanitize_email_html(text), True
+    return text, False
 
 
 def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
@@ -509,9 +527,10 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
             contact = _find_or_create_contact(db, account.entity_id, from_email, from_name or None)
             conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
             conversation.last_message_at = datetime.now(timezone.utc)
+            body_text, is_html = _extract_body(msg)
             db.add(ConversationMessage(
                 conversation_id=conversation.id, direction="inbound", message_type="email",
-                body=_extract_body(msg), payload={"subject": _decode(msg.get("Subject"))},
+                body=body_text, payload={"subject": _decode(msg.get("Subject")), "is_html": is_html},
             ))
         account.last_synced_at = datetime.now(timezone.utc)
         account.status = "connected"
@@ -528,7 +547,10 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
     """Turns one fetched Graph message dict (crm_email_graph.fetch_message's return shape) into
     the same Contact/Conversation/ConversationMessage rows the IMAP path produces -- shared
     end-state regardless of which provider delivered the message, since inbox.vue's rendering is
-    already channel-generic, not provider-aware."""
+    already channel-generic, not provider-aware. Graph's own default bodyType is HTML (confirmed
+    live -- a real fetched message's body.content was a full <html><head>... document, not
+    plain text), so unlike IMAP's _extract_body this is unconditionally HTML, sanitized the same
+    way (untrusted content from an external sender)."""
     from_field = (message.get("from") or {}).get("emailAddress") or {}
     from_email = from_field.get("address")
     if not from_email:
@@ -536,10 +558,13 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
     contact = _find_or_create_contact(db, account.entity_id, from_email, from_field.get("name"))
     conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
     conversation.last_message_at = datetime.now(timezone.utc)
-    body_html = (message.get("body") or {}).get("content") or message.get("bodyPreview") or ""
+    body_field = message.get("body") or {}
+    raw_content = body_field.get("content") or message.get("bodyPreview") or ""
+    is_html = (body_field.get("contentType") or "html").lower() == "html"
+    body_content = sanitize_email_html(raw_content) if is_html else raw_content
     db.add(ConversationMessage(
         conversation_id=conversation.id, direction="inbound", message_type="email",
-        body=body_html, payload={"subject": message.get("subject") or ""},
+        body=body_content, payload={"subject": message.get("subject") or "", "is_html": is_html},
     ))
 
 

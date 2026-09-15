@@ -39,6 +39,33 @@ def sanitize_rich_text(html: str) -> str:
     return nh3.clean(html, tags=_RICH_TEXT_ALLOWED_TAGS, attributes=_RICH_TEXT_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
 
 
+# Real inbound email (crm_email.py) needs a much wider allowlist than a webchat visitor's plain
+# chat text -- a genuine marketing/transactional/newsletter email routinely uses tables for
+# layout, inline styles for color/spacing, and images, none of which _RICH_TEXT_ALLOWED_TAGS
+# permits (that tag set would render most real-world email as a wall of unstyled, image-less
+# text). Still no script/iframe/object/on*-attribute/form ever passes through -- nh3 only allows
+# what's explicitly listed here regardless of what the sanitized document requests.
+_EMAIL_HTML_ALLOWED_TAGS = {
+    "p", "br", "div", "span", "b", "strong", "i", "em", "u", "s", "a", "ul", "ol", "li",
+    "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "pre", "code",
+    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "img", "hr",
+}
+_EMAIL_HTML_ALLOWED_ATTRIBUTES = {
+    "a": {"href", "target"},
+    "img": {"src", "alt", "width", "height"},
+    "*": {"style", "align", "valign", "width", "height", "colspan", "rowspan", "border", "cellpadding", "cellspacing"},
+}
+
+
+def sanitize_email_html(html: str) -> str:
+    """Wider allowlist than sanitize_rich_text, for a real inbound email body (untrusted -- from
+    an external sender, same threat model as webchat, just a much broader legitimate-content
+    shape) -- keeps table-based layout, inline styles, and images working, while still stripping
+    script/iframe/object/on*-attributes/javascript: URLs the same way nh3's Rust sanitizer always
+    does regardless of the allowlist passed to it."""
+    return nh3.clean(html, tags=_EMAIL_HTML_ALLOWED_TAGS, attributes=_EMAIL_HTML_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
+
+
 def strip_html_tags(html: str) -> str:
     """Reduces a rich-text message body (webchat/email, both stored as HTML) to plain text for a
     one-line list preview -- nh3.clean with an empty tag allowlist drops every tag but keeps the
