@@ -1499,6 +1499,19 @@ class WabaTestConnectionResponse(BaseModel):
     detail: str
 
 
+class PlatformMicrosoftSettingsOut(BaseModel):
+    client_id: str | None
+    tenant_id: str | None
+    configured: bool
+    redirect_uri: str | None
+
+
+class PlatformMicrosoftSettingsUpdate(BaseModel):
+    client_id: str | None = None
+    tenant_id: str | None = None
+    client_secret: str | None = None  # blank = keep the existing one, same convention as PlatformWabaSettingsUpdate.app_secret
+
+
 class WabaWebhookTokenOut(BaseModel):
     webhook_url: str | None
     webhook_verify_token: str
@@ -3164,6 +3177,7 @@ class WebchatVisitTelemetryOut(BaseModel):
 
 class EmailAccountOut(BaseModel):
     connected: bool
+    provider: str | None = None  # "byo" | "microsoft_graph"
     from_name: str | None = None
     from_email: str | None = None
     smtp_host: str | None = None
@@ -3197,6 +3211,15 @@ class EmailAccountUpdateRequest(BaseModel):
 class EmailAccountTestResult(BaseModel):
     ok: bool
     error: str | None = None
+
+
+class MicrosoftAuthorizeUrlOut(BaseModel):
+    authorize_url: str
+
+
+class MicrosoftOAuthCallbackRequest(BaseModel):
+    code: str
+    state: str
 
 
 class MailboxProvisionRequest(BaseModel):

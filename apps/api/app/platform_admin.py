@@ -12,15 +12,15 @@ from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
-from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
+from .models import PlatformGeneralSettings, PlatformMicrosoftSettings, PlatformR2Settings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
-    PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
+    PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate, PlatformMicrosoftSettingsOut, PlatformMicrosoftSettingsUpdate,
     PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformRazorpaySettingsOut, PlatformRazorpaySettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
     PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWabaSettingsOut, PlatformWabaSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
     PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, WabaTestConnectionResponse, WabaWebhookTokenOut, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
-from .services import DomainError, credit_platform_wallet, get_gst_rate, get_platform_company_info, get_platform_razorpay_keys, get_platform_turnstile_settings, get_platform_waba_settings, get_platform_waba_webhook_verify_token, log_activity, mask_mobile, waba_webhook_url
+from .services import DomainError, credit_platform_wallet, get_gst_rate, get_platform_company_info, get_platform_microsoft_settings, get_platform_razorpay_keys, get_platform_turnstile_settings, get_platform_waba_settings, get_platform_waba_webhook_verify_token, log_activity, mask_mobile, microsoft_graph_redirect_uri, waba_webhook_url
 from .turnstile import SITEVERIFY_URL
 from .waba_meta import GRAPH_API_BASE
 from .zoho_books import ZohoCallError, exchange_grant_code, get_zoho_settings, list_accounts, list_tax_rates
@@ -292,6 +292,29 @@ def test_waba_connection(db: Session = Depends(get_db)):
     if isinstance(result, dict) and result.get("access_token"):
         return WabaTestConnectionResponse(ok=True, detail="App ID and Secret are valid and recognized by Meta.")
     return WabaTestConnectionResponse(ok=False, detail=f"Unexpected response from Meta: {result}")
+
+
+@router.get("/microsoft-settings", response_model=PlatformMicrosoftSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def get_microsoft_settings(db: Session = Depends(get_db)):
+    client_id, tenant_id, secret = get_platform_microsoft_settings(db)
+    return PlatformMicrosoftSettingsOut(client_id=client_id, tenant_id=tenant_id, configured=bool(secret), redirect_uri=microsoft_graph_redirect_uri(db))
+
+
+@router.put("/microsoft-settings", response_model=PlatformMicrosoftSettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_microsoft_settings(payload: PlatformMicrosoftSettingsUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """client_secret is write-only, same convention as WABA's app_secret above -- GET never
+    returns it, and a blank value on PUT keeps whatever was already stored."""
+    row = db.get(PlatformMicrosoftSettings, "platform")
+    if not row:
+        row = PlatformMicrosoftSettings(id="platform")
+        db.add(row)
+    row.client_id = payload.client_id
+    row.tenant_id = payload.tenant_id
+    if payload.client_secret:
+        row.client_secret_encrypted = encrypt_secret(payload.client_secret)
+    log_activity(db, None, "platform_microsoft_settings_updated", "Platform Microsoft 365 settings updated.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit(); db.refresh(row)
+    return PlatformMicrosoftSettingsOut(client_id=row.client_id, tenant_id=row.tenant_id, configured=bool(row.client_secret_encrypted), redirect_uri=microsoft_graph_redirect_uri(db))
 
 
 def _zoho_settings_out(row: PlatformZohoSettings) -> PlatformZohoSettingsOut:

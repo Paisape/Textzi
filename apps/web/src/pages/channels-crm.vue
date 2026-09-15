@@ -606,6 +606,7 @@ async function deleteDocumentTemplate(template: DocumentTemplate) {
 
 type EmailAccount = {
   connected: boolean
+  provider: 'byo' | 'microsoft_graph' | null
   from_name: string | null
   from_email: string | null
   smtp_host: string | null
@@ -664,6 +665,24 @@ async function saveEmailAccount() {
   }
   finally {
     emailSaving.value = false
+  }
+}
+
+const microsoftConnecting = ref(false)
+const microsoftError = ref('')
+
+async function connectMicrosoft() {
+  microsoftConnecting.value = true
+  microsoftError.value = ''
+  try {
+    const result = await $api<{ authorize_url: string }>('/v1/crm/email/microsoft/authorize-url')
+    // A full-page redirect, not a popup -- Microsoft's own login (including any MFA prompt) does
+    // not reliably complete inside a small popup window the way Meta's embedded-signup does.
+    window.location.href = result.authorize_url
+  }
+  catch (error: any) {
+    microsoftError.value = extractErrorMessage(error, 'Could not start the Microsoft 365 connection.')
+    microsoftConnecting.value = false
   }
 }
 
@@ -1551,11 +1570,14 @@ onMounted(() => {
                 Email
               </h2>
               <p class="text-body-2 text-medium-emphasis mb-4">
-                Connect your own mailbox -- any SMTP/IMAP provider works. This is a CRM-plan
-                capability, not a metered channel.
+                Connect your own mailbox -- Microsoft 365/Outlook, or any other SMTP/IMAP
+                provider. This is a CRM-plan capability, not a metered channel.
               </p>
               <VAlert v-if="emailError" type="error" variant="tonal" density="compact" class="mb-3">
                 {{ emailError }}
+              </VAlert>
+              <VAlert v-if="microsoftError" type="error" variant="tonal" density="compact" class="mb-3">
+                {{ microsoftError }}
               </VAlert>
               <VAlert v-if="disconnectError" type="error" variant="tonal" density="compact" class="mb-3">
                 {{ disconnectError }}
@@ -1564,56 +1586,81 @@ onMounted(() => {
                 {{ emailTestResult.ok ? 'Connected successfully.' : emailTestResult.error }}
               </VAlert>
               <VChip v-if="emailAccount?.connected" size="small" class="mb-4" :color="emailAccount.status === 'connected' ? 'success' : emailAccount.status === 'error' ? 'error' : undefined">
+                {{ emailAccount.provider === 'microsoft_graph' ? 'Microsoft 365' : 'SMTP/IMAP' }} ·
                 {{ emailAccount.status === 'connected' ? 'Connected' : emailAccount.status === 'error' ? 'Error' : 'Unverified' }}
               </VChip>
 
-              <VRow>
-                <VCol cols="12" sm="6">
-                  <VTextField v-model="emailForm.from_name" label="From name" density="compact" class="mb-3" />
-                </VCol>
-                <VCol cols="12" sm="6">
-                  <VTextField v-model="emailForm.from_email" label="From email" type="email" density="compact" class="mb-3" />
-                </VCol>
-              </VRow>
-              <p class="text-subtitle-2 mb-2">
-                Outgoing (SMTP)
-              </p>
-              <VRow>
-                <VCol cols="12" sm="8">
-                  <VTextField v-model="emailForm.smtp_host" label="SMTP host" density="compact" class="mb-3" />
-                </VCol>
-                <VCol cols="12" sm="4">
-                  <VTextField v-model.number="emailForm.smtp_port" label="Port" type="number" density="compact" class="mb-3" />
-                </VCol>
-              </VRow>
-              <VTextField v-model="emailForm.smtp_username" label="SMTP username" density="compact" class="mb-3" />
-              <VTextField v-model="emailForm.smtp_password" label="SMTP password" type="password" density="compact" class="mb-3" />
-              <VSwitch v-model="emailForm.smtp_use_tls" label="Use TLS" density="compact" class="mb-3" />
-              <p class="text-subtitle-2 mb-2">
-                Incoming (IMAP)
-              </p>
-              <VRow>
-                <VCol cols="12" sm="8">
-                  <VTextField v-model="emailForm.imap_host" label="IMAP host" density="compact" class="mb-3" />
-                </VCol>
-                <VCol cols="12" sm="4">
-                  <VTextField v-model.number="emailForm.imap_port" label="Port" type="number" density="compact" class="mb-3" />
-                </VCol>
-              </VRow>
-              <VTextField v-model="emailForm.imap_username" label="IMAP username" density="compact" class="mb-3" />
-              <VTextField v-model="emailForm.imap_password" label="IMAP password" type="password" density="compact" class="mb-3" />
-              <VSwitch v-model="emailForm.imap_use_ssl" label="Use SSL" density="compact" class="mb-4" />
-              <div class="d-flex ga-3">
-                <VBtn :loading="emailSaving" @click="saveEmailAccount">
-                  {{ emailAccount?.connected ? 'Save' : 'Connect' }}
+              <template v-if="emailAccount?.connected && emailAccount.provider === 'microsoft_graph'">
+                <p class="text-body-2 mb-4">
+                  Connected as <strong>{{ emailAccount.from_email }}</strong> via Microsoft 365.
+                </p>
+                <div class="d-flex ga-3">
+                  <VBtn variant="tonal" :loading="emailTesting" @click="testEmailAccount">
+                    Test connection
+                  </VBtn>
+                  <VBtn variant="text" color="error" :loading="disconnecting" @click="disconnectEmailAccount">
+                    Disconnect
+                  </VBtn>
+                </div>
+              </template>
+
+              <template v-else>
+                <VBtn color="primary" prepend-icon="tabler-brand-office" class="mb-4" :loading="microsoftConnecting" @click="connectMicrosoft">
+                  Connect Microsoft 365
                 </VBtn>
-                <VBtn v-if="emailAccount?.connected" variant="tonal" :loading="emailTesting" @click="testEmailAccount">
-                  Test connection
-                </VBtn>
-                <VBtn v-if="emailAccount?.connected" variant="text" color="error" :loading="disconnecting" @click="disconnectEmailAccount">
-                  Disconnect
-                </VBtn>
-              </div>
+                <p class="text-caption text-medium-emphasis mb-4">
+                  Or connect any other mailbox with SMTP/IMAP below (plain password login is no
+                  longer possible for Microsoft 365 itself -- use the button above for that).
+                </p>
+
+                <VRow>
+                  <VCol cols="12" sm="6">
+                    <VTextField v-model="emailForm.from_name" label="From name" density="compact" class="mb-3" />
+                  </VCol>
+                  <VCol cols="12" sm="6">
+                    <VTextField v-model="emailForm.from_email" label="From email" type="email" density="compact" class="mb-3" />
+                  </VCol>
+                </VRow>
+                <p class="text-subtitle-2 mb-2">
+                  Outgoing (SMTP)
+                </p>
+                <VRow>
+                  <VCol cols="12" sm="8">
+                    <VTextField v-model="emailForm.smtp_host" label="SMTP host" density="compact" class="mb-3" />
+                  </VCol>
+                  <VCol cols="12" sm="4">
+                    <VTextField v-model.number="emailForm.smtp_port" label="Port" type="number" density="compact" class="mb-3" />
+                  </VCol>
+                </VRow>
+                <VTextField v-model="emailForm.smtp_username" label="SMTP username" density="compact" class="mb-3" />
+                <VTextField v-model="emailForm.smtp_password" label="SMTP password" type="password" density="compact" class="mb-3" />
+                <VSwitch v-model="emailForm.smtp_use_tls" label="Use TLS" density="compact" class="mb-3" />
+                <p class="text-subtitle-2 mb-2">
+                  Incoming (IMAP)
+                </p>
+                <VRow>
+                  <VCol cols="12" sm="8">
+                    <VTextField v-model="emailForm.imap_host" label="IMAP host" density="compact" class="mb-3" />
+                  </VCol>
+                  <VCol cols="12" sm="4">
+                    <VTextField v-model.number="emailForm.imap_port" label="Port" type="number" density="compact" class="mb-3" />
+                  </VCol>
+                </VRow>
+                <VTextField v-model="emailForm.imap_username" label="IMAP username" density="compact" class="mb-3" />
+                <VTextField v-model="emailForm.imap_password" label="IMAP password" type="password" density="compact" class="mb-3" />
+                <VSwitch v-model="emailForm.imap_use_ssl" label="Use SSL" density="compact" class="mb-4" />
+                <div class="d-flex ga-3">
+                  <VBtn :loading="emailSaving" @click="saveEmailAccount">
+                    {{ emailAccount?.connected ? 'Save' : 'Connect' }}
+                  </VBtn>
+                  <VBtn v-if="emailAccount?.connected" variant="tonal" :loading="emailTesting" @click="testEmailAccount">
+                    Test connection
+                  </VBtn>
+                  <VBtn v-if="emailAccount?.connected" variant="text" color="error" :loading="disconnecting" @click="disconnectEmailAccount">
+                    Disconnect
+                  </VBtn>
+                </div>
+              </template>
             </VCardText>
           </VCard>
         </VCol>

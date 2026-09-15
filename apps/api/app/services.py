@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Invoice, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Invoice, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformMicrosoftSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -289,6 +289,44 @@ def waba_webhook_url(db: Session) -> str | None:
     if not base_url:
         return None
     return f"{base_url.rstrip('/')}/v1/webhooks/waba"
+
+
+def get_platform_microsoft_settings(db: Session) -> tuple[str | None, str | None, str | None]:
+    """Resolves the admin-UI-editable PlatformMicrosoftSettings row -- purely DB-configured, no
+    .env fallback (no sensible placeholder Azure app exists). Returns (client_id, tenant_id,
+    client_secret); all three are None until an admin has filled in Platform Settings >
+    Microsoft Setting."""
+    row = db.get(PlatformMicrosoftSettings, "platform")
+    if not row:
+        return None, None, None
+    secret = decrypt_secret(row.client_secret_encrypted) if row.client_secret_encrypted else None
+    return row.client_id, row.tenant_id, secret
+
+
+def microsoft_graph_redirect_uri(db: Session) -> str | None:
+    """The OAuth2 redirect_uri registered on the Azure App Registration (Authentication > Web >
+    Redirect URIs) -- points at the FRONTEND (settings.web_origin), not the API, and must match
+    exactly what's configured there. Microsoft redirects the browser here with a plain GET
+    (?code=&state=, no auth of any kind attached), so this has to be a page the logged-in user's
+    own browser loads -- only then can it call back into the real, authenticated
+    POST /v1/crm/email/microsoft/callback API endpoint carrying that user's own session, the same
+    "frontend page completes the round trip, not a raw API redirect target" shape this codebase
+    already uses for WABA's embedded-signup popup (channels-whatsapp.vue's own postMessage
+    listener), just via a full-page redirect instead of a popup."""
+    if not settings.web_origin:
+        return None
+    return f"{settings.web_origin.rstrip('/')}/crm-email-connected"
+
+
+def microsoft_graph_webhook_url(db: Session) -> str | None:
+    """The single, app-level callback URL every connected mailbox's change notifications arrive
+    on -- registered per-subscription with Graph (crm_email_graph.py), not manually in the Azure
+    portal; each notification's own subscriptionId is what tells the handler which EmailAccount
+    it belongs to."""
+    base_url = get_platform_company_info(db).public_api_base_url
+    if not base_url:
+        return None
+    return f"{base_url.rstrip('/')}/v1/webhooks/microsoft-graph"
 
 
 def ttbs_webhook_url(db: Session, webhook_secret: str) -> str | None:

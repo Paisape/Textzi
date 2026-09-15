@@ -487,6 +487,20 @@ class PlatformWabaSettings(Base):
     webhook_verify_token_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class PlatformMicrosoftSettings(Base):
+    """Singleton row. Textzi's own Azure App Registration credentials for Microsoft Graph
+    (CRM Email channel's "Connect Microsoft 365" option) -- same convention as
+    PlatformWabaSettings above: client_id/tenant_id aren't secrets (client_id is sent to
+    Microsoft's own login page in the browser redirect regardless), client_secret is write-only
+    (encrypted at rest, never returned by GET) since it's what lets anyone exchange an auth code
+    or refresh token for a real Graph access token."""
+    __tablename__ = "platform_microsoft_settings"
+    id: Mapped[str] = mapped_column(String(20), primary_key=True, default="platform")
+    client_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    client_secret_encrypted: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+
 class WabaConnection(Base):
     """One row per entity that has connected a WhatsApp Business Account via Embedded Signup --
     entity_id as the primary key mirrors TwoFactorAuth's user_id-as-PK convention (at most one
@@ -2456,26 +2470,49 @@ class WebForm(Base):
 
 
 class EmailAccount(Base):
-    """One row per entity -- a tenant's own bring-your-own SMTP/IMAP mailbox, connected as a CRM
-    channel (Textzi never operates this infrastructure or bills per message, unlike SMS/WhatsApp;
-    it's a CRM-plan capability, gated the same way quotes/sequences are). Password fields store
-    security.encrypt_secret(...) output, the same Fernet helper already used for the WABA App
-    Secret and TOTP secrets -- no new crypto code."""
+    """One row per entity -- a tenant's own connected mailbox for the CRM Email channel (Textzi
+    never operates this infrastructure or bills per message, unlike SMS/WhatsApp; it's a
+    CRM-plan capability, gated the same way quotes/sequences are). Two provider shapes share this
+    one table rather than a parallel model, since both write into the exact same
+    Contact/Conversation/ConversationMessage flow and the UI/API surface (get/save/test/send/poll)
+    is identical either way:
+    - provider="byo": bring-your-own SMTP/IMAP, password fields hold security.encrypt_secret(...)
+      output (the same Fernet helper already used for the WABA App Secret/TOTP secrets).
+    - provider="microsoft_graph": OAuth2-connected Microsoft 365/Outlook mailbox (crm_email_
+      graph.py) -- smtp_*/imap_* columns stay unused/null for this provider; ms_* columns hold
+      the encrypted access/refresh tokens and the active change-notification subscription. Real
+      SMTP/IMAP login is not offered for Microsoft 365 at all: Microsoft permanently disabled
+      Basic Authentication for Exchange Online in October 2022, tenant-wide, with no admin
+      override -- Graph's own OAuth2 API is the only way in, for every M365 mailbox, not a choice
+      this codebase is making."""
     __tablename__ = "email_accounts"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), unique=True, index=True)
+    provider: Mapped[str] = mapped_column(String(20), default="byo")  # "byo" | "microsoft_graph"
     from_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     from_email: Mapped[str] = mapped_column(String(255))
-    smtp_host: Mapped[str] = mapped_column(String(255))
-    smtp_port: Mapped[int] = mapped_column(Integer, default=587)
-    smtp_username: Mapped[str] = mapped_column(String(255))
-    smtp_password_encrypted: Mapped[str] = mapped_column(Text)
+    smtp_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_port: Mapped[int | None] = mapped_column(Integer, default=587, nullable=True)
+    smtp_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    smtp_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     smtp_use_tls: Mapped[bool] = mapped_column(Boolean, default=True)
-    imap_host: Mapped[str] = mapped_column(String(255))
-    imap_port: Mapped[int] = mapped_column(Integer, default=993)
-    imap_username: Mapped[str] = mapped_column(String(255))
-    imap_password_encrypted: Mapped[str] = mapped_column(Text)
+    imap_host: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    imap_port: Mapped[int | None] = mapped_column(Integer, default=993, nullable=True)
+    imap_username: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    imap_password_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     imap_use_ssl: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Microsoft Graph OAuth2 state -- ms_refresh_token_encrypted is the long-lived credential
+    # (Microsoft's own refresh tokens for this permission set don't expire on a fixed schedule,
+    # only on inactivity/revocation); ms_access_token_encrypted + ms_token_expires_at cache the
+    # short-lived (~1hr) access token so a normal send doesn't need a fresh OAuth round-trip every
+    # time. ms_subscription_id/_expires_at track the active Graph change-notification
+    # subscription (Microsoft's real max lifetime for a mail subscription is ~3 days -- renewed by
+    # a scheduled job, same shape as the existing IMAP poll job).
+    ms_access_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ms_refresh_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ms_token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    ms_subscription_id: Mapped[str | None] = mapped_column(String(140), nullable=True)
+    ms_subscription_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     status: Mapped[str] = mapped_column(String(20), default="unverified")  # "unverified"|"connected"|"error"
     last_error: Mapped[str | None] = mapped_column(String(500), nullable=True)
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

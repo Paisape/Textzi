@@ -24,7 +24,7 @@ from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
 from .crm import router as crm_router, send_due_scheduled_reports
 from .crm_documents import router as crm_documents_router
-from .crm_email import poll_all_email_inboxes, router as crm_email_router
+from .crm_email import poll_all_email_inboxes, public_router as crm_email_public_router, renew_graph_subscriptions, router as crm_email_router
 from .crm_quotes import router as crm_quotes_router
 from .crm_public import router as crm_public_router
 from .crm_sequences import router as crm_sequences_router, run_due_steps as run_due_sequence_steps
@@ -98,6 +98,7 @@ async def lifespan(_: FastAPI):
     # messages. 10 minutes is granular enough for a support inbox and cheap enough to just poll,
     # same reasoning as the hourly CRM sequence runner above.
     scheduler.add_job(poll_all_email_inboxes, IntervalTrigger(minutes=10), id="email_poll_job", misfire_grace_time=600)
+    scheduler.add_job(renew_graph_subscriptions, IntervalTrigger(hours=12), id="graph_subscription_renewal_job", misfire_grace_time=3600)
     # Custom Report Builder's "email me this weekly/monthly" schedules -- one daily check (same
     # shape as the archive job above), not a per-report cron; the function itself decides what's
     # actually due today.
@@ -123,7 +124,7 @@ async def lifespan(_: FastAPI):
     # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
     scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly catalog sync, and hourly abandoned-cart reminders")
+    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly catalog sync, hourly abandoned-cart reminders, and 12-hour Graph subscription renewal")
 
     yield
 
@@ -152,6 +153,7 @@ app.include_router(channels_router)
 app.include_router(crm_router)
 app.include_router(crm_documents_router)
 app.include_router(crm_email_router)
+app.include_router(crm_email_public_router)
 app.include_router(crm_public_router)
 app.include_router(crm_quotes_router)
 app.include_router(crm_sequences_router)
