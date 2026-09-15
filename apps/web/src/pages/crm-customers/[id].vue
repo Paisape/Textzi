@@ -41,6 +41,7 @@ type CustomerSummary = {
   attachments: Attachment[]
   tickets: ActivityMessage[]
   emails: ActivityMessage[]
+  waba_contact_id: string | null
   log: LogEntry[]
   total_deal_value: number
   total_invoiced: number
@@ -292,6 +293,33 @@ function sendEmail() {
   router.push({ name: 'crm-email', query })
 }
 
+function newDeal() {
+  if (!summary.value)
+    return
+  const contact = summary.value.customer.contact
+  const query: Record<string, string> = { new: '1', contact_id: contact.id }
+  if (contact.name)
+    query.name = contact.name
+  router.push({ name: 'crm-deals', query })
+}
+
+function openWabaTimeline() {
+  if (summary.value?.waba_contact_id)
+    router.push(`/waba-customers/${summary.value.waba_contact_id}`)
+}
+
+// crm-quotes.vue's own new-quote form already reads ?deal_id= to pre-select a deal -- pass this
+// customer's single deal when there's exactly one (the common case), otherwise just land on the
+// page and let the agent pick, same as every other "New X" quick action here.
+function newQuote() {
+  if (!summary.value)
+    return
+  if (summary.value.deals.length === 1)
+    router.push(`/crm-quotes?deal_id=${summary.value.deals[0].id}`)
+  else
+    router.push('/crm-quotes')
+}
+
 onMounted(load)
 </script>
 
@@ -454,10 +482,10 @@ onMounted(load)
           <VCol cols="12" md="4">
             <VCard title="Quick actions">
               <VList density="compact">
-                <VListItem prepend-icon="tabler-briefcase" @click="router.push(`/crm-deals?new=1&contact_id=${summary.customer.contact.id}`)">
+                <VListItem prepend-icon="tabler-briefcase" @click="newDeal">
                   New deal
                 </VListItem>
-                <VListItem prepend-icon="tabler-file-invoice" @click="router.push('/crm-quotes')">
+                <VListItem prepend-icon="tabler-file-invoice" @click="newQuote">
                   New quote / invoice
                 </VListItem>
                 <VListItem prepend-icon="tabler-checklist" @click="router.push('/crm-tasks')">
@@ -527,7 +555,7 @@ onMounted(load)
 
             <VCard title="Tasks">
               <VList v-if="summary.customer.tasks.length" density="compact">
-                <VListItem v-for="task in summary.customer.tasks" :key="task.id">
+                <VListItem v-for="task in summary.customer.tasks" :key="task.id" style="cursor: pointer;" @click="router.push('/crm-tasks')">
                   <VListItemTitle :class="task.done ? 'text-decoration-line-through text-medium-emphasis' : ''">
                     {{ task.title }}
                   </VListItemTitle>
@@ -625,7 +653,7 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="quote in summary.quotes" :key="quote.id">
+              <tr v-for="quote in summary.quotes" :key="quote.id" style="cursor: pointer;" @click="router.push('/crm-quotes')">
                 <td>{{ quote.quote_number || '(draft)' }}</td>
                 <td>
                   <VChip size="small" :color="QUOTE_STATUS_COLOR[quote.status]" variant="tonal">
@@ -635,7 +663,7 @@ onMounted(load)
                 <td>{{ inr(quote.total) }}</td>
                 <td>{{ quote.sent_at ? formatDate(quote.sent_at) : '—' }}</td>
                 <td class="text-end">
-                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click="downloadQuotePdf(quote)" />
+                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click.stop="downloadQuotePdf(quote)" />
                 </td>
               </tr>
             </tbody>
@@ -660,7 +688,7 @@ onMounted(load)
               </tr>
             </thead>
             <tbody>
-              <tr v-for="invoice in summary.invoices" :key="invoice.id">
+              <tr v-for="invoice in summary.invoices" :key="invoice.id" style="cursor: pointer;" @click="router.push('/crm-quotes')">
                 <td>{{ invoice.invoice_number || '(unissued)' }}</td>
                 <td>
                   <VChip size="small" :color="INVOICE_STATUS_COLOR[invoice.status]" variant="tonal">
@@ -671,7 +699,7 @@ onMounted(load)
                 <td>{{ inr(invoice.amount_paid) }}</td>
                 <td>{{ inr(invoice.balance_due) }}</td>
                 <td class="text-end">
-                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click="downloadInvoicePdf(invoice)" />
+                  <VBtn icon="tabler-download" size="small" variant="text" title="Download PDF" @click.stop="downloadInvoicePdf(invoice)" />
                 </td>
               </tr>
             </tbody>
@@ -685,7 +713,7 @@ onMounted(load)
       <VWindowItem value="tickets">
         <VCard>
           <VList v-if="summary.tickets.length" density="compact">
-            <VListItem v-for="m in summary.tickets" :key="m.id">
+            <VListItem v-for="m in summary.tickets" :key="m.id" :style="summary.waba_contact_id ? 'cursor: pointer;' : ''" @click="openWabaTimeline">
               <template #prepend>
                 <VIcon :icon="m.direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'" :color="m.direction === 'outbound' ? 'primary' : 'success'" size="16" />
               </template>
@@ -702,7 +730,7 @@ onMounted(load)
       <VWindowItem value="emails">
         <VCard>
           <VList v-if="summary.emails.length" density="compact">
-            <VListItem v-for="m in summary.emails" :key="m.id">
+            <VListItem v-for="m in summary.emails" :key="m.id" style="cursor: pointer;" @click="router.push('/crm-email')">
               <template #prepend>
                 <VIcon :icon="m.direction === 'outbound' ? 'tabler-arrow-up-right' : 'tabler-arrow-down-left'" :color="m.direction === 'outbound' ? 'primary' : 'success'" size="16" />
               </template>

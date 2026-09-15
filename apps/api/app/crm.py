@@ -1063,6 +1063,7 @@ def get_customer_summary(customer_id: str, user: User = Depends(require_user), d
         attachments=[_attachment_out(a) for a in attachments],
         tickets=tickets,
         emails=emails,
+        waba_contact_id=waba_contact_id,
         log=log,
         total_deal_value=sum(float(d.value or 0) for d in deals),
         total_invoiced=sum(i.total for i in invoice_outs),

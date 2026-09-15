@@ -261,13 +261,18 @@ function stageValue(stage: string) {
 // --- New deal --------------------------------------------------------------------------------
 
 const newDialog = ref(false)
-const newForm = reactive({ name: '', dealName: '', phone: '', email: '', title: '', pipeline_id: null as string | null, stage: 'inquiry', value: null as number | null, probability: null as number | null, owner_user_id: null as string | null, custom_fields: {} as Record<string, any> })
+const newForm = reactive({ contact_id: null as string | null, name: '', dealName: '', phone: '', email: '', title: '', pipeline_id: null as string | null, stage: 'inquiry', value: null as number | null, probability: null as number | null, owner_user_id: null as string | null, custom_fields: {} as Record<string, any> })
 const newSaving = ref(false)
 const newError = ref('')
 
-function openNewDialog() {
+// contact_id/name are optional pre-fill from another page's "New deal" quick action (e.g. the
+// customer detail page) -- lets that link skip re-entering a contact this deal is obviously
+// already for, while every other entry point (the plain "New deal" button here) still works
+// exactly as before with an empty, from-scratch form.
+function openNewDialog(prefill?: { contact_id?: string, name?: string }) {
   const defaultPipeline = pipelines.value[0] || null
-  newForm.name = ''
+  newForm.contact_id = prefill?.contact_id || null
+  newForm.name = prefill?.name || ''
   newForm.dealName = ''
   newForm.phone = ''
   newForm.email = ''
@@ -283,7 +288,7 @@ function openNewDialog() {
 }
 
 async function createDeal() {
-  if (!newForm.name.trim())
+  if (!newForm.contact_id && !newForm.name.trim())
     return
   newSaving.value = true
   newError.value = ''
@@ -291,6 +296,7 @@ async function createDeal() {
     const created = await $api<Deal>('/v1/crm/deals', {
       method: 'POST',
       body: {
+        contact_id: newForm.contact_id,
         name: newForm.name.trim(),
         deal_name: newForm.dealName.trim() || null,
         phone: newForm.phone.trim() || null,
@@ -409,7 +415,19 @@ async function deleteView(savedView: SavedView) {
   }
 }
 
-onMounted(loadAll)
+const route = useRoute()
+
+onMounted(async () => {
+  await loadAll()
+  // ?new=1&contact_id=... -- the customer/contact detail pages' own "New deal" quick action.
+  // Previously silently ignored (this file never read route.query at all), so that button did
+  // nothing but land here with an empty create dialog.
+  if (route.query.new === '1') {
+    const contactId = typeof route.query.contact_id === 'string' ? route.query.contact_id : undefined
+    const contactName = typeof route.query.name === 'string' ? route.query.name : undefined
+    openNewDialog(contactId ? { contact_id: contactId, name: contactName } : undefined)
+  }
+})
 </script>
 
 <template>
@@ -732,11 +750,16 @@ onMounted(loadAll)
         <VAlert v-if="newError" type="error" variant="tonal" density="compact">
           {{ newError }}
         </VAlert>
-        <VTextField v-model="newForm.name" label="Contact name" density="compact" autofocus />
+        <VAlert v-if="newForm.contact_id" type="info" variant="tonal" density="compact">
+          For {{ newForm.name || 'this existing contact' }} -- no need to re-enter their details.
+        </VAlert>
+        <template v-else>
+          <VTextField v-model="newForm.name" label="Contact name" density="compact" autofocus />
+          <VTextField v-model="newForm.title" label="Title / designation" density="compact" />
+          <VTextField v-model="newForm.phone" label="Phone / WhatsApp number" density="compact" />
+          <VTextField v-model="newForm.email" label="Email" density="compact" />
+        </template>
         <VTextField v-model="newForm.dealName" label="Deal name (optional -- defaults to contact name)" density="compact" />
-        <VTextField v-model="newForm.title" label="Title / designation" density="compact" />
-        <VTextField v-model="newForm.phone" label="Phone / WhatsApp number" density="compact" />
-        <VTextField v-model="newForm.email" label="Email" density="compact" />
         <VSelect
           v-model="newForm.pipeline_id"
           :items="pipelines.map(p => ({ title: p.name, value: p.id }))"
@@ -772,7 +795,7 @@ onMounted(loadAll)
         <VBtn variant="text" @click="newDialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :loading="newSaving" :disabled="!newForm.name.trim()" @click="createDeal">
+        <VBtn color="primary" :loading="newSaving" :disabled="!newForm.contact_id && !newForm.name.trim()" @click="createDeal">
           Create
         </VBtn>
       </VCardActions>

@@ -3558,6 +3558,7 @@ class CustomerSummaryOut(BaseModel):
     attachments: list[AttachmentOut]
     tickets: list[ActivityMessageOut]
     emails: list[ActivityMessageOut]
+    waba_contact_id: str | None
     log: list[CustomerLogEntryOut]
     total_deal_value: float
     total_invoiced: float
