@@ -17,15 +17,15 @@ import io
 import secrets
 
 from .models import (
-    AutomationRule, BusinessHours, CannedResponse, Contact, ContactLabel, Conversation, ConversationLabel, ConversationMessage,
+    AutomationRule, BusinessHours, CannedResponse, Contact, ContactLabel, Conversation, ConversationActivity, ConversationLabel, ConversationMessage,
     CrmContact, CsatResponse, CsatSettings, Customer, Deal, Label, Lead, Macro, Segment, SlaPolicy, TicketGroup, User,
     WabaConnection, WabaWebhookSubscription,
 )
 from .schemas import (
     AgentCapacityUpdateRequest, AssignableUserOut, AutomationRuleCreateRequest, AutomationRuleOut, BusinessHoursOut, BusinessHoursUpdateRequest,
     CannedResponseCreateRequest, CannedResponseOut, ContactDirectoryEntryOut, ContactMessageRequest, ContactOut, ContactTimelineOut, ContactUpdateRequest,
-    ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
-    ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest,
+    ConversationActivityOut, ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
+    ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest, ConvertToTicketRequest,
     CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest, ProductListMessageRequest, ProductMessageRequest,
     LabelCreateRequest, LabelOut, LeadOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
     SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest, StartConversationRequest, TemplateButtonOut, TemplateCreateRequest,
@@ -73,7 +73,8 @@ def _contact_out(db: Session, contact: Contact) -> ContactOut:
         labels=_labels_for(db, ContactLabel, ContactLabel.contact_id, contact.id),
         company_id=contact.company_id,
         consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
-        consent_source=contact.consent_source, crm_contact_id=contact.crm_contact_id, created_at=contact.created_at.isoformat(),
+        consent_source=contact.consent_source, crm_contact_id=contact.crm_contact_id,
+        is_unconfirmed_email=contact.is_unconfirmed_email, created_at=contact.created_at.isoformat(),
     )
 
 
@@ -161,6 +162,10 @@ def _get_owned_conversation(db: Session, entity_id: str, conversation_id: str) -
         raise HTTPException(status_code=404, detail="Conversation not found")
     contact = db.get(Contact, conversation.contact_id)
     return conversation, contact
+
+
+def _log_conversation_activity(db: Session, conversation_id: str, user_id: str | None, kind: str, detail: str) -> None:
+    db.add(ConversationActivity(conversation_id=conversation_id, user_id=user_id, kind=kind, detail=detail))
 
 
 def _get_owned_label(db: Session, entity_id: str, label_id: str) -> Label:
@@ -269,6 +274,25 @@ def get_conversation(conversation_id: str, user: User = Depends(require_user), d
     return ConversationDetailOut(**base.model_dump(), messages=[_message_out(m) for m in messages])
 
 
+@router.get("/conversations/{conversation_id}/activity", response_model=list[ConversationActivityOut])
+def get_conversation_activity(conversation_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """The audit trail for the ticket detail page's right-hand log -- confirmed live as a real
+    gap: there was previously no record anywhere of who created/assigned/reprioritized/replied to
+    a ticket and when."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    conversation, _contact = _get_owned_conversation(db, entity.id, conversation_id)
+    rows = db.scalars(select(ConversationActivity).where(ConversationActivity.conversation_id == conversation.id).order_by(ConversationActivity.created_at.desc())).all()
+    user_ids = {r.user_id for r in rows if r.user_id}
+    names = {u.id: u.full_name for u in db.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+    return [
+        ConversationActivityOut(id=r.id, kind=r.kind, detail=r.detail, user_name=names.get(r.user_id), created_at=r.created_at.isoformat())
+        for r in rows
+    ]
+
+
 def _maybe_send_csat_request(db: Session, entity_id: str, conversation: Conversation, contact: Contact, user_id: str) -> None:
     """WhatsApp: sent as a 1-10-row interactive list (not a 1-3 button message -- Meta caps those
     at 3 buttons, too few for a 1-5 scale) with rows titled "1".."5" so the inbound list_reply's
@@ -308,6 +332,8 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
     conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
     if payload.status is not None:
         just_resolved = payload.status == "resolved" and conversation.status != "resolved"
+        if payload.status != conversation.status:
+            _log_conversation_activity(db, conversation.id, user.id, "status_changed", f"{user.full_name} changed status to {payload.status}")
         conversation.status = payload.status
         if just_resolved:
             conversation.resolved_at = datetime.now(timezone.utc)
@@ -340,6 +366,9 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
                 what = "Ticket" if conversation.is_ticket else "Conversation"
                 link = ("/tickets" if conversation.is_ticket else "/inbox") if conversation.channel != "email" else "/crm-email"
                 _notify_and_push(db, entity.id, payload.assigned_user_id, "ticket_assigned" if conversation.is_ticket else "conversation_assigned", f"{what} assigned to you", f"{conversation.ticket_number or contact.name or contact.wa_id or contact.email or 'A conversation'} was assigned to you", link)
+        if payload.assigned_user_id != conversation.assigned_user_id:
+            assignee_name = db.get(User, payload.assigned_user_id).full_name if payload.assigned_user_id else None
+            _log_conversation_activity(db, conversation.id, user.id, "assigned", f"{user.full_name} assigned to {assignee_name}" if assignee_name else f"{user.full_name} unassigned")
         conversation.assigned_user_id = payload.assigned_user_id
     db.commit()
     db.refresh(conversation)
@@ -347,12 +376,17 @@ def update_conversation(conversation_id: str, payload: ConversationUpdateRequest
 
 
 @router.post("/conversations/{conversation_id}/convert-to-ticket", response_model=ConversationOut)
-def convert_conversation_to_ticket(conversation_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def convert_conversation_to_ticket(conversation_id: str, payload: ConvertToTicketRequest = ConvertToTicketRequest(), user: User = Depends(require_user), db: Session = Depends(get_db)):
     """One-way -- there's no "convert back", same as invoicing.py never un-numbers an issued
     invoice. Ticket numbers come from a Postgres sequence (mirrors invoicing.py's own
     invoice_number_seq pattern) so they're short, sequential, and human-readable rather than a
     raw UUID; created lazily here (IF NOT EXISTS) since this is the first feature in the
-    codebase to need it, and sync_schema.py only manages tables/columns, not sequences."""
+    codebase to need it, and sync_schema.py only manages tables/columns, not sequences.
+
+    payload's fields are all optional -- confirmed live as a real gap: converting used to create a
+    bare ticket with no subject/priority/category/assignee at all, silently defaulting everything
+    and leaving an agent to fill it in after the fact. Now the caller (the real confirm dialog in
+    crm-email.vue/inbox.vue) can set them at creation time; a bare POST with no body still works."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
@@ -369,9 +403,25 @@ def convert_conversation_to_ticket(conversation_id: str, user: User = Depends(re
     conversation.is_ticket = True
     conversation.ticket_number = f"TKT-{datetime.now(timezone.utc).year}-{seq_val:06d}"
     conversation.ticket_created_at = datetime.now(timezone.utc)
+    if payload.subject:
+        conversation.subject = payload.subject
+    if payload.priority:
+        conversation.priority = payload.priority
+    if payload.category:
+        conversation.category = payload.category
+    if payload.assigned_user_id:
+        assignee = db.get(User, payload.assigned_user_id)
+        if not assignee or assignee.organization_id != user.organization_id:
+            raise HTTPException(status_code=422, detail="assigned_user_id must belong to your organization")
+        conversation.assigned_user_id = payload.assigned_user_id
     sla = db.get(SlaPolicy, entity.id)
     if sla and sla.enabled:
         conversation.resolution_due_at = datetime.now(timezone.utc) + timedelta(minutes=sla.resolution_minutes)
+    db.flush()
+    _log_conversation_activity(db, conversation.id, user.id, "converted_to_ticket", f"{user.full_name} created ticket {conversation.ticket_number}")
+    if payload.assigned_user_id:
+        assignee_name = db.get(User, payload.assigned_user_id).full_name
+        _log_conversation_activity(db, conversation.id, user.id, "assigned", f"Assigned to {assignee_name}")
     db.commit()
     db.refresh(conversation)
     return _conversation_out(db, conversation, contact)
@@ -384,6 +434,8 @@ def update_ticket_priority(conversation_id: str, payload: TicketPriorityUpdateRe
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    if payload.priority != conversation.priority:
+        _log_conversation_activity(db, conversation.id, user.id, "priority_changed", f"{user.full_name} changed priority to {payload.priority}")
     conversation.priority = payload.priority
     db.commit()
     db.refresh(conversation)
@@ -397,6 +449,8 @@ def update_ticket_category(conversation_id: str, payload: TicketCategoryUpdateRe
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     conversation, contact = _get_owned_conversation(db, entity.id, conversation_id)
+    if payload.category != conversation.category:
+        _log_conversation_activity(db, conversation.id, user.id, "category_changed", f"{user.full_name} changed category to {payload.category}")
     conversation.category = payload.category
     db.commit()
     db.refresh(conversation)
@@ -414,6 +468,9 @@ def update_ticket_group(conversation_id: str, payload: TicketGroupAssignRequest,
         group = db.get(TicketGroup, payload.group_id)
         if not group or group.entity_id != entity.id:
             raise HTTPException(status_code=422, detail="group_id must belong to your organization")
+    if payload.group_id != conversation.group_id:
+        group_name = db.get(TicketGroup, payload.group_id).name if payload.group_id else "No group"
+        _log_conversation_activity(db, conversation.id, user.id, "group_changed", f"{user.full_name} moved to group: {group_name}")
     conversation.group_id = payload.group_id
     db.commit()
     db.refresh(conversation)
@@ -542,6 +599,7 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
         # view) so an agent picking up the thread sees the note with full surrounding context.
         message = ConversationMessage(conversation_id=conversation.id, direction="outbound", is_private=True, message_type="text", body=payload.body, sent_by_user_id=user.id)
         db.add(message)
+        _log_conversation_activity(db, conversation.id, user.id, "note_added", f"{user.full_name} added a private note")
         db.commit()
         db.refresh(message)
         publish_event(entity.id, {"type": "message", "message": message_payload(message)})
@@ -553,6 +611,8 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
             message = send_webchat_text(db, entity.id, conversation, contact, payload.body, sent_by_user_id=user.id)
         except DomainError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _log_conversation_activity(db, conversation.id, user.id, "replied", f"{user.full_name} replied")
+        db.commit()
         return _message_out(message)
 
     if not contact.wa_id:
@@ -563,6 +623,8 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except MetaApiError as exc:
         raise HTTPException(status_code=422, detail=f"Could not send this message: {exc}") from exc
+    _log_conversation_activity(db, conversation.id, user.id, "replied", f"{user.full_name} replied")
+    db.commit()
     return _message_out(message)
 
 
@@ -953,13 +1015,20 @@ def delete_template(template_name: str, user: User = Depends(require_user), db: 
 # --- Contacts ---------------------------------------------------------------------------------
 
 @router.get("/contacts", response_model=list[ContactOut])
-def list_contacts(search: str | None = None, label_id: str | None = None, limit: int = 50, offset: int = 0, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def list_contacts(search: str | None = None, label_id: str | None = None, include_unconfirmed: bool = False, limit: int = 50, offset: int = 0, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """include_unconfirmed=False (the default, matching the Customers list's own default view) --
+    a Contact auto-created from an inbound email nobody has reviewed yet (Contact.
+    is_unconfirmed_email, see its own docstring) doesn't show up as if it were an already-real
+    customer. Still fully queryable with include_unconfirmed=True for a page that specifically
+    wants to review/confirm/dismiss them."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     limit = max(1, min(limit, 200))
     query = select(Contact).where(Contact.entity_id == entity.id)
+    if not include_unconfirmed:
+        query = query.where(Contact.is_unconfirmed_email.is_(False))
     if search:
         like = f"%{search.strip()}%"
         query = query.where((Contact.name.ilike(like)) | (Contact.wa_id.ilike(like)) | (Contact.email.ilike(like)))
@@ -1051,17 +1120,44 @@ def update_contact(contact_id: str, payload: ContactUpdateRequest, user: User = 
     return _contact_out(db, contact)
 
 
-@router.get("/contacts-directory", response_model=list[ContactDirectoryEntryOut])
-def list_contacts_directory(user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """One row per WhatsApp contact -- last message/reply time, ticket status, and whether
-    they're already linked to a CRM lead/customer. Not CRM-gated itself (it's just contact/
-    conversation data any WhatsApp-active entity already has) -- only the conversion actions
-    reachable from a contact's detail view require the CRM channel."""
+@router.post("/contacts/{contact_id}/confirm", response_model=ContactOut)
+def confirm_contact(contact_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Explicit human confirmation that an auto-created-from-inbound-email contact
+    (Contact.is_unconfirmed_email) is a real customer, not an automated sender that was never
+    reviewed -- moves it into the normal Customers list. A no-op (not an error) if the contact
+    was never unconfirmed in the first place, so this is safe to call unconditionally."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    contacts = db.scalars(select(Contact).where(Contact.entity_id == entity.id).order_by(Contact.created_at.desc())).all()
+    contact = db.get(Contact, contact_id)
+    if not contact or contact.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Contact not found")
+    contact.is_unconfirmed_email = False
+    db.commit()
+    db.refresh(contact)
+    return _contact_out(db, contact)
+
+
+@router.get("/contacts-directory", response_model=list[ContactDirectoryEntryOut])
+def list_contacts_directory(include_unconfirmed: bool = False, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """One row per WhatsApp contact -- last message/reply time, ticket status, and whether
+    they're already linked to a CRM lead/customer. Not CRM-gated itself (it's just contact/
+    conversation data any WhatsApp-active entity already has) -- only the conversion actions
+    reachable from a contact's detail view require the CRM channel.
+
+    include_unconfirmed=False (the default) excludes Contact.is_unconfirmed_email rows --
+    confirmed live as a real problem: every inbound email (including automated senders like
+    mailer-daemon@, DMARC reports, noreply@ addresses) was silently appearing here indistinguishable
+    from a real customer, with zero human review. See is_unconfirmed_email's own docstring."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    query = select(Contact).where(Contact.entity_id == entity.id)
+    if not include_unconfirmed:
+        query = query.where(Contact.is_unconfirmed_email.is_(False))
+    contacts = db.scalars(query.order_by(Contact.created_at.desc())).all()
     if not contacts:
         return []
     contact_ids = [c.id for c in contacts]

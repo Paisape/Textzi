@@ -1664,6 +1664,7 @@ class ContactOut(BaseModel):
     consent_given_at: str | None = None
     consent_source: str | None = None
     crm_contact_id: str | None = None
+    is_unconfirmed_email: bool = False
     created_at: str
 
 
@@ -1835,6 +1836,24 @@ class ConversationDetailOut(ConversationOut):
 
 class ConversationUpdateRequest(BaseModel):
     status: str | None = Field(default=None, pattern="^(open|pending|resolved)$")
+    assigned_user_id: str | None = None
+
+
+class ConversationActivityOut(BaseModel):
+    id: str
+    kind: str
+    detail: str
+    user_name: str | None
+    created_at: str
+
+
+class ConvertToTicketRequest(BaseModel):
+    # All optional -- a bare POST with no body still works exactly as before (some entry points
+    # may still want the fast one-click path), but the real dialog (crm-email.vue/inbox.vue) now
+    # collects these upfront instead of creating a bare ticket with nothing set.
+    subject: str | None = Field(default=None, max_length=300)
+    priority: str | None = Field(default=None, pattern="^(low|medium|high|urgent)$")
+    category: str | None = Field(default=None, pattern="^(question|incident|problem|task)$")
     assigned_user_id: str | None = None
 
 

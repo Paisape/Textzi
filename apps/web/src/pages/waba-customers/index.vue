@@ -6,7 +6,7 @@ definePage({
   },
 })
 
-type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
+type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null, is_unconfirmed_email: boolean }
 type DirectoryEntry = {
   contact: Contact
   conversation_id: string | null
@@ -23,12 +23,17 @@ const entries = ref<DirectoryEntry[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const search = ref('')
+// A contact auto-created from an inbound email nobody has reviewed yet (an automated sender,
+// mailer-daemon@/noreply@/a DMARC report, or a genuine new customer that just hasn't been looked
+// at) is hidden from the normal list by default -- this toggle is the escape hatch to actually
+// review and either confirm or leave them, rather than them being silently lost.
+const showUnconfirmed = ref(false)
 
 async function load() {
   loading.value = true
   loadError.value = ''
   try {
-    entries.value = await $api<DirectoryEntry[]>('/v1/waba/contacts-directory')
+    entries.value = await $api<DirectoryEntry[]>('/v1/waba/contacts-directory', { params: { include_unconfirmed: showUnconfirmed.value } })
   }
   catch (error: any) {
     loadError.value = extractErrorMessage(error, 'Could not load customers.')
@@ -37,6 +42,20 @@ async function load() {
     loading.value = false
   }
 }
+
+async function confirmContact(entry: DirectoryEntry) {
+  try {
+    const updated = await $api<Contact>(`/v1/waba/contacts/${entry.contact.id}/confirm`, { method: 'POST' })
+    entry.contact = updated
+    if (!showUnconfirmed.value)
+      entries.value = entries.value.filter(e => e.contact.id !== entry.contact.id)
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not confirm this contact.')
+  }
+}
+
+watch(showUnconfirmed, load)
 
 const filtered = computed(() => {
   if (!search.value.trim())
@@ -135,15 +154,18 @@ onMounted(load)
     {{ loadError }}
   </VAlert>
 
-  <VTextField
-    v-model="search"
-    placeholder="Search by name or number"
-    prepend-inner-icon="tabler-search"
-    density="compact"
-    variant="outlined"
-    class="mb-4"
-    style="max-width: 360px;"
-  />
+  <div class="d-flex align-center ga-4 mb-4 flex-wrap">
+    <VTextField
+      v-model="search"
+      placeholder="Search by name or number"
+      prepend-inner-icon="tabler-search"
+      density="compact"
+      variant="outlined"
+      style="max-width: 360px;"
+      hide-details
+    />
+    <VSwitch v-model="showUnconfirmed" label="Show unreviewed (auto-created from email)" density="compact" hide-details />
+  </div>
 
   <VCard>
     <VTable>
@@ -159,8 +181,13 @@ onMounted(load)
       </thead>
       <tbody>
         <tr v-for="entry in filtered" :key="entry.contact.id">
-          <td>{{ entry.contact.name || '—' }}</td>
-          <td>{{ entry.contact.wa_id || '—' }}</td>
+          <td>
+            {{ entry.contact.name || '—' }}
+            <VChip v-if="entry.contact.is_unconfirmed_email" size="x-small" color="warning" variant="tonal" class="ml-1">
+              Unreviewed
+            </VChip>
+          </td>
+          <td>{{ entry.contact.wa_id || entry.contact.email || '—' }}</td>
           <td>{{ formatDate(entry.last_message_at) }}</td>
           <td>{{ formatDate(entry.last_reply_at) }}</td>
           <td>
@@ -174,7 +201,10 @@ onMounted(load)
               Customer
             </VChip>
           </td>
-          <td>
+          <td class="d-flex ga-2 align-center">
+            <VBtn v-if="entry.contact.is_unconfirmed_email" size="small" variant="tonal" @click="confirmContact(entry)">
+              Confirm
+            </VBtn>
             <RouterLink :to="`/waba-customers/${entry.contact.id}`" class="font-weight-medium">
               View
             </RouterLink>

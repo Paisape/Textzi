@@ -408,15 +408,28 @@ function handleConversionError(error: any, fallback: string) {
 }
 
 const convertingToTicket = ref(false)
+const convertDialog = ref(false)
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+
+function openConvertDialog() {
+  if (!activeConversation.value)
+    return
+  convertForm.subject = activeConversation.value.contact.name || activeConversation.value.contact.wa_id || activeConversation.value.contact.email || ''
+  convertForm.priority = 'medium'
+  convertForm.category = 'question'
+  convertForm.assigned_user_id = activeConversation.value.assigned_user_id
+  convertDialog.value = true
+}
 
 async function convertToTicket() {
   if (!activeConversation.value)
     return
   convertingToTicket.value = true
   try {
-    const updated = await $api<Conversation>(`/v1/waba/conversations/${activeConversation.value.id}/convert-to-ticket`, { method: 'POST' })
+    const updated = await $api<Conversation>(`/v1/waba/conversations/${activeConversation.value.id}/convert-to-ticket`, { method: 'POST', body: { ...convertForm } })
     activeConversation.value.is_ticket = updated.is_ticket
     activeConversation.value.ticket_number = updated.ticket_number
+    convertDialog.value = false
     await loadConversations()
   }
   catch (error: any) {
@@ -1476,7 +1489,7 @@ watch(statusFilter, loadConversations)
               <VListItem prepend-icon="tabler-target-arrow" title="Create lead" @click="openLeadForm" />
               <VListItem prepend-icon="tabler-briefcase" title="Create deal" @click="openDealForm" />
               <VListItem prepend-icon="tabler-user-check" title="Create customer" @click="openCustomerForm" />
-              <VListItem v-if="!activeConversation.is_ticket" prepend-icon="tabler-ticket" title="Create ticket" @click="convertToTicket" />
+              <VListItem v-if="!activeConversation.is_ticket" prepend-icon="tabler-ticket" title="Create ticket" @click="openConvertDialog" />
             </VList>
           </VMenu>
           <VSelect
@@ -2284,6 +2297,33 @@ watch(statusFilter, loadConversations)
           Go to Channels
         </VBtn>
       </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="convertDialog" max-width="480">
+    <VCard title="Create ticket">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
+        <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
+        <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
+        <VSelect
+          v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
+          :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
+          placeholder="Unassigned"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="convertDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="convertingToTicket" @click="convertToTicket">
+          Create ticket
+        </VBtn>
+      </VCardActions>
     </VCard>
   </VDialog>
 </template>

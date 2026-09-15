@@ -188,13 +188,25 @@ async function selectThread(id: string) {
 }
 
 const convertingToTicket = ref(false)
+const convertDialog = ref(false)
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+
+function openConvertDialog() {
+  if (!selected.value)
+    return
+  convertForm.subject = latestSubject(selected.value)
+  convertForm.priority = 'medium'
+  convertForm.category = 'question'
+  convertForm.assigned_user_id = null
+  convertDialog.value = true
+}
 
 async function convertToTicket() {
   if (!selected.value)
     return
   convertingToTicket.value = true
   try {
-    const updated = await $api<EmailThread>(`/v1/waba/conversations/${selected.value.id}/convert-to-ticket`, { method: 'POST' })
+    const updated = await $api<EmailThread>(`/v1/waba/conversations/${selected.value.id}/convert-to-ticket`, { method: 'POST', body: { ...convertForm } })
     selected.value.is_ticket = updated.is_ticket
     selected.value.ticket_number = updated.ticket_number
     const item = threads.value.find(t => t.id === selected.value!.id)
@@ -202,6 +214,7 @@ async function convertToTicket() {
       item.is_ticket = updated.is_ticket
       item.ticket_number = updated.ticket_number
     }
+    convertDialog.value = false
   }
   catch (error: any) {
     threadError.value = extractErrorMessage(error, 'Could not convert this email to a ticket.')
@@ -221,18 +234,23 @@ const quotes = ref<Quote[]>([])
 
 const signatureHtml = ref('')
 
+type AssignableUser = { id: string, full_name: string }
+const assignableUsers = ref<AssignableUser[]>([])
+
 async function loadPickerData() {
-  const [cannedResult, quoteResult, accountResult, mySignatureResult] = await Promise.all([
+  const [cannedResult, quoteResult, accountResult, mySignatureResult, userResult] = await Promise.all([
     $api<CannedResponse[]>('/v1/waba/canned-responses').catch(() => []),
     $api<Quote[]>('/v1/crm/quotes').catch(() => []),
     $api<EmailAccountInfo>('/v1/crm/email/account').catch(() => null),
     $api<{ signature_html: string | null }>('/v1/crm/email/my-signature').catch(() => null),
+    $api<AssignableUser[]>('/v1/waba/assignable-users').catch(() => []),
   ])
   cannedResponses.value = cannedResult
   quotes.value = quoteResult
   // Your own personal signature always wins over the shared mailbox's team-default one -- this
   // mailbox is used by the whole team, so each person's messages should carry their own name.
   signatureHtml.value = mySignatureResult?.signature_html || accountResult?.signature_html || ''
+  assignableUsers.value = userResult
 }
 
 function withSignature(html: string) {
@@ -543,7 +561,7 @@ onMounted(() => {
         <VChip v-if="selected.is_ticket" color="primary" variant="tonal" size="small">
           {{ selected.ticket_number }}
         </VChip>
-        <VBtn v-else size="small" variant="outlined" prepend-icon="tabler-ticket" :loading="convertingToTicket" @click="convertToTicket">
+        <VBtn v-else size="small" variant="outlined" prepend-icon="tabler-ticket" @click="openConvertDialog">
           Create ticket
         </VBtn>
       </VCardText>
@@ -758,6 +776,33 @@ onMounted(() => {
         <img v-if="previewType === 'image'" :src="previewUrl" style="max-inline-size: 100%; max-block-size: 75vh;">
         <iframe v-else :src="previewUrl" style="inline-size: 100%; block-size: 75vh; border: 0;" />
       </VCardText>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="convertDialog" max-width="480">
+    <VCard title="Create ticket">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
+        <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
+        <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
+        <VSelect
+          v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
+          :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
+          placeholder="Unassigned"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="convertDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="convertingToTicket" @click="convertToTicket">
+          Create ticket
+        </VBtn>
+      </VCardActions>
     </VCard>
   </VDialog>
 </template>

@@ -424,13 +424,17 @@ def test_email_account(user: User = Depends(require_user), db: Session = Depends
     return EmailAccountTestResult(ok=error is None, error=error)
 
 
-def _find_or_create_contact(db: Session, entity_id: str, email_address: str, display_name: str | None) -> tuple[Contact, bool]:
+def _find_or_create_contact(db: Session, entity_id: str, email_address: str, display_name: str | None, *, unconfirmed: bool = False) -> tuple[Contact, bool]:
     """Returns (contact, is_new) -- is_new feeds apply_rules' own new_contact trigger (see the two
-    inbound call sites below), same shape as waba_webhooks._resolve_contact's own return value."""
+    inbound call sites below), same shape as waba_webhooks._resolve_contact's own return value.
+    unconfirmed=True (only ever passed by the inbound poll/webhook paths, never by an agent's own
+    compose send) marks a brand-new contact as Contact.is_unconfirmed_email -- an automated sender
+    (mailer-daemon@, a DMARC report, a noreply@ address) should never silently become a permanent-
+    looking customer with zero human involvement; see is_unconfirmed_email's own docstring."""
     contact = db.scalar(select(Contact).where(Contact.entity_id == entity_id, Contact.email == email_address))
     if contact:
         return contact, False
-    contact = Contact(entity_id=entity_id, email=email_address, name=display_name)
+    contact = Contact(entity_id=entity_id, email=email_address, name=display_name, is_unconfirmed_email=unconfirmed)
     db.add(contact)
     # A manual send racing the scheduled inbound poll (or two overlapping polls) for the same
     # brand-new email address can both pass the SELECT above before either commits --
@@ -506,6 +510,10 @@ def send_email(
         contact, _is_new = _find_or_create_contact(db, entity.id, payload.to_email, payload.to_name)
     else:
         raise HTTPException(status_code=422, detail="Provide either contact_id or to_email")
+    # An agent deliberately choosing to reply to/email this address is a real human decision that
+    # this contact is genuine -- clears whatever auto-created "unconfirmed" state it had, same as
+    # the explicit confirm action below.
+    contact.is_unconfirmed_email = False
 
     attachments: list[tuple[str, bytes, str]] = []
     for upload in files:
@@ -659,7 +667,7 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
             from_name, from_email = parseaddr(_decode(msg.get("From")))
             if not from_email:
                 continue
-            contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_name or None)
+            contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_name or None, unconfirmed=True)
             conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
             conversation.last_message_at = datetime.now(timezone.utc)
             body_text, is_html = _extract_body(msg)
@@ -700,7 +708,7 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
     from_email = from_field.get("address")
     if not from_email:
         return
-    contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_field.get("name"))
+    contact, is_new_contact = _find_or_create_contact(db, account.entity_id, from_email, from_field.get("name"), unconfirmed=True)
     conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
     conversation.last_message_at = datetime.now(timezone.utc)
     body_field = message.get("body") or {}

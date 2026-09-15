@@ -1591,6 +1591,17 @@ class Contact(Base):
     # Deliberately its own column, not a custom_attributes entry, since enforcement code needs to
     # read it on every single send without trusting a free-form JSON blob's shape.
     opted_out: Mapped[bool] = mapped_column(Boolean, default=False)
+    # True only when this row was auto-created from an inbound email address nobody had ever
+    # messaged before (crm_email.py's _find_or_create_contact) -- confirmed as a real problem
+    # live: automated senders (mailer-daemon@, DMARC reports, a noreply@ address) were becoming
+    # permanent-looking "customers" in the WABA Customers list with zero human involvement, no
+    # different in appearance from a real contact. Never set for WhatsApp (a wa_id-based contact
+    # always means someone actually messaged the business) or for any contact created by an agent
+    # directly. Cleared (see waba_inbox.confirm_contact and crm_email.send_email) the moment a
+    # human actually treats this address as real -- replying to it, adding a note, or explicitly
+    # confirming from the Customers list -- at which point it behaves exactly like any other
+    # contact from then on.
+    is_unconfirmed_email: Mapped[bool] = mapped_column(Boolean, default=False)
     # Set when this contact is known to be the same real-world person/business as an existing
     # CRM Customer -- either automatically (this contact was the one converted) or explicitly via
     # "map to existing customer" (a second contact/number for a customer already converted from a
@@ -1696,6 +1707,24 @@ class Conversation(Base):
         # outbound send to the same brand-new contact) could otherwise create two Conversation rows.
         UniqueConstraint("entity_id", "contact_id", "channel", name="uq_conversations_entity_contact_channel"),
     )
+
+
+class ConversationActivity(Base):
+    """Who did what to a conversation/ticket and when -- confirmed live as a real gap: a ticket's
+    detail page had zero audit trail (created, assigned, priority/category/group changed,
+    resolved), unlike every real helpdesk tool. Deliberately its own append-only log table (not
+    reusing AccountActivity, which is a security/account-level audit trail scoped to
+    organization_id, not a conversation; and not computed on the fly the way CustomerSummaryOut's
+    log is, since ticket events happen at many different call sites scattered over the
+    conversation's whole lifetime, not cheaply re-derivable after the fact from other tables the
+    way a customer's deal/quote/invoice history is)."""
+    __tablename__ = "conversation_activity"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    conversation_id: Mapped[str] = mapped_column(ForeignKey("conversations.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40))  # "created"|"converted_to_ticket"|"assigned"|"priority_changed"|"category_changed"|"group_changed"|"status_changed"|"replied"|"note_added"
+    detail: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class TicketGroup(Base):

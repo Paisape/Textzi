@@ -29,7 +29,7 @@ type ConversationMessage = {
   is_private: boolean
   message_type: string
   body: string | null
-  payload: Record<string, any> | null
+  payload: { subject?: string, is_html?: boolean } | null
   sent_by_user_id: string | null
   created_at: string
 }
@@ -63,6 +63,7 @@ type AssignableUser = { id: string, full_name: string, email: string }
 type TicketGroup = { id: string, name: string, member_user_ids: string[] }
 type CannedResponse = { id: string, shortcut: string, body: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
+type ActivityEntry = { id: string, kind: string, detail: string, user_name: string | null, created_at: string }
 
 const STATUSES = ['open', 'pending', 'resolved'] as const
 const STATUS_ITEMS: string[] = ['open', 'pending', 'resolved']
@@ -103,9 +104,19 @@ const ticketGroups = ref<TicketGroup[]>([])
 const cannedResponses = ref<CannedResponse[]>([])
 const availableLabels = ref<Label[]>([])
 const customFields = ref<CustomField[]>([])
+const activity = ref<ActivityEntry[]>([])
 
 function contactLabel(c: Contact) {
   return c.name || c.wa_id || c.email || 'Unknown'
+}
+
+// Only ever true for a real email-channel message whose body is actually HTML (crm_email.py's
+// inbound paths always set payload.is_html; older/pre-existing rows may not have it, in which
+// case this stays plain-text-safe rather than guessing) -- WhatsApp/webchat messages are always
+// plain text regardless of direction, unlike crm-email.vue's own isHtml which assumes any
+// outbound email is HTML (this page mixes channels, that assumption doesn't hold here).
+function isHtml(m: ConversationMessage) {
+  return m.payload?.is_html === true
 }
 
 function ticketParams(): Record<string, string | boolean | number> {
@@ -186,6 +197,7 @@ async function selectTicket(id: string) {
   threadLoading.value = true
   threadError.value = ''
   customerCompany.value = null
+  activity.value = []
   try {
     selected.value = await $api<TicketDetail>(`/v1/waba/conversations/${id}`)
     $api(`/v1/waba/conversations/${id}/read`, { method: 'POST' })
@@ -200,6 +212,9 @@ async function selectTicket(id: string) {
         .then(r => { customerCompany.value = r.company })
         .catch(() => {})
     }
+    $api<ActivityEntry[]>(`/v1/waba/conversations/${id}/activity`)
+      .then((rows) => { activity.value = rows })
+      .catch(() => {})
   }
   catch (error: any) {
     threadError.value = extractErrorMessage(error, 'Could not load this ticket.')
@@ -624,7 +639,9 @@ onMounted(() => {
             <p v-if="selected.channel === 'email' && m.payload?.subject" class="text-caption text-medium-emphasis mb-1">
               {{ m.payload.subject }}
             </p>
-            <p class="mb-0" style="white-space: pre-wrap;">
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div v-if="isHtml(m)" class="ticket-html-body" v-html="m.body" />
+            <p v-else class="mb-0" style="white-space: pre-wrap;">
               {{ m.body }}
             </p>
           </div>
@@ -771,6 +788,24 @@ onMounted(() => {
             @update:model-value="(v: string) => updateTicketCustomField(field.name, v)"
           />
         </template>
+
+        <VDivider class="mb-3" />
+        <h3 class="text-subtitle-2 mb-2">
+          Activity log
+        </h3>
+        <VTimeline v-if="activity.length" density="compact" side="end" truncate-line="both" line-inset="8">
+          <VTimelineItem v-for="entry in activity" :key="entry.id" size="x-small" dot-color="primary">
+            <p class="text-body-2 mb-0">
+              {{ entry.detail }}
+            </p>
+            <p class="text-caption text-medium-emphasis mb-0">
+              {{ formatTime(entry.created_at) }}
+            </p>
+          </VTimelineItem>
+        </VTimeline>
+        <p v-else class="text-caption text-medium-emphasis mb-0">
+          No activity recorded yet.
+        </p>
       </VCardText>
     </VCard>
     </div>
@@ -781,3 +816,29 @@ onMounted(() => {
     </p>
   </VCard>
 </template>
+
+<style scoped>
+.ticket-html-body {
+  overflow-x: auto;
+  max-inline-size: 100%;
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.ticket-html-body :deep(*) {
+  color: inherit !important;
+  background-color: transparent !important;
+}
+
+.ticket-html-body :deep(p) {
+  margin-block-end: 0.75rem;
+}
+
+.ticket-html-body :deep(img) {
+  max-inline-size: 100%;
+  block-size: auto;
+}
+
+.ticket-html-body :deep(table) {
+  max-inline-size: 100%;
+}
+</style>
