@@ -105,6 +105,11 @@ class User(Base):
     # codebase) and only ever returned via an authenticated endpoint, never derivable from data
     # visible elsewhere.
     support_visitor_token: Mapped[str | None] = mapped_column(String(64), nullable=True, unique=True)
+    # Personal email signature for the CRM Email channel -- a mailbox (EmailAccount) is shared
+    # org-wide, but every teammate who sends from it wants their own name/title, not one shared
+    # block. Self-editable, null means "use the account-level EmailAccount.signature_html instead"
+    # (the org-wide default/fallback for anyone who hasn't set their own).
+    email_signature_html: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

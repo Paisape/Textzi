@@ -153,14 +153,17 @@ const quotes = ref<Quote[]>([])
 const signatureHtml = ref('')
 
 async function loadPickerData() {
-  const [cannedResult, quoteResult, accountResult] = await Promise.all([
+  const [cannedResult, quoteResult, accountResult, mySignatureResult] = await Promise.all([
     $api<CannedResponse[]>('/v1/waba/canned-responses').catch(() => []),
     $api<Quote[]>('/v1/crm/quotes').catch(() => []),
     $api<EmailAccountInfo>('/v1/crm/email/account').catch(() => null),
+    $api<{ signature_html: string | null }>('/v1/crm/email/my-signature').catch(() => null),
   ])
   cannedResponses.value = cannedResult
   quotes.value = quoteResult
-  signatureHtml.value = accountResult?.signature_html || ''
+  // Your own personal signature always wins over the shared mailbox's team-default one -- this
+  // mailbox is used by the whole team, so each person's messages should carry their own name.
+  signatureHtml.value = mySignatureResult?.signature_html || accountResult?.signature_html || ''
 }
 
 function withSignature(html: string) {

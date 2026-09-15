@@ -43,6 +43,7 @@ from .permissions import require_channel_scope, require_page_scope_for, require_
 from .schemas import (
     EmailAccountOut, EmailAccountTestResult, EmailAccountUpdateRequest, EmailSendRequest,
     EmailSignatureUpdateRequest, MicrosoftAuthorizeUrlOut, MicrosoftOAuthCallbackRequest,
+    UserEmailSignatureOut,
 )
 from .security import decrypt_secret, encrypt_secret
 from .services import DomainError, channel_active, get_platform_microsoft_settings, microsoft_graph_redirect_uri, microsoft_graph_webhook_url, resolve_user_entity, sanitize_email_html
@@ -135,8 +136,11 @@ def save_email_account(payload: EmailAccountUpdateRequest, user: User = Depends(
 
 @router.put("/account/signature", response_model=EmailAccountOut)
 def save_email_signature(payload: EmailSignatureUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Kept as its own endpoint, separate from save_email_account, so it isn't wiped by a
-    reconnect and so it's usable regardless of provider (byo or microsoft_graph)."""
+    """The org-wide DEFAULT signature -- used for any teammate who hasn't set their own personal
+    one (see save_my_signature below). Kept as its own endpoint, separate from save_email_account,
+    so it isn't wiped by a reconnect and so it's usable regardless of provider (byo or
+    microsoft_graph). Any teammate with access to this settings page can set the org default;
+    setting your own personal one below always takes priority for your own sends."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     account = db.scalar(select(EmailAccount).where(EmailAccount.entity_id == entity.id))
@@ -146,6 +150,21 @@ def save_email_signature(payload: EmailSignatureUpdateRequest, user: User = Depe
     db.commit()
     db.refresh(account)
     return _account_out(account)
+
+
+@router.get("/my-signature", response_model=UserEmailSignatureOut)
+def get_my_email_signature(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """This user's own personal signature -- one mailbox (EmailAccount) is shared org-wide, but
+    each teammate sending from it wants their own name/title, not the same shared block. Stored on
+    User, not EmailAccount, since it belongs to the person, not the connected mailbox."""
+    return UserEmailSignatureOut(signature_html=user.email_signature_html)
+
+
+@router.put("/my-signature", response_model=UserEmailSignatureOut)
+def save_my_email_signature(payload: EmailSignatureUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    user.email_signature_html = payload.signature_html.strip() or None
+    db.commit()
+    return UserEmailSignatureOut(signature_html=user.email_signature_html)
 
 
 @router.delete("/account")

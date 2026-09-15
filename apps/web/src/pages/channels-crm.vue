@@ -654,6 +654,41 @@ async function saveEmailSignature() {
   }
 }
 
+// This mailbox is shared org-wide, but every teammate sending from it wants their own
+// name/title -- a personal signature (stored on the logged-in user, not the mailbox) always
+// overrides the org default above for that person's own sends.
+const mySignature = ref('')
+const mySignatureSaving = ref(false)
+const mySignatureError = ref('')
+const mySignatureSaved = ref(false)
+
+async function loadMySignature() {
+  try {
+    const result = await $api<{ signature_html: string | null }>('/v1/crm/email/my-signature')
+    mySignature.value = result.signature_html || ''
+  }
+  catch {
+    // Non-fatal -- the org default still applies.
+  }
+}
+
+async function saveMySignature() {
+  mySignatureSaving.value = true
+  mySignatureError.value = ''
+  mySignatureSaved.value = false
+  try {
+    const result = await $api<{ signature_html: string | null }>('/v1/crm/email/my-signature', { method: 'PUT', body: { signature_html: mySignature.value } })
+    mySignature.value = result.signature_html || ''
+    mySignatureSaved.value = true
+  }
+  catch (error: any) {
+    mySignatureError.value = extractErrorMessage(error, 'Could not save your signature.')
+  }
+  finally {
+    mySignatureSaving.value = false
+  }
+}
+
 async function loadEmailAccount() {
   try {
     emailAccount.value = await $api<EmailAccount>('/v1/crm/email/account')
@@ -1238,6 +1273,7 @@ async function loadExtras() {
     loadError.value = extractErrorMessage(error, 'Could not load some CRM settings.')
   }
   loadEmailAccount()
+  loadMySignature()
   loadCannedResponses()
   loadProducts()
   loadDiscountRules()
@@ -1687,22 +1723,40 @@ onMounted(() => {
 
               <template v-if="emailAccount?.connected">
                 <VDivider class="my-4" />
-                <p class="text-subtitle-2 mb-2">
-                  Signature
+                <p class="text-subtitle-2 mb-1">
+                  My signature
+                </p>
+                <p class="text-caption text-medium-emphasis mb-2">
+                  This mailbox is shared by the whole team -- this signature is yours alone and only appears on emails you send, even though everyone sends from the same address.
+                </p>
+                <VAlert v-if="mySignatureError" type="error" variant="tonal" density="compact" class="mb-3">
+                  {{ mySignatureError }}
+                </VAlert>
+                <VAlert v-if="mySignatureSaved" type="success" variant="tonal" density="compact" class="mb-3" closable @click:close="mySignatureSaved = false">
+                  Your signature is saved.
+                </VAlert>
+                <VTextarea v-model="mySignature" placeholder="e.g. Regards,&#10;Your Name&#10;Your Title" rows="4" density="compact" class="mb-3" />
+                <VBtn size="small" :loading="mySignatureSaving" @click="saveMySignature">
+                  Save my signature
+                </VBtn>
+
+                <VDivider class="my-4" />
+                <p class="text-subtitle-2 mb-1">
+                  Team default signature
+                </p>
+                <p class="text-caption text-medium-emphasis mb-2">
+                  Used for any teammate who hasn't set their own personal signature above.
                 </p>
                 <VAlert v-if="signatureError" type="error" variant="tonal" density="compact" class="mb-3">
                   {{ signatureError }}
                 </VAlert>
                 <VAlert v-if="signatureSaved" type="success" variant="tonal" density="compact" class="mb-3" closable @click:close="signatureSaved = false">
-                  Signature saved.
+                  Team default signature saved.
                 </VAlert>
-                <VTextarea v-model="emailSignature" placeholder="e.g. Regards,&#10;Your Name&#10;Company" rows="4" density="compact" class="mb-3" />
-                <VBtn size="small" :loading="signatureSaving" @click="saveEmailSignature">
-                  Save signature
+                <VTextarea v-model="emailSignature" placeholder="e.g. Regards,&#10;The Team" rows="4" density="compact" class="mb-3" />
+                <VBtn size="small" variant="tonal" :loading="signatureSaving" @click="saveEmailSignature">
+                  Save team default
                 </VBtn>
-                <p class="text-caption text-medium-emphasis mt-2 mb-0">
-                  Added automatically to new replies and messages you compose (you can edit or remove it before sending).
-                </p>
               </template>
             </VCardText>
           </VCard>

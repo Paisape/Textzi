@@ -3214,6 +3214,10 @@ class EmailSignatureUpdateRequest(BaseModel):
     signature_html: str = Field(default="", max_length=20000)
 
 
+class UserEmailSignatureOut(BaseModel):
+    signature_html: str | None = None
+
+
 class EmailAccountTestResult(BaseModel):
     ok: bool
     error: str | None = None
