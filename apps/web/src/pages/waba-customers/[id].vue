@@ -380,8 +380,22 @@ async function submitMap() {
 }
 
 // --- Create ticket ---
+// A dialog collecting subject/priority/category/assignee, same as crm-email.vue/inbox.vue's own
+// "Create ticket" flow -- this page previously fired the bare one-click convert with none of
+// that set, the one place this pattern hadn't been applied yet.
 
 const creatingTicket = ref(false)
+const convertDialog = ref(false)
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+
+function openConvertDialog() {
+  convertForm.subject = timeline.value?.contact.name || ''
+  convertForm.priority = 'medium'
+  convertForm.category = 'question'
+  convertForm.assigned_user_id = null
+  actionError.value = ''
+  convertDialog.value = true
+}
 
 async function createTicket() {
   if (!timeline.value?.conversation_id)
@@ -389,7 +403,8 @@ async function createTicket() {
   creatingTicket.value = true
   actionError.value = ''
   try {
-    await $api(`/v1/waba/conversations/${timeline.value.conversation_id}/convert-to-ticket`, { method: 'POST' })
+    await $api(`/v1/waba/conversations/${timeline.value.conversation_id}/convert-to-ticket`, { method: 'POST', body: { ...convertForm } })
+    convertDialog.value = false
     await load()
   }
   catch (error: any) {
@@ -465,8 +480,7 @@ onMounted(load)
         v-if="timeline.conversation_id && !timeline.tickets.open && !timeline.tickets.resolved"
         variant="tonal"
         prepend-icon="tabler-ticket"
-        :loading="creatingTicket"
-        @click="createTicket"
+        @click="openConvertDialog"
       >
         Create ticket
       </VBtn>
@@ -734,6 +748,33 @@ onMounted(load)
         </VBtn>
         <VBtn color="error" :loading="deleting" @click="confirmDelete">
           Delete permanently
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="convertDialog" max-width="480">
+    <VCard title="Create ticket">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
+        <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
+        <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
+        <VSelect
+          v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
+          :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+          placeholder="Unassigned"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="convertDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="creatingTicket" @click="createTicket">
+          Create ticket
         </VBtn>
       </VCardActions>
     </VCard>

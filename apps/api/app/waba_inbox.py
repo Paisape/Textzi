@@ -1237,11 +1237,13 @@ def get_contact_timeline(contact_id: str, user: User = Depends(require_user), db
         ) if lead else None
         deals_out = [
             DealOut(
-                id=deal.id, contact=crm_contact_out, pipeline_id=deal.pipeline_id, stage=deal.stage, source=deal.source,
+                id=deal.id, name=deal.name, contact=crm_contact_out, pipeline_id=deal.pipeline_id, stage=deal.stage, source=deal.source,
                 converted_from_conversation_id=deal.converted_from_conversation_id, converted_from_lead_id=deal.converted_from_lead_id,
                 owner_user_id=deal.owner_user_id, notes=deal.notes, value=float(deal.value) if deal.value is not None else None,
                 probability=deal.probability, expected_close_date=deal.expected_close_date.isoformat() if deal.expected_close_date else None,
-                status=deal.status, lost_reason=deal.lost_reason, custom_fields=deal.custom_fields or {},
+                status=deal.status, lost_reason=deal.lost_reason, next_step=deal.next_step,
+                next_step_due_at=deal.next_step_due_at.isoformat() if deal.next_step_due_at else None,
+                custom_fields=deal.custom_fields or {}, stage_approvals=deal.stage_approvals or {},
                 created_at=deal.created_at.isoformat(),
             ) for deal in deals
         ]

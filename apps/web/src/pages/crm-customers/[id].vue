@@ -308,6 +308,55 @@ function openWabaTimeline() {
     router.push(`/waba-customers/${summary.value.waba_contact_id}`)
 }
 
+// Jumps into the actual WhatsApp inbox thread for this customer's linked WABA contact, same
+// "Open Chat" action already on the WABA customer page -- this page previously had no way back
+// to the live conversation at all once someone was converted to a Customer.
+function openChat() {
+  if (summary.value?.waba_contact_id)
+    router.push(`/inbox?conversation=${summary.value.waba_contact_id}`)
+}
+
+const convertDialog = ref(false)
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+const convertingToTicket = ref(false)
+const convertError = ref('')
+
+function openConvertDialog() {
+  if (!summary.value)
+    return
+  convertForm.subject = summary.value.customer.contact.name || ''
+  convertForm.priority = 'medium'
+  convertForm.category = 'question'
+  convertForm.assigned_user_id = null
+  convertError.value = ''
+  convertDialog.value = true
+}
+
+async function convertToTicket() {
+  if (!summary.value?.waba_contact_id)
+    return
+  convertingToTicket.value = true
+  convertError.value = ''
+  try {
+    // Same lookup crm-email.vue/inbox.vue's own "Create ticket" already relies on -- this page
+    // only knows the WABA contact id, not the conversation id directly, so resolve it first.
+    const contactDetail = await $api<{ conversation_id: string | null }>(`/v1/waba/contacts/${summary.value.waba_contact_id}/timeline`)
+    if (!contactDetail.conversation_id) {
+      convertError.value = 'This customer has no WhatsApp conversation to convert yet.'
+      return
+    }
+    await $api(`/v1/waba/conversations/${contactDetail.conversation_id}/convert-to-ticket`, { method: 'POST', body: { ...convertForm } })
+    convertDialog.value = false
+    await load()
+  }
+  catch (error: any) {
+    convertError.value = extractErrorMessage(error, 'Could not create a ticket for this customer.')
+  }
+  finally {
+    convertingToTicket.value = false
+  }
+}
+
 // crm-quotes.vue's own new-quote form already reads ?deal_id= to pre-select a deal -- pass this
 // customer's single deal when there's exactly one (the common case), otherwise just land on the
 // page and let the agent pick, same as every other "New X" quick action here.
@@ -391,20 +440,27 @@ onMounted(load)
       </VCardText>
       <VDivider />
       <VCardText class="d-flex flex-wrap gap-3">
-        <RouterLink :to="`/crm-contacts/${summary.customer.contact.id}`" class="d-flex align-center gap-2 text-body-2">
-          <VIcon icon="tabler-user" size="16" />
-          View contact
-        </RouterLink>
-        <RouterLink v-if="summary.customer.deal_id" :to="`/crm-deals/${summary.customer.deal_id}`" class="d-flex align-center gap-2 text-body-2">
-          <VIcon icon="tabler-briefcase" size="16" />
-          View originating deal
-        </RouterLink>
-        <a href="#" class="d-flex align-center gap-2 text-body-2" @click.prevent="sendEmail">
-          <VIcon icon="tabler-mail" size="16" />
-          Send email
-        </a>
+        <VBtn v-if="summary.waba_contact_id" color="primary" prepend-icon="tabler-message-2" @click="openChat">
+          Open Chat
+        </VBtn>
+        <VBtn v-if="summary.waba_contact_id" variant="tonal" prepend-icon="tabler-ticket" @click="openConvertDialog">
+          Create Ticket
+        </VBtn>
+        <VBtn variant="tonal" prepend-icon="tabler-mail" @click="sendEmail">
+          Send Email
+        </VBtn>
+        <VBtn :to="`/crm-contacts/${summary.customer.contact.id}`" variant="text" prepend-icon="tabler-user">
+          View Contact
+        </VBtn>
+        <VBtn v-if="summary.customer.deal_id" :to="`/crm-deals/${summary.customer.deal_id}`" variant="text" prepend-icon="tabler-briefcase">
+          View Originating Deal
+        </VBtn>
       </VCardText>
     </VCard>
+
+    <VAlert v-if="convertError" type="error" variant="tonal" class="mb-4" closable @click:close="convertError = ''">
+      {{ convertError }}
+    </VAlert>
 
     <VTabs v-model="activeTab" class="mb-4">
       <VTab value="summary">
@@ -799,4 +855,31 @@ onMounted(load)
       </VWindowItem>
     </VWindow>
   </template>
+
+  <VDialog v-model="convertDialog" max-width="480">
+    <VCard title="Create ticket">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-3">
+        <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
+        <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
+        <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
+        <VSelect
+          v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
+          :items="users.map(u => ({ title: u.full_name, value: u.id }))"
+          placeholder="Unassigned"
+        />
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="convertDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="convertingToTicket" @click="convertToTicket">
+          Create ticket
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
 </template>
