@@ -6,6 +6,10 @@ definePage({
   },
 })
 
+import { useAuthStore } from '@/stores/auth'
+
+const authStore = useAuthStore()
+
 type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null, title: string | null, company_id: string | null }
 type Lead = {
   id: string
@@ -36,8 +40,16 @@ const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
 const showConverted = ref(false)
+// Every teammate sees the whole company's leads by default (an owner needs pipeline visibility
+// regardless of who owns each lead) -- this just defaults a non-owner's own view to their own
+// leads first, since that's usually what they actually want to work from; a toggle away from the
+// full company list, same shape as the ticket list's own "My open"/"All" filter.
+const myLeadsOnly = ref(authStore.profile?.role !== 'enterprise_customer')
 
-const visibleLeads = computed(() => leads.value.filter(l => showConverted.value || l.status !== 'converted'))
+const visibleLeads = computed(() => leads.value.filter(l =>
+  (showConverted.value || l.status !== 'converted')
+  && (!myLeadsOnly.value || l.owner_user_id === authStore.profile?.id),
+))
 
 async function loadAll() {
   loading.value = true
@@ -385,6 +397,7 @@ onMounted(loadAll)
           Export CSV
         </VBtn>
       </div>
+      <VCheckbox v-model="myLeadsOnly" label="My leads only" density="compact" hide-details />
       <VCheckbox v-model="showConverted" label="Show converted" density="compact" hide-details />
     </div>
 

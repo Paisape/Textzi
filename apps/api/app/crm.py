@@ -660,10 +660,20 @@ def get_crm_contact_detail(contact_id: str, user: User = Depends(require_user), 
 
 
 @router.get("/leads", response_model=list[LeadOut])
-def list_leads(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def list_leads(owner_user_id: str | None = None, mine: bool = False, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """owner_user_id/mine are both optional and default to showing every lead in the entity
+    (unchanged behavior) -- a manager wants visibility into the whole team's pipeline even if
+    they're not the owner, unlike Tasks (which are hard-clamped to your own for a non-owner role);
+    the frontend defaults a non-owner teammate's own view to mine=true but lets them switch to
+    "everyone's", same shape as the conversation list's own assignment=mine filter."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    leads = db.scalars(select(Lead).where(Lead.entity_id == entity.id).order_by(Lead.created_at.desc())).all()
+    query = select(Lead).where(Lead.entity_id == entity.id)
+    if mine:
+        query = query.where(Lead.owner_user_id == user.id)
+    elif owner_user_id:
+        query = query.where(Lead.owner_user_id == owner_user_id)
+    leads = db.scalars(query.order_by(Lead.created_at.desc())).all()
     contacts = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_([lead.contact_id for lead in leads]))).all()} if leads else {}
     return [_lead_out(lead, contacts[lead.contact_id]) for lead in leads]
 
@@ -803,10 +813,17 @@ def convert_lead_to_deal(lead_id: str, payload: LeadConvertRequest, user: User =
 
 
 @router.get("/deals", response_model=list[DealOut])
-def list_deals(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def list_deals(owner_user_id: str | None = None, mine: bool = False, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Same optional owner_user_id/mine filter as list_leads -- see its docstring for why this
+    defaults to showing everyone's deals rather than clamping like Tasks does."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    deals = db.scalars(select(Deal).where(Deal.entity_id == entity.id).order_by(Deal.created_at.desc())).all()
+    query = select(Deal).where(Deal.entity_id == entity.id)
+    if mine:
+        query = query.where(Deal.owner_user_id == user.id)
+    elif owner_user_id:
+        query = query.where(Deal.owner_user_id == owner_user_id)
+    deals = db.scalars(query.order_by(Deal.created_at.desc())).all()
     contacts = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_([deal.contact_id for deal in deals]))).all()} if deals else {}
     return [_deal_out(deal, contacts[deal.contact_id]) for deal in deals]
 

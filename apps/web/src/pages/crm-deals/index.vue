@@ -6,6 +6,10 @@ definePage({
   },
 })
 
+import { useAuthStore } from '@/stores/auth'
+
+const authStore = useAuthStore()
+
 type CrmContact = { id: string, name: string | null, phone: string | null, email: string | null, title: string | null, company_id: string | null }
 type Deal = {
   id: string
@@ -45,11 +49,18 @@ const loadError = ref('')
 const crmInactive = ref(false)
 const view = ref<'table' | 'board'>('board')
 const showClosed = ref(false)
+// Same "defaults to your own, everyone can switch to the whole company's pipeline" shape as
+// crm-leads/index.vue's own myLeadsOnly filter -- see its comment for why this isn't a hard
+// clamp the way Tasks is.
+const myDealsOnly = ref(authStore.profile?.role !== 'enterprise_customer')
 
 const activePipeline = computed(() => pipelines.value.find(p => p.id === activePipelineId.value) || null)
 const stages = computed(() => activePipeline.value?.stages.map(s => s.name) || [])
 
-const visibleDeals = computed(() => deals.value.filter(d => showClosed.value || d.status === 'open'))
+const visibleDeals = computed(() => deals.value.filter(d =>
+  (showClosed.value || d.status === 'open')
+  && (!myDealsOnly.value || d.owner_user_id === authStore.profile?.id),
+))
 
 function inr(value: number | null) {
   if (value === null)
@@ -476,6 +487,7 @@ onMounted(loadAll)
           Export CSV
         </VBtn>
       </div>
+      <VCheckbox v-model="myDealsOnly" label="My deals only" density="compact" hide-details />
       <VCheckbox v-model="showClosed" label="Show won/lost" density="compact" hide-details />
     </div>
 

@@ -7,6 +7,8 @@ definePage({
   },
 })
 
+import { useAuthStore } from '@/stores/auth'
+
 type Contact = {
   id: string
   wa_id: string | null
@@ -85,7 +87,12 @@ function dueLabel(dueAt: string | null, breached: boolean) {
 }
 
 type FilterKey = 'all' | 'unassigned' | 'mine' | 'open' | 'pending' | 'resolved'
-const activeFilter = ref<FilterKey>('open')
+// Same "default to your own, easy to switch to everyone's" shape as crm-leads/crm-deals' own
+// myLeadsOnly/myDealsOnly filters -- a non-owner teammate's tickets rail opens on "My open" by
+// default; the account owner still opens on "Open" (the whole company's), matching their existing
+// need for full visibility.
+const authStore = useAuthStore()
+const activeFilter = ref<FilterKey>(authStore.profile?.role !== 'enterprise_customer' ? 'mine' : 'open')
 const search = ref('')
 const tickets = ref<Ticket[]>([])
 const loading = ref(false)
