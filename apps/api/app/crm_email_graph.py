@@ -147,7 +147,7 @@ def list_recent_inbox_messages(access_token: str, since: datetime) -> list[dict]
     since_str = since.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     result = _request(
         "GET", "me/mailFolders('Inbox')/messages", access_token,
-        params={"$filter": f"receivedDateTime ge {since_str}", "$select": "id,subject,from,body,receivedDateTime,bodyPreview", "$top": "50"},
+        params={"$filter": f"receivedDateTime ge {since_str}", "$select": "id,subject,from,body,receivedDateTime,bodyPreview,hasAttachments", "$top": "50"},
     )
     return result.get("value", [])
 
@@ -155,8 +155,21 @@ def list_recent_inbox_messages(access_token: str, since: datetime) -> list[dict]
 def fetch_message(access_token: str, message_id: str) -> dict:
     """One message by id -- used when a change-notification webhook fires (the notification
     payload only carries the message's resource id, not its content; a follow-up GET is Graph's
-    own documented, required shape for this, not something this codebase chose to add)."""
-    return _request("GET", f"me/messages/{message_id}", access_token, params={"$select": "subject,from,toRecipients,body,receivedDateTime,bodyPreview"})
+    own documented, required shape for this, not something this codebase chose to add).
+    hasAttachments is included so the caller knows whether a follow-up fetch_attachments call is
+    worth making -- the message body itself never carries attachment bytes, Graph requires a
+    separate request for those (see fetch_attachments below)."""
+    return _request("GET", f"me/messages/{message_id}", access_token, params={"$select": "subject,from,toRecipients,body,receivedDateTime,bodyPreview,hasAttachments"})
+
+
+def fetch_attachments(access_token: str, message_id: str) -> list[dict]:
+    """Graph never inlines attachment bytes into the message resource itself -- this is its own
+    documented separate call. Each returned item (for a real file attachment, contentType
+    "#microsoft.graph.fileAttachment") carries base64 content directly in contentBytes; a
+    referenceAttachment (a link to a OneDrive/SharePoint file, not an uploaded file) has no bytes
+    to download and is skipped by the caller."""
+    result = _request("GET", f"me/messages/{message_id}/attachments", access_token)
+    return result.get("value", [])
 
 
 def create_subscription(access_token: str, notification_url: str, client_state: str) -> dict:

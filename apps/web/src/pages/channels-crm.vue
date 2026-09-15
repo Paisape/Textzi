@@ -906,7 +906,7 @@ async function deleteCanned(item: CannedResponse) {
 
 // --- Custom fields ---
 
-type CustomField = { id: string, applies_to: 'lead' | 'deal' | 'crm_contact' | 'customer' | 'ticket', name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean, position: number }
+type CustomField = { id: string, applies_to: 'lead' | 'deal' | 'crm_contact' | 'customer' | 'ticket' | 'webform', name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean, position: number }
 
 const APPLIES_TO_OPTIONS = [
   { title: 'Lead', value: 'lead' },
@@ -914,6 +914,7 @@ const APPLIES_TO_OPTIONS = [
   { title: 'Contact', value: 'crm_contact' },
   { title: 'Customer', value: 'customer' },
   { title: 'Ticket', value: 'ticket' },
+  { title: 'Web Form', value: 'webform' },
 ]
 const FIELD_TYPE_OPTIONS = [
   { title: 'Text', value: 'text' },
@@ -1281,74 +1282,145 @@ async function loadExtras() {
   loadDocumentTemplates()
 }
 
-// --- Web lead-capture form ---
+// --- Web lead-capture forms ---
+// A real list, not a single shared form -- a tenant commonly wants a separate form per source
+// (e.g. "Website Contact" vs. "Facebook Lead Ad") so submissions can be told apart at a glance,
+// each with its own field list/success message/target pipeline/embed snippet.
 
 type Pipeline = { id: string, name: string }
-type WebForm = { enabled: boolean, fields: string[], success_message: string, target_pipeline_id: string | null, embed_snippet: string }
+type WebFormCustomField = { id: string, name: string, field_type: string, options: string[], required: boolean }
+type WebForm = {
+  id: string
+  name: string
+  source: 'website' | 'facebook' | 'instagram' | 'other'
+  enabled: boolean
+  fields: string[]
+  custom_field_ids: string[]
+  success_message: string
+  target_pipeline_id: string | null
+  embed_snippet: string
+  created_at: string
+}
 
-const AVAILABLE_FIELDS = ['name', 'email', 'phone', 'message']
+const AVAILABLE_FIELDS = ['name', 'email', 'phone', 'message', 'company']
+const SOURCE_OPTIONS = [
+  { title: 'Website', value: 'website' },
+  { title: 'Facebook', value: 'facebook' },
+  { title: 'Instagram', value: 'instagram' },
+  { title: 'Other', value: 'other' },
+]
 const pipelines = ref<Pipeline[]>([])
-const webForm = ref<WebForm | null>(null)
-const webFormSaving = ref(false)
+const webFormCustomFields = ref<WebFormCustomField[]>([])
+const webForms = ref<WebForm[]>([])
+const webFormsLoading = ref(false)
 const webFormError = ref('')
-const webFormSaved = ref(false)
-const webFormCopied = ref(false)
+const webFormCopiedId = ref<string | null>(null)
 
-async function loadWebForm() {
+async function loadWebForms() {
+  webFormsLoading.value = true
+  webFormError.value = ''
   try {
-    const [formResult, pipelineResult] = await Promise.all([
-      $api<WebForm>('/v1/crm/web-form'),
+    const [formResult, pipelineResult, fieldResult] = await Promise.all([
+      $api<WebForm[]>('/v1/crm/web-forms'),
       $api<Pipeline[]>('/v1/crm/pipelines'),
+      $api<WebFormCustomField[]>('/v1/crm/custom-fields?applies_to=webform'),
     ])
-    webForm.value = formResult
+    webForms.value = formResult
     pipelines.value = pipelineResult
+    webFormCustomFields.value = fieldResult
   }
   catch (error: any) {
-    webFormError.value = extractErrorMessage(error, 'Could not load the web form settings.')
+    webFormError.value = extractErrorMessage(error, 'Could not load your web forms.')
+  }
+  finally {
+    webFormsLoading.value = false
   }
 }
 
-function toggleField(field: string) {
-  if (!webForm.value)
-    return
-  if (webForm.value.fields.includes(field))
-    webForm.value.fields = webForm.value.fields.filter(f => f !== field)
-  else
-    webForm.value.fields = [...webForm.value.fields, field]
+const webFormDialog = ref(false)
+const editingWebFormId = ref<string | null>(null)
+const webFormForm = reactive({
+  name: '', source: 'website' as WebForm['source'], enabled: true, fields: ['name', 'email', 'phone', 'message'] as string[],
+  custom_field_ids: [] as string[], success_message: "Thanks! We'll be in touch shortly.", target_pipeline_id: null as string | null,
+})
+const webFormSaving = ref(false)
+const webFormDialogError = ref('')
+
+function openNewWebForm() {
+  editingWebFormId.value = null
+  webFormForm.name = ''
+  webFormForm.source = 'website'
+  webFormForm.enabled = true
+  webFormForm.fields = ['name', 'email', 'phone', 'message']
+  webFormForm.custom_field_ids = []
+  webFormForm.success_message = "Thanks! We'll be in touch shortly."
+  webFormForm.target_pipeline_id = null
+  webFormDialogError.value = ''
+  webFormDialog.value = true
+}
+
+function openEditWebForm(form: WebForm) {
+  editingWebFormId.value = form.id
+  webFormForm.name = form.name
+  webFormForm.source = form.source
+  webFormForm.enabled = form.enabled
+  webFormForm.fields = [...form.fields]
+  webFormForm.custom_field_ids = [...form.custom_field_ids]
+  webFormForm.success_message = form.success_message
+  webFormForm.target_pipeline_id = form.target_pipeline_id
+  webFormDialogError.value = ''
+  webFormDialog.value = true
+}
+
+function toggleFormField(field: string) {
+  webFormForm.fields = webFormForm.fields.includes(field) ? webFormForm.fields.filter(f => f !== field) : [...webFormForm.fields, field]
+}
+
+function toggleFormCustomField(fieldId: string) {
+  webFormForm.custom_field_ids = webFormForm.custom_field_ids.includes(fieldId)
+    ? webFormForm.custom_field_ids.filter(id => id !== fieldId)
+    : [...webFormForm.custom_field_ids, fieldId]
 }
 
 async function saveWebForm() {
-  if (!webForm.value)
+  if (!webFormForm.name.trim() || !webFormForm.fields.length)
     return
   webFormSaving.value = true
-  webFormError.value = ''
-  webFormSaved.value = false
+  webFormDialogError.value = ''
   try {
-    webForm.value = await $api<WebForm>('/v1/crm/web-form', {
-      method: 'PUT',
-      body: {
-        enabled: webForm.value.enabled,
-        fields: webForm.value.fields,
-        success_message: webForm.value.success_message,
-        target_pipeline_id: webForm.value.target_pipeline_id,
-      },
-    })
-    webFormSaved.value = true
+    if (editingWebFormId.value) {
+      await $api<WebForm>(`/v1/crm/web-forms/${editingWebFormId.value}`, { method: 'PUT', body: { ...webFormForm } })
+    }
+    else {
+      await $api<WebForm>('/v1/crm/web-forms', { method: 'POST', body: { ...webFormForm } })
+    }
+    webFormDialog.value = false
+    await loadWebForms()
   }
   catch (error: any) {
-    webFormError.value = extractErrorMessage(error, 'Could not save the web form settings.')
+    webFormDialogError.value = extractErrorMessage(error, 'Could not save this web form.')
   }
   finally {
     webFormSaving.value = false
   }
 }
 
-async function copyEmbedSnippet() {
-  if (!webForm.value)
+async function deleteWebForm(form: WebForm) {
+  if (!confirm(`Delete "${form.name}"? Existing leads created from it are not affected.`))
     return
-  await navigator.clipboard.writeText(webForm.value.embed_snippet)
-  webFormCopied.value = true
-  setTimeout(() => { webFormCopied.value = false }, 2000)
+  try {
+    await $api(`/v1/crm/web-forms/${form.id}`, { method: 'DELETE' })
+    webForms.value = webForms.value.filter(f => f.id !== form.id)
+  }
+  catch (error: any) {
+    webFormError.value = extractErrorMessage(error, 'Could not delete this web form.')
+  }
+}
+
+async function copyEmbedSnippet(form: WebForm) {
+  await navigator.clipboard.writeText(form.embed_snippet)
+  webFormCopiedId.value = form.id
+  setTimeout(() => { webFormCopiedId.value = null }, 2000)
 }
 
 // --- Booking link ---
@@ -1468,7 +1540,7 @@ async function copyBookingUrl() {
 onMounted(() => {
   load()
   loadExtras()
-  loadWebForm()
+  loadWebForms()
   loadBooking()
 })
 </script>
@@ -2081,56 +2153,118 @@ onMounted(() => {
     </VWindowItem>
 
     <VWindowItem value="webform">
-      <VCard max-width="640">
+      <VCard>
         <VCardText>
-          <h2 class="text-h6 mb-1">
-            Web lead-capture form
-          </h2>
+          <div class="d-flex align-center justify-space-between mb-1">
+            <h2 class="text-h6 mb-0">
+              Web lead-capture forms
+            </h2>
+            <VBtn size="small" prepend-icon="tabler-plus" @click="openNewWebForm">
+              New form
+            </VBtn>
+          </div>
           <p class="text-body-2 text-medium-emphasis mb-4">
-            An embeddable form for your website — submissions become leads here automatically.
+            Create a separate form per source — e.g. one for your website, one for a Facebook Lead Ad — each with its own embed link and fields. Submissions become leads here automatically, tagged by which form they came from.
           </p>
           <VAlert v-if="webFormError" type="error" variant="tonal" density="compact" class="mb-3">
             {{ webFormError }}
           </VAlert>
-          <VAlert v-if="webFormSaved" type="success" variant="tonal" density="compact" class="mb-3">
-            Saved.
-          </VAlert>
-          <template v-if="webForm">
-            <VSwitch v-model="webForm.enabled" label="Enabled" density="compact" class="mb-2" />
-            <p class="text-body-2 mb-2">
-              Fields to collect
-            </p>
-            <div class="d-flex flex-wrap ga-2 mb-4">
-              <VChip
-                v-for="field in AVAILABLE_FIELDS" :key="field" size="small"
-                :variant="webForm.fields.includes(field) ? 'flat' : 'outlined'"
-                :color="webForm.fields.includes(field) ? 'primary' : undefined"
-                class="text-capitalize" @click="toggleField(field)"
-              >
-                {{ field }}
-              </VChip>
+          <VProgressLinear v-if="webFormsLoading" indeterminate class="mb-3" />
+          <p v-if="!webFormsLoading && !webForms.length" class="text-medium-emphasis">
+            No web forms yet.
+          </p>
+          <VCard v-for="form in webForms" :key="form.id" variant="outlined" class="mb-3">
+            <VCardText>
+              <div class="d-flex align-center justify-space-between flex-wrap ga-2 mb-2">
+                <div class="d-flex align-center ga-2">
+                  <span class="text-subtitle-1">{{ form.name }}</span>
+                  <VChip size="x-small" class="text-capitalize">
+                    {{ form.source }}
+                  </VChip>
+                  <VChip size="x-small" :color="form.enabled ? 'success' : undefined" variant="tonal">
+                    {{ form.enabled ? 'Enabled' : 'Disabled' }}
+                  </VChip>
+                </div>
+                <div class="d-flex ga-1">
+                  <VBtn icon="tabler-pencil" size="small" variant="text" @click="openEditWebForm(form)" />
+                  <VBtn icon="tabler-trash" size="small" variant="text" color="error" @click="deleteWebForm(form)" />
+                </div>
+              </div>
+              <p class="text-caption text-medium-emphasis mb-2">
+                Fields: {{ form.fields.join(', ') }}
+              </p>
+              <VTextarea :model-value="form.embed_snippet" readonly rows="2" density="compact" class="mb-2" />
+              <VBtn size="small" variant="tonal" prepend-icon="tabler-copy" @click="copyEmbedSnippet(form)">
+                {{ webFormCopiedId === form.id ? 'Copied' : 'Copy snippet' }}
+              </VBtn>
+            </VCardText>
+          </VCard>
+        </VCardText>
+      </VCard>
+
+      <VDialog v-model="webFormDialog" max-width="560">
+        <VCard :title="editingWebFormId ? 'Edit web form' : 'New web form'">
+          <template #append>
+            <VBtn icon="tabler-x" variant="text" size="small" @click="webFormDialog = false" />
+          </template>
+          <VCardText class="d-flex flex-column gap-3">
+            <VAlert v-if="webFormDialogError" type="error" variant="tonal" density="compact">
+              {{ webFormDialogError }}
+            </VAlert>
+            <VTextField v-model="webFormForm.name" label="Form name" placeholder="e.g. Facebook Lead Ad" density="compact" autofocus />
+            <VSelect v-model="webFormForm.source" label="Source" :items="SOURCE_OPTIONS" density="compact" />
+            <VSwitch v-model="webFormForm.enabled" label="Enabled" density="compact" />
+            <div>
+              <p class="text-body-2 mb-2">
+                Fields to collect
+              </p>
+              <div class="d-flex flex-wrap ga-2">
+                <VChip
+                  v-for="field in AVAILABLE_FIELDS" :key="field" size="small"
+                  :variant="webFormForm.fields.includes(field) ? 'flat' : 'outlined'"
+                  :color="webFormForm.fields.includes(field) ? 'primary' : undefined"
+                  class="text-capitalize" @click="toggleFormField(field)"
+                >
+                  {{ field }}
+                </VChip>
+              </div>
             </div>
-            <VTextarea v-model="webForm.success_message" label="Success message" rows="2" density="compact" class="mb-4" />
+            <div v-if="webFormCustomFields.length">
+              <p class="text-body-2 mb-2">
+                Custom fields
+              </p>
+              <div class="d-flex flex-wrap ga-2">
+                <VChip
+                  v-for="field in webFormCustomFields" :key="field.id" size="small"
+                  :variant="webFormForm.custom_field_ids.includes(field.id) ? 'flat' : 'outlined'"
+                  :color="webFormForm.custom_field_ids.includes(field.id) ? 'primary' : undefined"
+                  @click="toggleFormCustomField(field.id)"
+                >
+                  {{ field.name }}
+                </VChip>
+              </div>
+              <p class="text-caption text-medium-emphasis mt-1 mb-0">
+                Define more under CRM Settings &gt; Custom Fields (applies to: Web Form).
+              </p>
+            </div>
+            <VTextarea v-model="webFormForm.success_message" label="Success message" rows="2" density="compact" />
             <VSelect
-              v-model="webForm.target_pipeline_id" label="Target pipeline" density="compact" clearable class="mb-4"
+              v-model="webFormForm.target_pipeline_id" label="Target pipeline" density="compact" clearable
               :items="pipelines.map(p => ({ title: p.name, value: p.id }))"
               placeholder="Default pipeline"
             />
-            <div class="mb-4">
-              <VBtn :loading="webFormSaving" @click="saveWebForm">
-                Save
-              </VBtn>
-            </div>
-            <p class="text-body-2 mb-2">
-              Embed snippet
-            </p>
-            <VTextarea :model-value="webForm.embed_snippet" readonly rows="2" density="compact" class="mb-2" />
-            <VBtn size="small" variant="tonal" prepend-icon="tabler-copy" @click="copyEmbedSnippet">
-              {{ webFormCopied ? 'Copied' : 'Copy snippet' }}
+          </VCardText>
+          <VCardActions>
+            <VSpacer />
+            <VBtn variant="text" @click="webFormDialog = false">
+              Cancel
             </VBtn>
-          </template>
-        </VCardText>
-      </VCard>
+            <VBtn color="primary" :loading="webFormSaving" :disabled="!webFormForm.name.trim() || !webFormForm.fields.length" @click="saveWebForm">
+              Save
+            </VBtn>
+          </VCardActions>
+        </VCard>
+      </VDialog>
     </VWindowItem>
 
     <VWindowItem value="booking">

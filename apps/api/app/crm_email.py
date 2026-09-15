@@ -13,11 +13,15 @@ since those tables were designed from the start to be channel-agnostic (Contact'
 instead)"), not by importing WhatsApp's module code. It does import crm_email_graph.py
 one-directionally (that module never imports this one back), same pattern as every other
 CRM-to-channel touchpoint."""
+import base64
 import imaplib
 import logging
 import mimetypes
+import os
+import re
 import secrets
 import smtplib
+import uuid
 from datetime import datetime, timedelta, timezone
 from email import encoders, message_from_bytes
 from email.header import decode_header
@@ -27,11 +31,13 @@ from email.mime.text import MIMEText
 from email.utils import parseaddr
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
+
+from .config import settings
 
 from . import crm_email_graph
 from .auth import require_user
@@ -70,6 +76,32 @@ def _require_crm(db: Session, entity_id: str) -> None:
         raise HTTPException(status_code=422, detail="Upgrade to the CRM plan to use the Email channel")
 
 
+# --- Attachment storage -----------------------------------------------------------------------
+# Deliberately not waba_media.save_media -- that module's allowlist/size caps are Meta's own
+# WhatsApp media rules (e.g. images capped at 5MB, a narrow MIME allowlist), far too restrictive
+# for a real email attachment (any file type, up to a size a normal mailbox would accept). Same
+# simple on-disk storage convention, its own email-appropriate limits.
+MAX_EMAIL_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_UNSAFE_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
+
+
+def _save_email_attachment(entity_id: str, filename: str, content: bytes) -> str:
+    if len(content) > MAX_EMAIL_ATTACHMENT_BYTES:
+        raise ValueError(f"Attachment is too large (max {MAX_EMAIL_ATTACHMENT_BYTES // (1024 * 1024)}MB)")
+    directory = os.path.join(settings.uploads_dir, "crm-email-attachments", entity_id)
+    os.makedirs(directory, exist_ok=True)
+    ext = os.path.splitext(filename)[1][:10]
+    stored_name = f"{uuid.uuid4()}{ext}"
+    with open(os.path.join(directory, stored_name), "wb") as f:
+        f.write(content)
+    return os.path.join("crm-email-attachments", entity_id, stored_name)
+
+
+def _safe_display_filename(filename: str) -> str:
+    base = os.path.basename(filename) or "attachment"
+    return _UNSAFE_FILENAME_CHARS.sub("_", base)[:150]
+
+
 def _account_out(account: EmailAccount | None) -> EmailAccountOut:
     if not account:
         return EmailAccountOut(connected=False)
@@ -90,6 +122,30 @@ def get_email_account(user: User = Depends(require_user), db: Session = Depends(
     _require_crm(db, entity.id)
     account = db.scalar(select(EmailAccount).where(EmailAccount.entity_id == entity.id))
     return _account_out(account)
+
+
+@router.get("/messages/{message_id}/attachments/{index}")
+def download_email_attachment(message_id: str, index: int, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Same authorization shape as waba_inbox.py's own media-download route -- look up the message,
+    confirm its conversation belongs to the caller's own entity, only then serve the file.
+    index rather than a stored_path in the URL, since a stored_path being guessable/predictable
+    isn't itself a real access-control boundary -- this endpoint's entity check is."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    message = db.get(ConversationMessage, message_id)
+    if not message:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    conversation = db.get(Conversation, message.conversation_id)
+    if not conversation or conversation.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    attachments = (message.payload or {}).get("attachments") or []
+    if index < 0 or index >= len(attachments):
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    attachment = attachments[index]
+    full_path = os.path.join(settings.uploads_dir, attachment["stored_path"])
+    if not os.path.isfile(full_path):
+        raise HTTPException(status_code=404, detail="Attachment file is no longer available")
+    return FileResponse(full_path, media_type=attachment.get("content_type") or "application/octet-stream", filename=attachment.get("filename") or "attachment")
 
 
 @router.put("/account", response_model=EmailAccountOut)
@@ -455,6 +511,13 @@ def send_email(
         if not quote or quote.entity_id != entity.id:
             raise HTTPException(status_code=404, detail="Quote not found")
         attachments.append((f"{quote.quote_number or quote.id}.pdf", _get_pdf_bytes(db, quote), "application/pdf"))
+    stored_attachments: list[dict] = []
+    for filename, content, content_type in attachments:
+        try:
+            stored_path = _save_email_attachment(entity.id, filename, content)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        stored_attachments.append({"filename": _safe_display_filename(filename), "stored_path": stored_path, "content_type": content_type, "size": len(content)})
 
     if account.provider == "microsoft_graph":
         try:
@@ -501,7 +564,7 @@ def send_email(
     conversation.last_message_at = datetime.now(timezone.utc)
     db.add(ConversationMessage(
         conversation_id=conversation.id, direction="outbound", message_type="email",
-        body=payload.body, payload={"subject": payload.subject, "to": contact.email, "cc": payload.cc, "attachments": [a[0] for a in attachments], "is_html": True},
+        body=payload.body, payload={"subject": payload.subject, "to": contact.email, "cc": payload.cc, "attachments": stored_attachments, "is_html": True},
         sent_by_user_id=user.id,
     ))
     db.commit()
@@ -545,6 +608,36 @@ def _extract_body(msg) -> tuple[str, bool]:
     return text, False
 
 
+def _extract_attachments(msg, entity_id: str) -> list[dict]:
+    """Walks every part with a real filename (Content-Disposition: attachment, or an inline part
+    that still carries one -- some senders mark a logo/signature image "inline" but it's still a
+    real file worth keeping) and saves each to disk. Previously every part.get("Content-Disposition")
+    part was skipped outright by _extract_body, so inbound attachments were silently discarded --
+    this is what actually stops that."""
+    if not msg.is_multipart():
+        return []
+    attachments: list[dict] = []
+    for part in msg.walk():
+        disposition = part.get("Content-Disposition") or ""
+        filename = part.get_filename()
+        if not filename or "attachment" not in disposition.lower() and "inline" not in disposition.lower():
+            continue
+        content = part.get_payload(decode=True)
+        if not content:
+            continue
+        display_name = _safe_display_filename(_decode(filename))
+        try:
+            stored_path = _save_email_attachment(entity_id, display_name, content)
+        except ValueError:
+            # An oversized single attachment shouldn't drop the whole email -- skip just this part.
+            continue
+        attachments.append({
+            "filename": display_name, "stored_path": stored_path,
+            "content_type": part.get_content_type() or "application/octet-stream", "size": len(content),
+        })
+    return attachments
+
+
 def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
     password = decrypt_secret(account.imap_password_encrypted)
     conn = imaplib.IMAP4_SSL(account.imap_host, account.imap_port, timeout=30) if account.imap_use_ssl \
@@ -564,9 +657,10 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
             conversation = _find_or_create_conversation(db, account.entity_id, contact.id)
             conversation.last_message_at = datetime.now(timezone.utc)
             body_text, is_html = _extract_body(msg)
+            attachments = _extract_attachments(msg, account.entity_id)
             db.add(ConversationMessage(
                 conversation_id=conversation.id, direction="inbound", message_type="email",
-                body=body_text, payload={"subject": _decode(msg.get("Subject")), "is_html": is_html},
+                body=body_text, payload={"subject": _decode(msg.get("Subject")), "is_html": is_html, "attachments": attachments},
             ))
             db.flush()
             notify_new_reply(db, account.entity_id, conversation, contact, "email")
@@ -581,14 +675,16 @@ def _poll_one_imap_account(db: Session, account: EmailAccount) -> None:
             pass
 
 
-def _record_inbound_graph_message(db: Session, account: EmailAccount, message: dict) -> None:
+def _record_inbound_graph_message(db: Session, account: EmailAccount, message: dict, access_token: str) -> None:
     """Turns one fetched Graph message dict (crm_email_graph.fetch_message's return shape) into
     the same Contact/Conversation/ConversationMessage rows the IMAP path produces -- shared
     end-state regardless of which provider delivered the message, since inbox.vue's rendering is
     already channel-generic, not provider-aware. Graph's own default bodyType is HTML (confirmed
     live -- a real fetched message's body.content was a full <html><head>... document, not
     plain text), so unlike IMAP's _extract_body this is unconditionally HTML, sanitized the same
-    way (untrusted content from an external sender)."""
+    way (untrusted content from an external sender). access_token is needed only when
+    message["hasAttachments"] is true -- Graph never inlines attachment bytes into the message
+    resource itself, a separate fetch_attachments call is required (see crm_email_graph.py)."""
     from_field = (message.get("from") or {}).get("emailAddress") or {}
     from_email = from_field.get("address")
     if not from_email:
@@ -600,9 +696,24 @@ def _record_inbound_graph_message(db: Session, account: EmailAccount, message: d
     raw_content = body_field.get("content") or message.get("bodyPreview") or ""
     is_html = (body_field.get("contentType") or "html").lower() == "html"
     body_content = sanitize_email_html(raw_content) if is_html else raw_content
+    attachments: list[dict] = []
+    if message.get("hasAttachments") and message.get("id"):
+        try:
+            for item in crm_email_graph.fetch_attachments(access_token, message["id"]):
+                if item.get("@odata.type") != "#microsoft.graph.fileAttachment" or not item.get("contentBytes"):
+                    continue
+                content = base64.b64decode(item["contentBytes"])
+                display_name = _safe_display_filename(item.get("name") or "attachment")
+                try:
+                    stored_path = _save_email_attachment(account.entity_id, display_name, content)
+                except ValueError:
+                    continue
+                attachments.append({"filename": display_name, "stored_path": stored_path, "content_type": item.get("contentType") or "application/octet-stream", "size": len(content)})
+        except GraphApiError:
+            logger.warning("crm_email: could not fetch Graph attachments for message %s", message.get("id"), exc_info=True)
     db.add(ConversationMessage(
         conversation_id=conversation.id, direction="inbound", message_type="email",
-        body=body_content, payload={"subject": message.get("subject") or "", "is_html": is_html},
+        body=body_content, payload={"subject": message.get("subject") or "", "is_html": is_html, "attachments": attachments},
     ))
     db.flush()
     notify_new_reply(db, account.entity_id, conversation, contact, "email")
@@ -620,7 +731,7 @@ def _poll_one_graph_account(db: Session, account: EmailAccount) -> None:
     since = account.last_synced_at or (datetime.now(timezone.utc) - timedelta(minutes=15))
     messages = crm_email_graph.list_recent_inbox_messages(token, since)
     for message in messages:
-        _record_inbound_graph_message(db, account, message)
+        _record_inbound_graph_message(db, account, message, token)
     account.last_synced_at = datetime.now(timezone.utc)
     account.status = "connected"
     account.last_error = None
@@ -706,7 +817,7 @@ async def microsoft_graph_webhook(request: Request, validationToken: str | None 
             try:
                 token = _ensure_graph_access_token(db, account)
                 message = crm_email_graph.fetch_message(token, message_id)
-                _record_inbound_graph_message(db, account, message)
+                _record_inbound_graph_message(db, account, message, token)
                 account.last_synced_at = datetime.now(timezone.utc)
                 db.commit()
             except (DomainError, GraphApiError):

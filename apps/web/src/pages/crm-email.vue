@@ -13,11 +13,12 @@ const authStore = useAuthStore()
 
 type Contact = { id: string, wa_id: string | null, email: string | null, name: string | null }
 type EmailAccountInfo = { connected: boolean, signature_html?: string | null }
+type EmailAttachment = { filename: string, stored_path: string, content_type: string, size: number }
 type EmailMessage = {
   id: string
   direction: 'inbound' | 'outbound'
   body: string | null
-  payload: { subject?: string, is_html?: boolean } | null
+  payload: { subject?: string, is_html?: boolean, attachments?: EmailAttachment[] } | null
   created_at: string
 }
 type EmailThread = {
@@ -95,6 +96,37 @@ function isHtml(m: EmailMessage) {
   if (m.payload?.is_html !== undefined)
     return m.payload.is_html
   return m.direction === 'outbound' || looksLikeHtml(m.body)
+}
+
+function formatFileSize(bytes: number) {
+  if (bytes < 1024)
+    return `${bytes} B`
+  if (bytes < 1024 * 1024)
+    return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+const downloadingAttachment = ref<string | null>(null)
+
+async function downloadAttachment(messageId: string, index: number, filename: string) {
+  const key = `${messageId}:${index}`
+  downloadingAttachment.value = key
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/crm/email/messages/${messageId}/attachments/${index}`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = filename
+    link.click()
+    URL.revokeObjectURL(url)
+  }
+  catch {
+    // A failed download isn't worth a dedicated error banner here -- the chip stops spinning,
+    // the user can just click again.
+  }
+  finally {
+    downloadingAttachment.value = null
+  }
 }
 
 async function selectThread(id: string) {
@@ -506,6 +538,16 @@ onMounted(() => {
             <p v-else class="mb-0" style="white-space: pre-wrap;">
               {{ m.body }}
             </p>
+            <div v-if="m.payload?.attachments?.length" class="d-flex flex-wrap gap-2 mt-3">
+              <VChip
+                v-for="(att, i) in m.payload.attachments" :key="i"
+                variant="tonal" size="small" prepend-icon="tabler-paperclip"
+                :disabled="downloadingAttachment === `${m.id}:${i}`"
+                @click="downloadAttachment(m.id, i, att.filename)"
+              >
+                {{ att.filename }} <span class="text-caption text-medium-emphasis ms-1">({{ formatFileSize(att.size) }})</span>
+              </VChip>
+            </div>
           </div>
         </div>
         <p v-if="!threadLoading && !selected.messages.length" class="text-medium-emphasis text-center pa-6">

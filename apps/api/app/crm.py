@@ -45,7 +45,7 @@ from .schemas import (
     SalesTargetOut, SalesTargetUpdateRequest, SavedReportCreateRequest,
     SavedReportOut, SavedReportUpdateRequest, SavedViewCreateRequest, SavedViewOut, ScoringRuleCreateRequest,
     ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskCreateRequest, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
-    TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormOut, WebFormUpdateRequest,
+    TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormCreateRequest, WebFormOut, WebFormUpdateRequest,
 )
 from .permissions import require_channel_scope, require_page_scope, require_plan_feature_by_path
 from .services import DomainError, channel_active, log_activity, notify_user as _notify_user_row, resolve_user_entity, save_upload
@@ -3012,35 +3012,73 @@ def delete_attachment(attachment_id: str, user: User = Depends(require_user), db
     return {"deleted": True}
 
 
-# --- Web lead-capture form settings (public submit endpoint is in crm_public.py) ---------------
+# --- Web lead-capture forms (public submit endpoint is in crm_public.py) -----------------------
+# Multiple named forms per entity (e.g. a "Website Contact" form and a separate "Facebook Lead
+# Ad" form) -- each gets its own embed snippet/public URL, own field list, own success message and
+# target pipeline, so submissions from different sources can be told apart at a glance rather than
+# all landing in one shared, source-less form.
 
-@router.get("/web-form", response_model=WebFormOut)
-def get_web_form(user: User = Depends(require_user), db: Session = Depends(get_db)):
-    entity = _resolve_entity(db, user)
-    _require_crm(db, entity.id)
-    form = db.get(WebForm, entity.id)
-    fields = form.fields if form else ["name", "email", "phone", "message"]
-    enabled = form.enabled if form else False
-    success_message = form.success_message if form else "Thanks! We'll be in touch shortly."
-    target_pipeline_id = form.target_pipeline_id if form else None
+def _web_form_embed_snippet(entity_id: str, form_id: str) -> str:
     from .config import settings as app_settings
-    embed_snippet = f'<iframe src="{app_settings.web_origin}/embed/lead-form/{entity.id}" style="border:0;width:100%;height:480px;"></iframe>'
-    return WebFormOut(enabled=enabled, fields=fields, success_message=success_message, target_pipeline_id=target_pipeline_id, embed_snippet=embed_snippet)
+    return f'<iframe src="{app_settings.web_origin}/embed/lead-form/{form_id}" style="border:0;width:100%;height:480px;"></iframe>'
 
 
-@router.put("/web-form", response_model=WebFormOut)
-def update_web_form(payload: WebFormUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def _web_form_out(entity_id: str, form: WebForm) -> WebFormOut:
+    return WebFormOut(
+        id=form.id, name=form.name, source=form.source, enabled=form.enabled, fields=form.fields,
+        custom_field_ids=form.custom_field_ids, success_message=form.success_message, target_pipeline_id=form.target_pipeline_id,
+        embed_snippet=_web_form_embed_snippet(entity_id, form.id), created_at=form.created_at.isoformat(),
+    )
+
+
+@router.get("/web-forms", response_model=list[WebFormOut])
+def list_web_forms(user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    form = db.get(WebForm, entity.id)
+    forms = db.scalars(select(WebForm).where(WebForm.entity_id == entity.id).order_by(WebForm.created_at.desc())).all()
+    return [_web_form_out(entity.id, form) for form in forms]
+
+
+@router.post("/web-forms", response_model=WebFormOut)
+def create_web_form(payload: WebFormCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    form = WebForm(
+        entity_id=entity.id, name=payload.name, source=payload.source, fields=payload.fields,
+        custom_field_ids=payload.custom_field_ids, success_message=payload.success_message, target_pipeline_id=payload.target_pipeline_id,
+    )
+    db.add(form)
+    db.commit()
+    db.refresh(form)
+    return _web_form_out(entity.id, form)
+
+
+@router.put("/web-forms/{form_id}", response_model=WebFormOut)
+def update_web_form(form_id: str, payload: WebFormUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    form = db.scalar(select(WebForm).where(WebForm.id == form_id, WebForm.entity_id == entity.id))
     if not form:
-        form = WebForm(entity_id=entity.id)
-        db.add(form)
+        raise HTTPException(status_code=404, detail="Web form not found")
+    form.name = payload.name
+    form.source = payload.source
     form.enabled = payload.enabled
     form.fields = payload.fields
+    form.custom_field_ids = payload.custom_field_ids
     form.success_message = payload.success_message
     form.target_pipeline_id = payload.target_pipeline_id
     db.commit()
-    from .config import settings as app_settings
-    embed_snippet = f'<iframe src="{app_settings.web_origin}/embed/lead-form/{entity.id}" style="border:0;width:100%;height:480px;"></iframe>'
-    return WebFormOut(enabled=form.enabled, fields=form.fields, success_message=form.success_message, target_pipeline_id=form.target_pipeline_id, embed_snippet=embed_snippet)
+    db.refresh(form)
+    return _web_form_out(entity.id, form)
+
+
+@router.delete("/web-forms/{form_id}")
+def delete_web_form(form_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    form = db.scalar(select(WebForm).where(WebForm.id == form_id, WebForm.entity_id == entity.id))
+    if not form:
+        raise HTTPException(status_code=404, detail="Web form not found")
+    db.delete(form)
+    db.commit()
+    return {"deleted": True}

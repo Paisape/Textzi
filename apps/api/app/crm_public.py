@@ -17,10 +17,10 @@ from .crm import rescore_lead
 from .crm_quotes import _quote_out
 from .crm_sequences import apply_lead_routing
 from .database import get_db
-from .models import BookingLink, BusinessHours, Company, CrmContact, Deal, Entity, Lead, Organization, Quote, Task, WebForm
+from .models import BookingLink, BusinessHours, Company, CrmContact, CustomFieldDefinition, Deal, Entity, Lead, Organization, Quote, Task, WebForm
 from .schemas import (
     PublicBookingLinkOut, PublicBookingRequest, PublicBookingResponse, PublicBookingSlotsOut,
-    PublicQuoteOut, PublicQuoteSignRequest, PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse,
+    PublicCustomFieldOut, PublicQuoteOut, PublicQuoteSignRequest, PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse,
 )
 from .services import channel_active, client_ip, log_activity
 from .turnstile import require_turnstile
@@ -28,27 +28,43 @@ from .turnstile import require_turnstile
 router = APIRouter(prefix="/v1/public", tags=["public"])
 
 
-def _active_form(db: Session, entity_id: str) -> WebForm:
-    form = db.get(WebForm, entity_id)
-    if not form or not form.enabled or not channel_active(db, entity_id, "crm"):
+def _active_form(db: Session, form_id: str) -> WebForm:
+    form = db.get(WebForm, form_id)
+    if not form or not form.enabled or not channel_active(db, form.entity_id, "crm"):
         raise HTTPException(status_code=404, detail="Form not found")
     return form
 
 
-@router.get("/lead-form/{entity_id}", response_model=PublicWebFormOut)
-def get_public_lead_form(entity_id: str, db: Session = Depends(get_db)):
-    form = _active_form(db, entity_id)
-    return PublicWebFormOut(enabled=form.enabled, fields=form.fields)
+@router.get("/lead-form/{form_id}", response_model=PublicWebFormOut)
+def get_public_lead_form(form_id: str, db: Session = Depends(get_db)):
+    form = _active_form(db, form_id)
+    custom_fields = []
+    if form.custom_field_ids:
+        rows = db.scalars(select(CustomFieldDefinition).where(CustomFieldDefinition.id.in_(form.custom_field_ids))).all()
+        by_id = {r.id: r for r in rows}
+        # Preserve the order the form owner picked, not whatever order the DB happens to return.
+        custom_fields = [
+            PublicCustomFieldOut(id=r.id, name=r.name, field_type=r.field_type, options=r.options, required=r.required)
+            for field_id in form.custom_field_ids if (r := by_id.get(field_id))
+        ]
+    return PublicWebFormOut(enabled=form.enabled, name=form.name, fields=form.fields, custom_fields=custom_fields)
 
 
-@router.post("/lead-form/{entity_id}/submit", response_model=WebFormSubmitResponse)
-def submit_public_lead_form(entity_id: str, payload: WebFormSubmitRequest, request: Request, db: Session = Depends(get_db)):
-    form = _active_form(db, entity_id)
+@router.post("/lead-form/{form_id}/submit", response_model=WebFormSubmitResponse)
+def submit_public_lead_form(form_id: str, payload: WebFormSubmitRequest, request: Request, db: Session = Depends(get_db)):
+    form = _active_form(db, form_id)
+    entity_id = form.entity_id
     require_turnstile(payload.turnstile_token, request, db)
 
-    # Only accept values for fields the form owner actually configured -- an attacker POSTing
-    # arbitrary extra keys shouldn't be able to write anything beyond the admin-chosen field list.
-    values = {k: escape(v.strip())[:2000] for k, v in payload.values.items() if k in form.fields and v.strip()}
+    custom_field_names = set()
+    if form.custom_field_ids:
+        custom_field_names = {r.name for r in db.scalars(select(CustomFieldDefinition).where(CustomFieldDefinition.id.in_(form.custom_field_ids))).all()}
+
+    # Only accept values for fields the form owner actually configured (standard fields + this
+    # form's own chosen custom fields) -- an attacker POSTing arbitrary extra keys shouldn't be
+    # able to write anything beyond that.
+    allowed_keys = set(form.fields) | custom_field_names
+    values = {k: escape(v.strip())[:2000] for k, v in payload.values.items() if k in allowed_keys and v.strip()}
     if not values.get("name"):
         raise HTTPException(status_code=422, detail="name is required")
 
@@ -88,14 +104,14 @@ def submit_public_lead_form(entity_id: str, payload: WebFormSubmitRequest, reque
 
     lead = Lead(
         entity_id=entity_id, contact_id=contact.id, company_name=values.get("company"),
-        source="web_form", notes=values.get("message"), custom_fields=extra_fields,
+        source=f"web_form:{form.source}", notes=values.get("message"), custom_fields=extra_fields,
     )
     db.add(lead)
     db.flush()
     apply_lead_routing(db, lead, contact)
     rescore_lead(db, lead)
     entity = db.get(Entity, entity_id)
-    log_activity(db, entity.organization_id, "web_form_lead_created", f"New web form lead: {values.get('name')}", request=request)
+    log_activity(db, entity.organization_id, "web_form_lead_created", f"New web form lead via {form.name}: {values.get('name')}", request=request)
     db.commit()
 
     return WebFormSubmitResponse(message=form.success_message)

@@ -2462,16 +2462,23 @@ class CrmSettings(Base):
 
 
 class WebForm(Base):
-    """One embeddable lead-capture form per entity -- deliberately singular (not a multi-form
-    builder) matching SME scope: one "Contact us" form covers the common case, and the public
-    submit endpoint (crm_public.py) is what actually creates the Contact+Lead, keyed by
-    entity_id in the embed snippet's URL, not by a form id."""
-    __tablename__ = "web_forms"
-    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), primary_key=True)
+    """One of possibly many embeddable lead-capture forms per entity -- e.g. a "Website Contact"
+    form and a separate "Facebook Lead Ad" form, each with its own field list/success message/
+    target pipeline, so submissions from different sources can be told apart (source is stamped
+    onto the created Lead at submit time, see crm_public.py). Was previously entity_id-keyed
+    (one row per entity, no id of its own) -- widened to a real id-keyed table so an entity can
+    have more than one; entity_id stays indexed, just no longer unique."""
+    __tablename__ = "crm_web_forms"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    name: Mapped[str] = mapped_column(String(100), default="Web Form")
+    source: Mapped[str] = mapped_column(String(40), default="website")  # "website"|"facebook"|"instagram"|"other"
     enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     fields: Mapped[list] = mapped_column(JSON, default=lambda: ["name", "email", "phone", "message"])
+    custom_field_ids: Mapped[list] = mapped_column(JSON, default=list)
     success_message: Mapped[str] = mapped_column(String(300), default="Thanks! We'll be in touch shortly.")
     target_pipeline_id: Mapped[str | None] = mapped_column(ForeignKey("pipelines.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class EmailAccount(Base):

@@ -1726,7 +1726,7 @@ class CustomFieldDefinitionOut(BaseModel):
 
 
 class CustomFieldDefinitionCreateRequest(BaseModel):
-    applies_to: str = Field(pattern="^(lead|deal|crm_contact|customer|ticket)$")
+    applies_to: str = Field(pattern="^(lead|deal|crm_contact|customer|ticket|webform)$")
     name: str = Field(min_length=1, max_length=60)
     field_type: str = Field(default="text", pattern="^(text|number|date|dropdown)$")
     options: list[str] = Field(default_factory=list)
@@ -3056,16 +3056,33 @@ class AttachmentOut(BaseModel):
 
 
 class WebFormOut(BaseModel):
+    id: str
+    name: str
+    source: str
     enabled: bool
     fields: list[str]
+    custom_field_ids: list[str]
     success_message: str
     target_pipeline_id: str | None
     embed_snippet: str
+    created_at: str
+
+
+class WebFormCreateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    source: str = Field(default="website", pattern="^(website|facebook|instagram|other)$")
+    fields: list[str] = Field(default_factory=lambda: ["name", "email", "phone", "message"], min_length=1)
+    custom_field_ids: list[str] = Field(default_factory=list)
+    success_message: str = Field(default="Thanks! We'll be in touch shortly.", min_length=1, max_length=300)
+    target_pipeline_id: str | None = None
 
 
 class WebFormUpdateRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=100)
+    source: str = Field(pattern="^(website|facebook|instagram|other)$")
     enabled: bool
     fields: list[str] = Field(min_length=1)
+    custom_field_ids: list[str] = Field(default_factory=list)
     success_message: str = Field(min_length=1, max_length=300)
     target_pipeline_id: str | None = None
 
@@ -3255,9 +3272,19 @@ class WebFormSubmitResponse(BaseModel):
     message: str
 
 
+class PublicCustomFieldOut(BaseModel):
+    id: str
+    name: str
+    field_type: str
+    options: list[str]
+    required: bool
+
+
 class PublicWebFormOut(BaseModel):
     enabled: bool
+    name: str
     fields: list[str]
+    custom_fields: list[PublicCustomFieldOut]
 
 
 class ManagerUpdateRequest(BaseModel):
