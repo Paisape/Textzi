@@ -57,13 +57,31 @@ _EMAIL_HTML_ALLOWED_ATTRIBUTES = {
 }
 
 
+_CSS_COLOR_PROPERTY_RE = re.compile(r"(?<![\w-])(color|background|background-color)\s*:[^;\"']*;?", re.IGNORECASE)
+
+
+def _strip_inline_text_colors(html: str) -> str:
+    """Drops color/background/background-color from every inline style="..." -- confirmed live
+    as a real bug: a sender's own inline dark-gray text color (fine against their own assumed
+    white background) rendered nearly invisible against this app's dark theme, and the reverse
+    (light text) would be equally broken in light mode. nh3 only filters at the tag/attribute
+    level, not individual CSS property values inside one already-allowed style attribute, so this
+    is a second, narrower regex pass over text nh3.clean has already made structurally safe --
+    it only ever removes color-related declarations, never touches tags/other attributes, so it
+    cannot reintroduce any sanitization gap nh3 already closed."""
+    return _CSS_COLOR_PROPERTY_RE.sub("", html)
+
+
 def sanitize_email_html(html: str) -> str:
     """Wider allowlist than sanitize_rich_text, for a real inbound email body (untrusted -- from
     an external sender, same threat model as webchat, just a much broader legitimate-content
     shape) -- keeps table-based layout, inline styles, and images working, while still stripping
     script/iframe/object/on*-attributes/javascript: URLs the same way nh3's Rust sanitizer always
-    does regardless of the allowlist passed to it."""
-    return nh3.clean(html, tags=_EMAIL_HTML_ALLOWED_TAGS, attributes=_EMAIL_HTML_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
+    does regardless of the allowlist passed to it. Also strips the sender's own inline text/
+    background colors (see _strip_inline_text_colors) -- this app's own theme (light or dark)
+    should always win, not whatever color a random external sender happened to pick."""
+    cleaned = nh3.clean(html, tags=_EMAIL_HTML_ALLOWED_TAGS, attributes=_EMAIL_HTML_ALLOWED_ATTRIBUTES, link_rel="noopener noreferrer nofollow")
+    return _strip_inline_text_colors(cleaned)
 
 
 def strip_html_tags(html: str) -> str:

@@ -549,6 +549,16 @@ onMounted(() => {
 .email-html-body {
   overflow-x: auto;
   max-inline-size: 100%;
+  /* This app's own theme text color always wins, regardless of anything the sanitized HTML
+     still carries -- the backend (services.sanitize_email_html) already strips inline
+     color/background declarations from a real sender's HTML, this is a second-layer safety net
+     so a color that slips through some other way never goes invisible against either theme. */
+  color: rgb(var(--v-theme-on-surface));
+}
+
+.email-html-body :deep(*) {
+  color: inherit !important;
+  background-color: transparent !important;
 }
 
 .email-html-body :deep(p) {
