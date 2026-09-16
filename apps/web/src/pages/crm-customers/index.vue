@@ -26,6 +26,17 @@ const customFields = ref<CustomField[]>([])
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
+const search = ref('')
+
+const filteredCustomers = computed(() => {
+  const q = search.value.trim().toLowerCase()
+  if (!q)
+    return customers.value
+  return customers.value.filter((customer) => {
+    const { name, phone, email } = customer.contact
+    return [name, phone, email].some(v => v?.toLowerCase().includes(q))
+  })
+})
 
 async function loadAll() {
   loading.value = true
@@ -144,6 +155,12 @@ onMounted(loadAll)
   </VAlert>
 
   <VCard v-if="!crmInactive">
+    <VCardText>
+      <VTextField
+        v-model="search" placeholder="Search by name, phone, or email" density="compact"
+        prepend-inner-icon="tabler-search" style="max-width: 320px;" clearable hide-details
+      />
+    </VCardText>
     <VTable>
       <thead>
         <tr>
@@ -155,7 +172,7 @@ onMounted(loadAll)
       </thead>
       <tbody>
         <tr
-          v-for="customer in customers" :key="customer.id" class="cursor-pointer"
+          v-for="customer in filteredCustomers" :key="customer.id" class="cursor-pointer"
           @click="$router.push(`/crm-customers/${customer.id}`)"
         >
           <td>
@@ -169,6 +186,9 @@ onMounted(loadAll)
     </VTable>
     <p v-if="!loading && !customers.length" class="text-medium-emphasis text-center pa-6">
       No customers yet.
+    </p>
+    <p v-else-if="!loading && !filteredCustomers.length" class="text-medium-emphasis text-center pa-6">
+      No customers match "{{ search }}".
     </p>
   </VCard>
 
