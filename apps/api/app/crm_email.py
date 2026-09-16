@@ -592,6 +592,45 @@ def _decode(value: str | None) -> str:
     return "".join(part.decode(enc or "utf-8", errors="replace") if isinstance(part, bytes) else part for part, enc in parts)
 
 
+def _inline_cid_images(html: str, msg) -> str:
+    """Rewrites every cid:xxx reference in the HTML body to a base64 data: URI of the matching
+    inline image part -- confirmed live as a real gap: an inline logo/signature image (the common
+    case Content-ID exists for) rendered as a broken empty box, since cid: URLs only resolve inside
+    a real mail client, never in a browser, and the attachment-download endpoint needs an auth
+    header an <img src="..."> tag can't send. A data: URI needs no network request at all, so this
+    is the one rewrite that actually works inside v-html'd content. Only ever touches an <img>'s
+    src (or a CSS url(cid:...) background) -- never a real attachment's own chip, which is what
+    _extract_attachments below still lists separately, matching how every real mail client (Gmail/
+    Outlook) shows an inline image in place and never duplicates it as a downloadable attachment
+    too."""
+    if not msg.is_multipart() or "cid:" not in html:
+        return html
+    for part in msg.walk():
+        content_id = (part.get("Content-ID") or "").strip("<>")
+        if not content_id or not part.get_content_maintype() == "image":
+            continue
+        content = part.get_payload(decode=True)
+        if not content:
+            continue
+        data_uri = f"data:{part.get_content_type()};base64,{base64.b64encode(content).decode('ascii')}"
+        html = html.replace(f"cid:{content_id}", data_uri)
+    return html
+
+
+def _inline_content_ids(msg) -> set[str]:
+    """Content-IDs of every inline image part -- used by _extract_attachments to skip listing them
+    a second time as a downloadable attachment, since _inline_cid_images already embedded them
+    directly in the HTML body."""
+    if not msg.is_multipart():
+        return set()
+    ids: set[str] = set()
+    for part in msg.walk():
+        content_id = (part.get("Content-ID") or "").strip("<>")
+        if content_id and part.get_content_maintype() == "image":
+            ids.add(content_id)
+    return ids
+
+
 def _extract_body(msg) -> tuple[str, bool]:
     """Returns (body, is_html). Prefers a real text/plain part (most mail clients send both);
     falls back to the text/html part -- sanitized, since this is untrusted content from an
@@ -612,13 +651,13 @@ def _extract_body(msg) -> tuple[str, bool]:
         if html_part is not None:
             charset = html_part.get_content_charset() or "utf-8"
             raw_html = html_part.get_payload(decode=True).decode(charset, errors="replace")
-            return sanitize_email_html(raw_html), True
+            return sanitize_email_html(_inline_cid_images(raw_html, msg)), True
         return "", False
     charset = msg.get_content_charset() or "utf-8"
     payload = msg.get_payload(decode=True)
     text = payload.decode(charset, errors="replace") if payload else ""
     if msg.get_content_type() == "text/html":
-        return sanitize_email_html(text), True
+        return sanitize_email_html(_inline_cid_images(text, msg)), True
     return text, False
 
 
@@ -627,14 +666,23 @@ def _extract_attachments(msg, entity_id: str) -> list[dict]:
     that still carries one -- some senders mark a logo/signature image "inline" but it's still a
     real file worth keeping) and saves each to disk. Previously every part.get("Content-Disposition")
     part was skipped outright by _extract_body, so inbound attachments were silently discarded --
-    this is what actually stops that."""
+    this is what actually stops that.
+    Skips any part whose Content-ID was already embedded directly into the HTML body as a data:
+    URI (_inline_cid_images) -- an inline logo/signature image should render in place, not also
+    show up a second time as a separate downloadable attachment chip, matching Gmail/Outlook's own
+    behavior. A real attachment the sender explicitly attached (not cid-referenced anywhere in the
+    body) still lists normally."""
     if not msg.is_multipart():
         return []
+    already_inlined = _inline_content_ids(msg)
     attachments: list[dict] = []
     for part in msg.walk():
         disposition = part.get("Content-Disposition") or ""
         filename = part.get_filename()
         if not filename or "attachment" not in disposition.lower() and "inline" not in disposition.lower():
+            continue
+        content_id = (part.get("Content-ID") or "").strip("<>")
+        if content_id and content_id in already_inlined:
             continue
         content = part.get_payload(decode=True)
         if not content:
