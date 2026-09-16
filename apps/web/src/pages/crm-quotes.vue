@@ -540,14 +540,20 @@ onMounted(async () => {
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact">
           {{ saveError }}
         </VAlert>
-        <VBtnToggle v-if="!editingQuoteId" v-model="form.mode" density="compact" mandatory color="primary" variant="outlined" divided>
-          <VBtn value="deal" size="small">
+        <div v-if="!editingQuoteId" class="d-flex ga-2">
+          <VBtn
+            size="small" :variant="form.mode === 'deal' ? 'flat' : 'outlined'"
+            :color="form.mode === 'deal' ? 'primary' : undefined" @click="form.mode = 'deal'"
+          >
             Tied to a deal
           </VBtn>
-          <VBtn value="contact" size="small">
+          <VBtn
+            size="small" :variant="form.mode === 'contact' ? 'flat' : 'outlined'"
+            :color="form.mode === 'contact' ? 'primary' : undefined" @click="form.mode = 'contact'"
+          >
             Standalone (no deal)
           </VBtn>
-        </VBtnToggle>
+        </div>
         <VSelect
           v-if="form.mode === 'deal'"
           v-model="form.deal_id" :disabled="!!editingQuoteId"
