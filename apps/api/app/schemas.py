@@ -1857,6 +1857,22 @@ class ConvertToTicketRequest(BaseModel):
     assigned_user_id: str | None = None
 
 
+class CreateTicketRequest(BaseModel):
+    # Matches Freshdesk's own "+New Ticket" shape: a requester (existing contact_id, OR a fresh
+    # name+phone/email to create one on the spot) + subject/description, no prior conversation
+    # required. Exactly one of contact_id/(name+phone-or-email) must be given.
+    contact_id: str | None = None
+    requester_name: str | None = Field(default=None, max_length=160)
+    requester_phone: str | None = Field(default=None, max_length=32)
+    requester_email: str | None = Field(default=None, max_length=254)
+    subject: str = Field(min_length=1, max_length=300)
+    description: str = Field(min_length=1, max_length=20000)
+    priority: str = Field(default="medium", pattern="^(low|medium|high|urgent)$")
+    category: str = Field(default="question", pattern="^(question|incident|problem|task)$")
+    assigned_user_id: str | None = None
+    group_id: str | None = None
+
+
 class AssignableUserOut(BaseModel):
     id: str
     full_name: str

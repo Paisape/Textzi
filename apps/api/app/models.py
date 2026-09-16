@@ -1705,7 +1705,19 @@ class Conversation(Base):
         # treats (entity, contact, channel) as unique -- this is what actually enforces it, closing
         # a race where two concurrent first-contact events (e.g. an inbound email poll racing an
         # outbound send to the same brand-new contact) could otherwise create two Conversation rows.
-        UniqueConstraint("entity_id", "contact_id", "channel", name="uq_conversations_entity_contact_channel"),
+        # A real, live-tested exception: "manual" (waba_inbox.create_ticket, a ticket created from
+        # scratch with no prior conversation) deliberately does NOT get this constraint -- unlike
+        # WhatsApp/email/webchat, where a contact has exactly one ongoing thread per channel,
+        # Freshdesk's own model allows a customer to have many separate manually-created tickets,
+        # and create_ticket always makes a brand-new Conversation, never finds-and-reuses one.
+        # Enforced as a Postgres partial unique index (WHERE channel <> 'manual'), not a plain
+        # UniqueConstraint, since SQLAlchemy's declarative UniqueConstraint has no per-table
+        # postgresql_where equivalent that composes with __table_args__ tuples cleanly -- see the
+        # matching Index() below.
+        Index(
+            "uq_conversations_entity_contact_channel", "entity_id", "contact_id", "channel", unique=True,
+            postgresql_where=text("channel <> 'manual'"),
+        ),
     )
 
 

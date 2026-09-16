@@ -111,6 +111,98 @@ function contactLabel(c: Contact) {
   return c.name || c.wa_id || c.email || 'Unknown'
 }
 
+// --- New Ticket (from scratch, no prior conversation -- matches Freshdesk's own "+New Ticket") --
+
+type ContactSearchResult = { id: string, name: string | null, wa_id: string | null, email: string | null }
+
+const newTicketDialog = ref(false)
+const newTicketMode = ref<'existing' | 'new'>('existing')
+const newTicketSearch = ref('')
+const newTicketSearchResults = ref<ContactSearchResult[]>([])
+const newTicketSearching = ref(false)
+const newTicketForm = reactive({
+  contact_id: null as string | null,
+  requester_name: '',
+  requester_phone: '',
+  requester_email: '',
+  subject: '',
+  description: '',
+  priority: 'medium',
+  category: 'question',
+  assigned_user_id: null as string | null,
+  group_id: null as string | null,
+})
+const newTicketSaving = ref(false)
+const newTicketError = ref('')
+
+function openNewTicketDialog() {
+  newTicketMode.value = 'existing'
+  newTicketSearch.value = ''
+  newTicketSearchResults.value = []
+  Object.assign(newTicketForm, {
+    contact_id: null, requester_name: '', requester_phone: '', requester_email: '',
+    subject: '', description: '', priority: 'medium', category: 'question', assigned_user_id: null, group_id: null,
+  })
+  newTicketError.value = ''
+  newTicketDialog.value = true
+}
+
+let newTicketSearchDebounce: ReturnType<typeof setTimeout> | undefined
+watch(newTicketSearch, (value) => {
+  clearTimeout(newTicketSearchDebounce)
+  if (!value.trim()) {
+    newTicketSearchResults.value = []
+    return
+  }
+  newTicketSearchDebounce = setTimeout(async () => {
+    newTicketSearching.value = true
+    try {
+      newTicketSearchResults.value = await $api<ContactSearchResult[]>('/v1/waba/contacts', { params: { search: value.trim(), limit: 10 } })
+    }
+    catch {
+      // Non-critical -- the picker just shows no results this round.
+    }
+    finally {
+      newTicketSearching.value = false
+    }
+  }, 300)
+})
+
+function pickExistingContact(contact: ContactSearchResult) {
+  newTicketForm.contact_id = contact.id
+  newTicketSearch.value = contactLabel(contact as Contact)
+  newTicketSearchResults.value = []
+}
+
+async function createTicketFromScratch() {
+  newTicketSaving.value = true
+  newTicketError.value = ''
+  try {
+    const body = newTicketMode.value === 'existing'
+      ? { ...newTicketForm, requester_name: null, requester_phone: null, requester_email: null }
+      : { ...newTicketForm, contact_id: null }
+    const created = await $api<Ticket>('/v1/waba/conversations/create-ticket', { method: 'POST', body })
+    newTicketDialog.value = false
+    await loadTickets()
+    await loadCounts()
+    await selectTicket(created.id)
+  }
+  catch (error: any) {
+    newTicketError.value = extractErrorMessage(error, 'Could not create this ticket.')
+  }
+  finally {
+    newTicketSaving.value = false
+  }
+}
+
+const canCreateTicket = computed(() => {
+  if (!newTicketForm.subject.trim() || !newTicketForm.description.trim())
+    return false
+  if (newTicketMode.value === 'existing')
+    return !!newTicketForm.contact_id
+  return !!newTicketForm.requester_name.trim() && !!(newTicketForm.requester_phone.trim() || newTicketForm.requester_email.trim())
+})
+
 // Only ever true for a real email-channel message whose body is actually HTML (crm_email.py's
 // inbound paths always set payload.is_html; older/pre-existing rows may not have it, in which
 // case this stays plain-text-safe rather than guessing) -- WhatsApp/webchat messages are always
@@ -419,9 +511,14 @@ onMounted(() => {
 </script>
 
 <template>
-  <h1 class="text-h4 mb-4">
-    Tickets
-  </h1>
+  <div class="d-flex align-center justify-space-between mb-4">
+    <h1 class="text-h4 mb-0">
+      Tickets
+    </h1>
+    <VBtn color="primary" prepend-icon="tabler-plus" @click="openNewTicketDialog">
+      New ticket
+    </VBtn>
+  </div>
 
   <VAlert v-if="loadError" type="error" variant="tonal" class="mb-4" closable @click:close="loadError = ''">
     {{ loadError }}
@@ -510,7 +607,10 @@ onMounted(() => {
               @click="selectTicket(t.id)"
             >
               <td style="inline-size: 28px;">
-                <VIcon :icon="t.channel === 'email' ? 'tabler-mail' : 'tabler-brand-whatsapp'" size="16" :color="t.channel === 'email' ? undefined : 'success'" />
+                <VIcon
+                  :icon="t.channel === 'email' ? 'tabler-mail' : t.channel === 'manual' ? 'tabler-ticket' : 'tabler-brand-whatsapp'"
+                  size="16" :color="t.channel === 'whatsapp' ? 'success' : undefined"
+                />
               </td>
               <td>
                 <div class="text-body-2 text-truncate" :class="t.unread ? 'font-weight-bold' : 'font-weight-medium'" style="max-inline-size: 260px;">
@@ -819,6 +919,94 @@ onMounted(() => {
       Loading ticket…
     </p>
   </VCard>
+
+  <VDialog v-model="newTicketDialog" max-width="560" persistent>
+    <VCard title="New ticket">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="newTicketDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="newTicketError" type="error" variant="tonal" density="compact">
+          {{ newTicketError }}
+        </VAlert>
+
+        <div>
+          <p class="text-subtitle-2 mb-2">
+            Requester
+          </p>
+          <div class="d-flex ga-2 mb-3">
+            <VBtn
+              size="small" :variant="newTicketMode === 'existing' ? 'flat' : 'outlined'"
+              :color="newTicketMode === 'existing' ? 'primary' : undefined" @click="newTicketMode = 'existing'"
+            >
+              Existing customer
+            </VBtn>
+            <VBtn
+              size="small" :variant="newTicketMode === 'new' ? 'flat' : 'outlined'"
+              :color="newTicketMode === 'new' ? 'primary' : undefined" @click="newTicketMode = 'new'"
+            >
+              New customer
+            </VBtn>
+          </div>
+
+          <div v-if="newTicketMode === 'existing'" class="position-relative">
+            <VTextField
+              v-model="newTicketSearch" label="Search by name, phone, or email" density="compact"
+              prepend-inner-icon="tabler-search" :loading="newTicketSearching" clearable
+              @update:model-value="newTicketForm.contact_id = null"
+            />
+            <VCard v-if="newTicketSearchResults.length" class="position-absolute" style="z-index: 10; inline-size: 100%;" elevation="4">
+              <VList density="compact">
+                <VListItem v-for="c in newTicketSearchResults" :key="c.id" @click="pickExistingContact(c)">
+                  <VListItemTitle>{{ contactLabel(c as Contact) }}</VListItemTitle>
+                  <VListItemSubtitle>{{ c.wa_id || c.email || '' }}</VListItemSubtitle>
+                </VListItem>
+              </VList>
+            </VCard>
+            <p v-if="newTicketForm.contact_id" class="text-caption text-success mb-0">
+              <VIcon icon="tabler-check" size="14" /> Requester selected
+            </p>
+          </div>
+          <div v-else class="d-flex flex-column ga-3">
+            <VTextField v-model="newTicketForm.requester_name" label="Name" density="compact" />
+            <VTextField v-model="newTicketForm.requester_phone" label="Phone / WhatsApp number" density="compact" />
+            <VTextField v-model="newTicketForm.requester_email" label="Email" density="compact" />
+            <p class="text-caption text-medium-emphasis mb-0">
+              Provide a name and at least one of phone/email.
+            </p>
+          </div>
+        </div>
+
+        <VDivider />
+
+        <VTextField v-model="newTicketForm.subject" label="Subject" density="compact" autofocus />
+        <VTextarea v-model="newTicketForm.description" label="Description" rows="4" density="compact" />
+        <div class="d-flex ga-3">
+          <VSelect v-model="newTicketForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
+          <VSelect v-model="newTicketForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
+        </div>
+        <div class="d-flex ga-3">
+          <VSelect
+            v-model="newTicketForm.assigned_user_id" label="Agent" density="compact" clearable
+            :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
+          />
+          <VSelect
+            v-model="newTicketForm.group_id" label="Group" density="compact" clearable
+            :items="ticketGroups.map(g => ({ title: g.name, value: g.id }))"
+          />
+        </div>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="newTicketDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="newTicketSaving" :disabled="!canCreateTicket" @click="createTicketFromScratch">
+          Create ticket
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
 </template>
 
 <style scoped>

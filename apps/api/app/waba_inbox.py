@@ -25,7 +25,7 @@ from .schemas import (
     AgentCapacityUpdateRequest, AssignableUserOut, AutomationRuleCreateRequest, AutomationRuleOut, BusinessHoursOut, BusinessHoursUpdateRequest,
     CannedResponseCreateRequest, CannedResponseOut, ContactDirectoryEntryOut, ContactMessageRequest, ContactOut, ContactTimelineOut, ContactUpdateRequest,
     ConversationActivityOut, ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
-    ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest, ConvertToTicketRequest,
+    ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest, ConvertToTicketRequest, CreateTicketRequest,
     CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest, ProductListMessageRequest, ProductMessageRequest,
     LabelCreateRequest, LabelOut, LeadOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
     SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest, StartConversationRequest, TemplateButtonOut, TemplateCreateRequest,
@@ -428,6 +428,91 @@ def convert_conversation_to_ticket(conversation_id: str, payload: ConvertToTicke
     return _conversation_out(db, conversation, contact)
 
 
+@router.post("/conversations/create-ticket", response_model=ConversationOut)
+def create_ticket(payload: CreateTicketRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Creates a ticket from scratch -- no prior conversation needed, matching Freshdesk's own
+    "+New Ticket" (Requester + Subject + Description, no forced channel). Every other ticket in
+    this codebase comes from converting an existing Conversation (convert_conversation_to_ticket);
+    this is the one path that starts with nothing. The requester is either an existing contact
+    (contact_id) or a brand-new one created here from name+phone/email -- exactly one of the two,
+    same shape as crm.py's own _resolve_or_create_contact for the CRM side. The Conversation this
+    creates uses channel="manual" (a new, third value alongside "whatsapp"/"email"/"webchat") since
+    there's no live external channel behind it -- an agent's first message on it is a private note
+    or plain record, not something that gets dispatched anywhere, unless the requester also has a
+    wa_id/email an agent later chooses to actually message."""
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not channel_active(db, entity.id, "crm"):
+        raise HTTPException(status_code=422, detail="Upgrade to the CRM plan to create tickets")
+    if not plan_feature_active(db, entity.id, "crm", "tickets"):
+        raise HTTPException(status_code=422, detail="Upgrade your CRM plan to use tickets")
+
+    if payload.contact_id:
+        contact = db.scalar(select(Contact).where(Contact.id == payload.contact_id, Contact.entity_id == entity.id))
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found")
+    else:
+        if not payload.requester_name or not (payload.requester_phone or payload.requester_email):
+            raise HTTPException(status_code=422, detail="Pick an existing contact, or provide a name and a phone/email for a new one")
+        wa_id = "".join(ch for ch in payload.requester_phone if ch.isdigit()) if payload.requester_phone else None
+        contact = None
+        if wa_id:
+            contact = db.scalar(select(Contact).where(Contact.entity_id == entity.id, Contact.wa_id == wa_id))
+        if not contact and payload.requester_email:
+            contact = db.scalar(select(Contact).where(Contact.entity_id == entity.id, Contact.email == payload.requester_email))
+        if not contact:
+            contact = Contact(entity_id=entity.id, wa_id=wa_id, email=payload.requester_email, name=payload.requester_name)
+            db.add(contact)
+            try:
+                db.flush()
+            except IntegrityError:
+                db.rollback()
+                raise HTTPException(status_code=409, detail="A contact with this phone/email already exists -- pick them from the list instead") from None
+        elif not contact.name:
+            contact.name = payload.requester_name
+
+    conversation = Conversation(entity_id=entity.id, contact_id=contact.id, channel="manual")
+    db.add(conversation)
+    db.flush()
+    message = ConversationMessage(
+        conversation_id=conversation.id, direction="inbound", message_type="text", body=payload.description,
+        payload={"subject": payload.subject}, is_private=False,
+    )
+    db.add(message)
+    conversation.last_message_at = datetime.now(timezone.utc)
+
+    db.execute(text("CREATE SEQUENCE IF NOT EXISTS ticket_number_seq"))
+    seq_val = db.execute(text("SELECT nextval('ticket_number_seq')")).scalar()
+    conversation.is_ticket = True
+    conversation.ticket_number = f"TKT-{datetime.now(timezone.utc).year}-{seq_val:06d}"
+    conversation.ticket_created_at = datetime.now(timezone.utc)
+    conversation.subject = payload.subject
+    conversation.priority = payload.priority
+    conversation.category = payload.category
+    if payload.assigned_user_id:
+        assignee = db.get(User, payload.assigned_user_id)
+        if not assignee or assignee.organization_id != user.organization_id:
+            raise HTTPException(status_code=422, detail="assigned_user_id must belong to your organization")
+        conversation.assigned_user_id = payload.assigned_user_id
+    if payload.group_id:
+        group = db.get(TicketGroup, payload.group_id)
+        if not group or group.entity_id != entity.id:
+            raise HTTPException(status_code=422, detail="group_id must belong to your organization")
+        conversation.group_id = payload.group_id
+    sla = db.get(SlaPolicy, entity.id)
+    if sla and sla.enabled:
+        conversation.resolution_due_at = datetime.now(timezone.utc) + timedelta(minutes=sla.resolution_minutes)
+    db.flush()
+    _log_conversation_activity(db, conversation.id, user.id, "created", f"{user.full_name} created ticket {conversation.ticket_number}")
+    if payload.assigned_user_id:
+        _log_conversation_activity(db, conversation.id, user.id, "assigned", f"Assigned to {assignee.full_name}")
+    db.commit()
+    db.refresh(conversation)
+    return _conversation_out(db, conversation, contact)
+
+
 @router.patch("/conversations/{conversation_id}/priority", response_model=ConversationOut)
 def update_ticket_priority(conversation_id: str, payload: TicketPriorityUpdateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     try:
@@ -614,6 +699,19 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         _log_conversation_activity(db, conversation.id, user.id, "replied", f"{user.full_name} replied")
         db.commit()
+        return _message_out(message)
+
+    if conversation.channel == "manual" and not contact.wa_id:
+        # A manually-created ticket (create_ticket) with no WhatsApp number on its requester has no
+        # live channel to dispatch a reply to -- record it as a real outbound message on the
+        # thread anyway (so the ticket has a normal-looking conversation history), just never
+        # attempt a Meta send. Matches how a Freshdesk ticket with only an email/phone-on-file
+        # still lets an agent log a reply without a delivery channel actually wired up.
+        message = ConversationMessage(conversation_id=conversation.id, direction="outbound", is_private=False, message_type="text", body=payload.body, sent_by_user_id=user.id)
+        db.add(message)
+        _log_conversation_activity(db, conversation.id, user.id, "replied", f"{user.full_name} replied")
+        db.commit()
+        db.refresh(message)
         return _message_out(message)
 
     if not contact.wa_id:
