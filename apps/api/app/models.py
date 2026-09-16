@@ -1881,6 +1881,22 @@ class CrmContact(Base):
     reports_to_id: Mapped[str | None] = mapped_column(ForeignKey("crm_contacts.id"), nullable=True)
     custom_fields: Mapped[dict] = mapped_column(JSON, default=dict)
     source: Mapped[str] = mapped_column(String(40), default="manual")  # "whatsapp_conversation" | "manual" | "web_form" | "csv_import"
+    # Confirmed as a real gap: a contact record couldn't say whether the person is a customer,
+    # a vendor, or a teammate -- matches Zoho CRM's own "Contact Type" field (Customer/Vendor/
+    # Prospect, plain and user-editable, not derived), plus "internal_staff" as a fourth value
+    # since teammates aren't tracked anywhere else as a CrmContact-shaped record on this platform.
+    contact_type: Mapped[str] = mapped_column(String(20), default="customer")  # "customer" | "vendor" | "internal_staff"
+    # Free text, customer-type only -- what this specific customer is interested in/buying (e.g.
+    # "Bulk WhatsApp API", "CRM Pro plan"). Deliberately separate from `source` (source is where
+    # the lead came from, this is what they actually want) and from Deal.value (a real, priced
+    # opportunity) -- this is a lighter, pre-qualification note.
+    interested_in: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # What this vendor supplies -- vendor-type only, the vendor-side equivalent of interested_in.
+    supplies: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # Designation/department apply to vendor and internal_staff contacts (title already covers a
+    # customer's designation at their own company; these are this platform's own org-chart facts
+    # about a vendor contact person or a teammate).
+    department: Mapped[str | None] = mapped_column(String(120), nullable=True)
     consent_given_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     consent_source: Mapped[str | None] = mapped_column(String(60), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
@@ -2158,6 +2174,11 @@ class Task(Base):
     contact_id: Mapped[str] = mapped_column(ForeignKey("crm_contacts.id"), index=True)
     deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(200))
+    # Free-form notes on the task itself -- confirmed as a real gap: a task had a title/type/due
+    # date but nowhere to actually write down what happened (call summary, meeting notes, context
+    # for whoever picks this up). Distinct from TaskActivity below (the "who did what when" audit
+    # trail) -- this is the task's own content, that's its history.
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     type: Mapped[str] = mapped_column(String(20), default="follow_up")  # "call" | "meeting" | "follow_up" | "other"
     due_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Only meaningful for type="meeting" -- gives the calendar view a real block to render instead
@@ -2174,6 +2195,20 @@ class Task(Base):
     # convention, not a platform one.
     outcome: Mapped[str | None] = mapped_column(String(200), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TaskActivity(Base):
+    """Who did what to a task and when -- same append-only audit-log shape as
+    ConversationActivity (tickets), confirmed as an identical real gap: a task's detail view had
+    no history at all beyond its own current field values, no record of who created it, reassigned
+    it, marked it done, or changed its due date."""
+    __tablename__ = "task_activity"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40))  # "created"|"updated"|"assigned"|"completed"|"reopened"|"note_added"
+    detail: Mapped[str] = mapped_column(String(300))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
 class Quote(Base):

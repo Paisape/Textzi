@@ -36,10 +36,20 @@ def sync_schema() -> None:
     added_any = False
     live_tables = set(inspector.get_table_names())
     with engine.begin() as conn:
+        # Reflect columns/indexes through THIS transaction's own connection, not a fresh
+        # Inspector bound to a separate connection -- confirmed as a real, reproducible deadlock:
+        # inspect(engine) opens a new connection per call, and Postgres's own catalog-introspection
+        # queries (pg_index/pg_am joins) take an AccessShareLock that queues behind this loop's own
+        # uncommitted ALTER TABLE (an AccessExclusiveLock) on a table already touched earlier in
+        # the same loop -- the transaction can never finish reflecting the next table because it's
+        # waiting on a lock its own earlier, still-open DDL is holding. Using conn's own inspector
+        # keeps every read inside the same transaction/connection as the writes, so there's no
+        # second connection to ever block against.
+        conn_inspector = inspect(conn)
         for name, table in Base.metadata.tables.items():
             if name not in live_tables:
                 continue
-            existing_columns = {c["name"] for c in inspector.get_columns(name)}
+            existing_columns = {c["name"] for c in conn_inspector.get_columns(name)}
             for column in table.columns:
                 if column.name in existing_columns:
                     continue
@@ -59,7 +69,7 @@ def sync_schema() -> None:
                 if column.default is not None and column.default.is_scalar:
                     conn.execute(text(f'UPDATE "{name}" SET "{column.name}" = :default WHERE "{column.name}" IS NULL'), {"default": column.default.arg})
 
-            existing_indexes = {idx["name"] for idx in inspector.get_indexes(name)}
+            existing_indexes = {idx["name"] for idx in conn_inspector.get_indexes(name)}
             for index in table.indexes:
                 if not index.name or index.name in existing_indexes:
                     continue

@@ -1685,6 +1685,10 @@ class CrmContactOut(BaseModel):
     address: str | None
     reports_to_id: str | None
     source: str
+    contact_type: str = "customer"
+    interested_in: str | None = None
+    supplies: str | None = None
+    department: str | None = None
     custom_fields: dict
     consent_given_at: str | None
     consent_source: str | None
@@ -1701,6 +1705,10 @@ class CrmContactCreateRequest(BaseModel):
     address: str | None = None
     reports_to_id: str | None = None
     source: str = Field(default="manual", pattern="^(whatsapp_conversation|manual|web_form|csv_import)$")
+    contact_type: str = Field(default="customer", pattern="^(customer|vendor|internal_staff)$")
+    interested_in: str | None = Field(default=None, max_length=300)
+    supplies: str | None = Field(default=None, max_length=300)
+    department: str | None = Field(default=None, max_length=120)
     custom_fields: dict | None = None
 
 
@@ -1713,6 +1721,10 @@ class CrmContactUpdateRequest(BaseModel):
     owner_user_id: str | None = None
     address: str | None = None
     reports_to_id: str | None = None
+    contact_type: str | None = Field(default=None, pattern="^(customer|vendor|internal_staff)$")
+    interested_in: str | None = None
+    supplies: str | None = None
+    department: str | None = None
     custom_fields: dict | None = None
 
 
@@ -2681,6 +2693,7 @@ class TaskOut(BaseModel):
     contact_id: str
     deal_id: str | None
     title: str
+    notes: str | None = None
     type: str
     due_at: str | None
     duration_minutes: int | None
@@ -2690,6 +2703,19 @@ class TaskOut(BaseModel):
     priority: str
     outcome: str | None
     created_at: str
+
+
+class TaskActivityOut(BaseModel):
+    id: str
+    user_id: str | None
+    user_name: str | None
+    kind: str
+    detail: str
+    created_at: str
+
+
+class TaskDetailOut(TaskOut):
+    activity: list[TaskActivityOut]
 
 
 class CrmActivityItemOut(BaseModel):
@@ -2723,6 +2749,7 @@ class TaskCreateRequest(BaseModel):
     contact_id: str
     deal_id: str | None = None
     title: str = Field(min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=5000)
     type: str = Field(default="follow_up", pattern="^(call|meeting|follow_up|other)$")
     due_at: str | None = None
     duration_minutes: int | None = Field(default=None, ge=5, le=1440)
@@ -2734,6 +2761,7 @@ class TaskCreateRequest(BaseModel):
 class TaskUpdateRequest(BaseModel):
     deal_id: str | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
+    notes: str | None = Field(default=None, max_length=5000)
     type: str | None = Field(default=None, pattern="^(call|meeting|follow_up|other)$")
     due_at: str | None = None
     duration_minutes: int | None = Field(default=None, ge=5, le=1440)

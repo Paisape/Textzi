@@ -15,7 +15,7 @@ from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -27,7 +27,7 @@ from .email_service import render_email, send_email
 from .models import (
     Attachment, BookingLink, Company, Contact, Conversation, ConversationMessage, CrmContact, CrmSettings, CustomFieldDefinition,
     Customer, CustomerNote, Dashboard, Deal, DealStageEvent, DEFAULT_CRM_PIPELINE_STAGES, Lead, Notification, Pipeline, Quote, SalesInvoice, SalesTarget, SavedReport, SavedView, ScoringRule,
-    Task, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
+    Task, TaskActivity, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
@@ -44,7 +44,7 @@ from .schemas import (
     QuoteOut, ReportDrillDownRequest, ReportDrillDownResult, ReportDrillDownRow, ReportRow, ReportRunRequest, ReportRunResult, SalesTargetCreateRequest,
     SalesTargetOut, SalesTargetUpdateRequest, SavedReportCreateRequest,
     SavedReportOut, SavedReportUpdateRequest, SavedViewCreateRequest, SavedViewOut, ScoringRuleCreateRequest,
-    ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskCreateRequest, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
+    ScoringRuleOut, ScoringRuleUpdateRequest, SearchResultRow, SearchResultsOut, TaskActivityOut, TaskCreateRequest, TaskDetailOut, TaskOut, TaskUpdateRequest, TerritoryCreateRequest,
     TerritoryOut, TerritoryUpdateRequest, WabaOrderOut, WebFormCreateRequest, WebFormOut, WebFormUpdateRequest,
 )
 from .permissions import require_channel_scope, require_page_scope, require_plan_feature_by_path
@@ -87,7 +87,9 @@ def _crm_contact_out(contact: CrmContact) -> CrmContactOut:
     return CrmContactOut(
         id=contact.id, name=contact.name, phone=contact.phone, email=contact.email, title=contact.title,
         company_id=contact.company_id, owner_user_id=contact.owner_user_id, address=contact.address,
-        reports_to_id=contact.reports_to_id, source=contact.source, custom_fields=contact.custom_fields or {},
+        reports_to_id=contact.reports_to_id, source=contact.source, contact_type=contact.contact_type,
+        interested_in=contact.interested_in, supplies=contact.supplies, department=contact.department,
+        custom_fields=contact.custom_fields or {},
         consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
         consent_source=contact.consent_source, created_at=contact.created_at.isoformat(),
     )
@@ -456,7 +458,9 @@ def create_crm_contact(payload: CrmContactCreateRequest, user: User = Depends(re
     contact = CrmContact(
         entity_id=entity.id, name=payload.name.strip(), phone=payload.phone, email=payload.email, title=payload.title,
         company_id=payload.company_id, owner_user_id=payload.owner_user_id, address=payload.address,
-        reports_to_id=payload.reports_to_id, source=payload.source, custom_fields=payload.custom_fields or {},
+        reports_to_id=payload.reports_to_id, source=payload.source, contact_type=payload.contact_type,
+        interested_in=payload.interested_in, supplies=payload.supplies, department=payload.department,
+        custom_fields=payload.custom_fields or {},
     )
     db.add(contact)
     db.commit()
@@ -487,6 +491,14 @@ def update_crm_contact(contact_id: str, payload: CrmContactUpdateRequest, user: 
         contact.address = payload.address
     if "reports_to_id" in payload.model_fields_set:
         contact.reports_to_id = payload.reports_to_id
+    if "contact_type" in payload.model_fields_set and payload.contact_type:
+        contact.contact_type = payload.contact_type
+    if "interested_in" in payload.model_fields_set:
+        contact.interested_in = payload.interested_in
+    if "supplies" in payload.model_fields_set:
+        contact.supplies = payload.supplies
+    if "department" in payload.model_fields_set:
+        contact.department = payload.department
     if "custom_fields" in payload.model_fields_set and payload.custom_fields is not None:
         contact.custom_fields = payload.custom_fields
     db.commit()
@@ -2315,9 +2327,13 @@ def send_due_scheduled_reports() -> None:
 
 # --- Tasks (Phase 2) -------------------------------------------------------------------------
 
+def _log_task_activity(db: Session, task_id: str, user_id: str | None, kind: str, detail: str) -> None:
+    db.add(TaskActivity(task_id=task_id, user_id=user_id, kind=kind, detail=detail))
+
+
 def _task_out(task: Task) -> TaskOut:
     return TaskOut(
-        id=task.id, contact_id=task.contact_id, deal_id=task.deal_id, title=task.title, type=task.type,
+        id=task.id, contact_id=task.contact_id, deal_id=task.deal_id, title=task.title, notes=task.notes, type=task.type,
         due_at=task.due_at.isoformat() if task.due_at else None, duration_minutes=task.duration_minutes, done=task.done,
         assigned_user_id=task.assigned_user_id, recurrence=task.recurrence, priority=task.priority, outcome=task.outcome,
         created_at=task.created_at.isoformat(),
@@ -2346,6 +2362,25 @@ def list_tasks(contact_id: str | None = None, assigned_user_id: str | None = Non
     return [_task_out(t) for t in tasks]
 
 
+@router.get("/tasks/{task_id}", response_model=TaskDetailOut)
+def get_task_detail(task_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    task = db.get(Task, task_id)
+    if not task or task.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if user.role != UserRole.enterprise_customer.value and task.assigned_user_id != user.id:
+        raise HTTPException(status_code=404, detail="Task not found")
+    rows = db.scalars(select(TaskActivity).where(TaskActivity.task_id == task_id).order_by(TaskActivity.created_at.desc())).all()
+    user_ids = {r.user_id for r in rows if r.user_id}
+    users = {u.id: u for u in db.scalars(select(User).where(User.id.in_(user_ids))).all()} if user_ids else {}
+    activity = [
+        TaskActivityOut(id=r.id, user_id=r.user_id, user_name=users[r.user_id].full_name if r.user_id in users else None, kind=r.kind, detail=r.detail, created_at=r.created_at.isoformat())
+        for r in rows
+    ]
+    return TaskDetailOut(**_task_out(task).model_dump(), activity=activity)
+
+
 @router.post("/tasks", response_model=TaskOut)
 def create_task(payload: TaskCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
@@ -2354,11 +2389,15 @@ def create_task(payload: TaskCreateRequest, user: User = Depends(require_user), 
     if not contact or contact.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Contact not found")
     task = Task(
-        entity_id=entity.id, contact_id=payload.contact_id, deal_id=payload.deal_id, title=payload.title.strip(), type=payload.type,
-        due_at=datetime.fromisoformat(payload.due_at) if payload.due_at else None, duration_minutes=payload.duration_minutes,
+        entity_id=entity.id, contact_id=payload.contact_id, deal_id=payload.deal_id, title=payload.title.strip(), notes=payload.notes,
+        type=payload.type, due_at=datetime.fromisoformat(payload.due_at) if payload.due_at else None, duration_minutes=payload.duration_minutes,
         assigned_user_id=payload.assigned_user_id, recurrence=payload.recurrence, priority=payload.priority,
     )
     db.add(task)
+    db.flush()
+    _log_task_activity(db, task.id, user.id, "created", f"{user.full_name} created this task")
+    if task.assigned_user_id and task.assigned_user_id != user.id:
+        _log_task_activity(db, task.id, user.id, "assigned", f"Assigned to {db.get(User, task.assigned_user_id).full_name}")
     db.commit()
     db.refresh(task)
     if task.assigned_user_id and task.assigned_user_id != user.id:
@@ -2378,10 +2417,14 @@ def update_task(task_id: str, payload: TaskUpdateRequest, user: User = Depends(r
         raise HTTPException(status_code=404, detail="Task not found")
     if "title" in payload.model_fields_set and payload.title:
         task.title = payload.title
+    if "notes" in payload.model_fields_set:
+        task.notes = payload.notes
+        _log_task_activity(db, task.id, user.id, "note_added", f"{user.full_name} updated the notes")
     if "type" in payload.model_fields_set and payload.type:
         task.type = payload.type
     if "due_at" in payload.model_fields_set:
         task.due_at = datetime.fromisoformat(payload.due_at) if payload.due_at else None
+        _log_task_activity(db, task.id, user.id, "updated", f"{user.full_name} changed the due date")
     if "duration_minutes" in payload.model_fields_set:
         task.duration_minutes = payload.duration_minutes
     if "recurrence" in payload.model_fields_set and payload.recurrence:
@@ -2389,6 +2432,9 @@ def update_task(task_id: str, payload: TaskUpdateRequest, user: User = Depends(r
     if "assigned_user_id" in payload.model_fields_set:
         if payload.assigned_user_id and payload.assigned_user_id != task.assigned_user_id and payload.assigned_user_id != user.id:
             notify_user(db, entity.id, payload.assigned_user_id, "task_assigned", "Task assigned to you", task.title, "/crm-tasks")
+        if payload.assigned_user_id != task.assigned_user_id:
+            assignee_name = db.get(User, payload.assigned_user_id).full_name if payload.assigned_user_id else "Unassigned"
+            _log_task_activity(db, task.id, user.id, "assigned", f"Assigned to {assignee_name}")
         task.assigned_user_id = payload.assigned_user_id
     if "deal_id" in payload.model_fields_set:
         task.deal_id = payload.deal_id
@@ -2396,6 +2442,7 @@ def update_task(task_id: str, payload: TaskUpdateRequest, user: User = Depends(r
         task.priority = payload.priority
     if "outcome" in payload.model_fields_set:
         task.outcome = payload.outcome
+        _log_task_activity(db, task.id, user.id, "note_added", f"{user.full_name} logged an outcome: {payload.outcome}")
     if "done" in payload.model_fields_set and payload.done is not None:
         # A recurring task marked done advances its own due date instead of staying done --
         # "one task, a repeating due date" per the model's own docstring, so it reappears on the
@@ -2404,8 +2451,10 @@ def update_task(task_id: str, payload: TaskUpdateRequest, user: User = Depends(r
             from datetime import timedelta
             task.due_at = task.due_at + timedelta(days=_RECURRENCE_DAYS[task.recurrence])
             task.done = False
+            _log_task_activity(db, task.id, user.id, "completed", f"{user.full_name} completed this occurrence -- next due date advanced")
         else:
             task.done = payload.done
+            _log_task_activity(db, task.id, user.id, "completed" if payload.done else "reopened", f"{user.full_name} marked this task {'done' if payload.done else 'not done'}")
     db.commit()
     db.refresh(task)
     return _task_out(task)
@@ -2418,6 +2467,7 @@ def delete_task(task_id: str, user: User = Depends(require_user), db: Session = 
     task = db.get(Task, task_id)
     if not task or task.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Task not found")
+    db.execute(delete(TaskActivity).where(TaskActivity.task_id == task_id))
     db.delete(task)
     db.commit()
     return {"deleted": True}

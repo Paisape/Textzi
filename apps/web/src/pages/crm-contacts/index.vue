@@ -17,11 +17,21 @@ type CrmContact = {
   address: string | null
   reports_to_id: string | null
   source: string
+  contact_type: 'customer' | 'vendor' | 'internal_staff'
+  interested_in: string | null
+  supplies: string | null
+  department: string | null
   custom_fields: Record<string, any>
   consent_given_at: string | null
   consent_source: string | null
   created_at: string
 }
+const CONTACT_TYPES = [
+  { title: 'Customer', value: 'customer' },
+  { title: 'Vendor', value: 'vendor' },
+  { title: 'Internal Staff', value: 'internal_staff' },
+]
+const CONTACT_TYPE_COLORS: Record<string, string> = { customer: 'primary', vendor: 'warning', internal_staff: 'success' }
 type Company = { id: string, name: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
 type SavedView = { id: string, applies_to: string, name: string, filters: Record<string, any> }
@@ -88,7 +98,11 @@ watch(search, () => {
 // --- New contact ---------------------------------------------------------------------------
 
 const newDialog = ref(false)
-const newForm = reactive({ name: '', phone: '', email: '', title: '', company_id: null as string | null, owner_user_id: null as string | null, address: '', custom_fields: {} as Record<string, any> })
+const newForm = reactive({
+  name: '', phone: '', email: '', title: '', company_id: null as string | null, owner_user_id: null as string | null, address: '',
+  contact_type: 'customer' as 'customer' | 'vendor' | 'internal_staff', interested_in: '', supplies: '', department: '',
+  custom_fields: {} as Record<string, any>,
+})
 const newSaving = ref(false)
 const newError = ref('')
 
@@ -100,6 +114,10 @@ function openNewDialog() {
   newForm.company_id = null
   newForm.owner_user_id = null
   newForm.address = ''
+  newForm.contact_type = 'customer'
+  newForm.interested_in = ''
+  newForm.supplies = ''
+  newForm.department = ''
   newForm.custom_fields = {}
   newError.value = ''
   newDialog.value = true
@@ -121,6 +139,10 @@ async function createContact() {
         company_id: newForm.company_id,
         owner_user_id: newForm.owner_user_id,
         address: newForm.address.trim() || null,
+        contact_type: newForm.contact_type,
+        interested_in: newForm.contact_type === 'customer' ? (newForm.interested_in.trim() || null) : null,
+        supplies: newForm.contact_type === 'vendor' ? (newForm.supplies.trim() || null) : null,
+        department: newForm.contact_type !== 'customer' ? (newForm.department.trim() || null) : null,
         custom_fields: newForm.custom_fields,
       },
     })
@@ -245,9 +267,9 @@ async function deleteView(view: SavedView) {
 }
 
 function exportCsv() {
-  const rows = [['Name', 'Title', 'Phone', 'Email', 'Company', 'Source', 'Created']]
+  const rows = [['Name', 'Type', 'Title', 'Phone', 'Email', 'Company', 'Source', 'Created']]
   for (const contact of contacts.value)
-    rows.push([contact.name || '', contact.title || '', contact.phone || '', contact.email || '', companyName(contact.company_id), contact.source, contact.created_at])
+    rows.push([contact.name || '', formatLabel(contact.contact_type), contact.title || '', contact.phone || '', contact.email || '', companyName(contact.company_id), contact.source, contact.created_at])
   const csv = rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n')
   const link = document.createElement('a')
   link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
@@ -327,6 +349,7 @@ onMounted(loadAll)
         <thead>
           <tr>
             <th>Name</th>
+            <th>Type</th>
             <th>Title</th>
             <th>Phone</th>
             <th>Email</th>
@@ -340,13 +363,18 @@ onMounted(loadAll)
           <tr v-for="contact in contacts" :key="contact.id">
             <td>
               <div class="d-flex align-center gap-3">
-                <VAvatar color="primary" variant="tonal" size="32">
+                <VAvatar :color="CONTACT_TYPE_COLORS[contact.contact_type]" variant="tonal" size="32">
                   <span class="text-caption">{{ initial(contact) }}</span>
                 </VAvatar>
                 <RouterLink :to="`/crm-contacts/${contact.id}`" class="font-weight-medium">
                   {{ contact.name || 'Unknown' }}
                 </RouterLink>
               </div>
+            </td>
+            <td>
+              <VChip size="small" :color="CONTACT_TYPE_COLORS[contact.contact_type]" variant="tonal">
+                {{ formatLabel(contact.contact_type) }}
+              </VChip>
             </td>
             <td>{{ contact.title || '—' }}</td>
             <td>{{ contact.phone || '—' }}</td>
@@ -375,6 +403,7 @@ onMounted(loadAll)
         <VAlert v-if="newError" type="error" variant="tonal" density="compact">
           {{ newError }}
         </VAlert>
+        <VSelect v-model="newForm.contact_type" label="Contact type" :items="CONTACT_TYPES" density="compact" />
         <VTextField v-model="newForm.name" label="Name" density="compact" autofocus />
         <VTextField v-model="newForm.title" label="Title / designation" density="compact" />
         <VTextField v-model="newForm.phone" label="Phone / WhatsApp number" density="compact" />
@@ -387,6 +416,9 @@ onMounted(loadAll)
           v-model="newForm.owner_user_id" label="Owner" density="compact" clearable
           :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
         />
+        <VTextField v-if="newForm.contact_type === 'customer'" v-model="newForm.interested_in" label="Interested in" density="compact" placeholder="e.g. Bulk WhatsApp API, CRM Pro plan" />
+        <VTextField v-if="newForm.contact_type === 'vendor'" v-model="newForm.supplies" label="Supplies" density="compact" placeholder="What this vendor provides" />
+        <VTextField v-if="newForm.contact_type !== 'customer'" v-model="newForm.department" label="Department" density="compact" />
         <VTextarea v-model="newForm.address" label="Address" rows="2" density="compact" />
         <template v-for="field in customFields" :key="field.id">
           <VSelect

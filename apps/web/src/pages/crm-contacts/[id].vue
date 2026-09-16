@@ -22,11 +22,21 @@ type CrmContact = {
   address: string | null
   reports_to_id: string | null
   source: string
+  contact_type: 'customer' | 'vendor' | 'internal_staff'
+  interested_in: string | null
+  supplies: string | null
+  department: string | null
   custom_fields: Record<string, any>
   consent_given_at: string | null
   consent_source: string | null
   created_at: string
 }
+const CONTACT_TYPES = [
+  { title: 'Customer', value: 'customer' },
+  { title: 'Vendor', value: 'vendor' },
+  { title: 'Internal Staff', value: 'internal_staff' },
+]
+const CONTACT_TYPE_COLORS: Record<string, string> = { customer: 'primary', vendor: 'warning', internal_staff: 'success' }
 type AssignableUser = { id: string, full_name: string }
 type Company = { id: string, name: string, industry: string | null, open_deal_value: number, won_deal_value: number, open_deal_count: number }
 type Lead = { id: string, status: string, company_name: string | null, score: number, created_at: string }
@@ -103,7 +113,10 @@ function initial() {
 // --- Edit ------------------------------------------------------------------------------------
 
 const editDialog = ref(false)
-const editForm = reactive({ name: '', phone: '', email: '', title: '', company_id: null as string | null, owner_user_id: null as string | null, address: '', reports_to_id: null as string | null })
+const editForm = reactive({
+  name: '', phone: '', email: '', title: '', company_id: null as string | null, owner_user_id: null as string | null, address: '', reports_to_id: null as string | null,
+  contact_type: 'customer' as 'customer' | 'vendor' | 'internal_staff', interested_in: '', supplies: '', department: '',
+})
 const editSaving = ref(false)
 
 const reportsToSearch = ref('')
@@ -141,6 +154,10 @@ function openEditDialog() {
   editForm.owner_user_id = detail.value.contact.owner_user_id
   editForm.address = detail.value.contact.address || ''
   editForm.reports_to_id = detail.value.contact.reports_to_id
+  editForm.contact_type = detail.value.contact.contact_type
+  editForm.interested_in = detail.value.contact.interested_in || ''
+  editForm.supplies = detail.value.contact.supplies || ''
+  editForm.department = detail.value.contact.department || ''
   reportsToSearch.value = ''
   reportsToOptions.value = detail.value.reports_to ? [detail.value.reports_to] : []
   editDialog.value = true
@@ -174,6 +191,10 @@ async function saveEdit() {
         name: editForm.name.trim(), phone: editForm.phone.trim() || null, email: editForm.email.trim() || null,
         title: editForm.title.trim() || null, company_id: editForm.company_id, owner_user_id: editForm.owner_user_id,
         address: editForm.address.trim() || null, reports_to_id: editForm.reports_to_id,
+        contact_type: editForm.contact_type,
+        interested_in: editForm.contact_type === 'customer' ? (editForm.interested_in.trim() || null) : null,
+        supplies: editForm.contact_type === 'vendor' ? (editForm.supplies.trim() || null) : null,
+        department: editForm.contact_type !== 'customer' ? (editForm.department.trim() || null) : null,
       },
     })
     detail.value.contact = updated
@@ -214,9 +235,14 @@ onMounted(load)
             <span class="text-h6">{{ initial() }}</span>
           </VAvatar>
           <div class="flex-grow-1">
-            <p class="text-h6 mb-0">
-              {{ detail.contact.name || detail.contact.phone || detail.contact.email || 'Unknown' }}
-            </p>
+            <div class="d-flex align-center gap-2">
+              <p class="text-h6 mb-0">
+                {{ detail.contact.name || detail.contact.phone || detail.contact.email || 'Unknown' }}
+              </p>
+              <VChip size="small" :color="CONTACT_TYPE_COLORS[detail.contact.contact_type]" variant="tonal">
+                {{ formatLabel(detail.contact.contact_type) }}
+              </VChip>
+            </div>
             <p v-if="detail.contact.title" class="text-body-2 text-medium-emphasis mb-0">
               {{ detail.contact.title }}
             </p>
@@ -246,7 +272,22 @@ onMounted(load)
             <VIcon icon="tabler-tag" size="16" />
             {{ formatLabel(detail.contact.source) }}
           </span>
+          <span v-if="detail.contact.department" class="d-flex align-center gap-2 text-body-2 text-medium-emphasis">
+            <VIcon icon="tabler-building-community" size="16" />
+            {{ detail.contact.department }}
+          </span>
         </VCardText>
+        <template v-if="detail.contact.interested_in || detail.contact.supplies">
+          <VDivider />
+          <VCardText>
+            <p v-if="detail.contact.interested_in" class="text-body-2 mb-0">
+              <span class="text-medium-emphasis">Interested in:</span> {{ detail.contact.interested_in }}
+            </p>
+            <p v-if="detail.contact.supplies" class="text-body-2 mb-0">
+              <span class="text-medium-emphasis">Supplies:</span> {{ detail.contact.supplies }}
+            </p>
+          </VCardText>
+        </template>
       </VCard>
 
       <VCard v-if="detail.direct_reports.length" class="mb-4" title="Direct reports">
@@ -354,6 +395,7 @@ onMounted(load)
         <VBtn icon="tabler-x" variant="text" size="small" @click="editDialog = false" />
       </template>
       <VCardText class="d-flex flex-column gap-4">
+        <VSelect v-model="editForm.contact_type" label="Contact type" :items="CONTACT_TYPES" density="compact" />
         <VTextField v-model="editForm.name" label="Name" density="compact" autofocus />
         <VTextField v-model="editForm.title" label="Title / designation" density="compact" />
         <VTextField v-model="editForm.phone" label="Phone / WhatsApp number" density="compact" />
@@ -366,6 +408,9 @@ onMounted(load)
           v-model="editForm.owner_user_id" label="Owner" density="compact" clearable
           :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
         />
+        <VTextField v-if="editForm.contact_type === 'customer'" v-model="editForm.interested_in" label="Interested in" density="compact" />
+        <VTextField v-if="editForm.contact_type === 'vendor'" v-model="editForm.supplies" label="Supplies" density="compact" />
+        <VTextField v-if="editForm.contact_type !== 'customer'" v-model="editForm.department" label="Department" density="compact" />
         <VTextarea v-model="editForm.address" label="Address" rows="2" density="compact" />
         <VAutocomplete
           v-model="editForm.reports_to_id"

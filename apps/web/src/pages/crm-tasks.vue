@@ -16,6 +16,7 @@ type Task = {
   contact_id: string
   deal_id: string | null
   title: string
+  notes: string | null
   type: 'call' | 'meeting' | 'follow_up' | 'other'
   due_at: string | null
   duration_minutes: number | null
@@ -26,6 +27,8 @@ type Task = {
   outcome: string | null
   created_at: string
 }
+type TaskActivity = { id: string, user_id: string | null, user_name: string | null, kind: string, detail: string, created_at: string }
+type TaskDetail = Task & { activity: TaskActivity[] }
 type AssignableUser = { id: string, full_name: string, email: string }
 type Deal = { id: string, contact: CrmContact, status: string }
 
@@ -65,11 +68,47 @@ const calendarOptions = computed(() => ({
 }))
 
 const detailDialog = ref(false)
-const detailTask = ref<Task | null>(null)
+const detailTask = ref<TaskDetail | null>(null)
+const detailLoading = ref(false)
+const detailError = ref('')
+const detailNotesDraft = ref('')
+const savingNotes = ref(false)
 
-function openTaskDetail(taskId: string) {
-  detailTask.value = tasks.value.find(t => t.id === taskId) || null
+async function openTaskDetail(taskId: string) {
   detailDialog.value = true
+  detailLoading.value = true
+  detailError.value = ''
+  detailTask.value = null
+  try {
+    detailTask.value = await $api<TaskDetail>(`/v1/crm/tasks/${taskId}`)
+    detailNotesDraft.value = detailTask.value.notes || ''
+  }
+  catch (error: any) {
+    detailError.value = extractErrorMessage(error, 'Could not load this task.')
+  }
+  finally {
+    detailLoading.value = false
+  }
+}
+
+async function saveDetailNotes() {
+  if (!detailTask.value)
+    return
+  savingNotes.value = true
+  try {
+    const updated = await $api<Task>(`/v1/crm/tasks/${detailTask.value.id}`, { method: 'PATCH', body: { notes: detailNotesDraft.value.trim() || null } })
+    detailTask.value.notes = updated.notes
+    const row = tasks.value.find(t => t.id === detailTask.value?.id)
+    if (row)
+      row.notes = updated.notes
+    await openTaskDetail(detailTask.value.id)
+  }
+  catch (error: any) {
+    detailError.value = extractErrorMessage(error, 'Could not save these notes.')
+  }
+  finally {
+    savingNotes.value = false
+  }
 }
 
 async function loadContacts(ids: string[]) {
@@ -167,7 +206,7 @@ async function removeTask(task: Task) {
 // --- Create dialog -------------------------------------------------------------------------
 
 const dialog = ref(false)
-const form = reactive({ contact_id: '', deal_id: null as string | null, title: '', type: 'follow_up' as Task['type'], due_at: '', duration_minutes: null as number | null, assigned_user_id: null as string | null, recurrence: 'none' as Task['recurrence'], priority: 'normal' as Task['priority'] })
+const form = reactive({ contact_id: '', deal_id: null as string | null, title: '', notes: '', type: 'follow_up' as Task['type'], due_at: '', duration_minutes: null as number | null, assigned_user_id: null as string | null, recurrence: 'none' as Task['recurrence'], priority: 'normal' as Task['priority'] })
 const saving = ref(false)
 const saveError = ref('')
 
@@ -198,6 +237,7 @@ function openCreate(prefillDate?: string) {
   form.contact_id = ''
   form.deal_id = null
   form.title = ''
+  form.notes = ''
   form.type = 'follow_up'
   form.due_at = prefillDate ? `${prefillDate}T09:00` : ''
   form.duration_minutes = null
@@ -222,6 +262,7 @@ async function save() {
         contact_id: form.contact_id,
         deal_id: form.deal_id,
         title: form.title.trim(),
+        notes: form.notes.trim() || null,
         type: form.type,
         due_at: form.due_at ? new Date(form.due_at).toISOString() : null,
         duration_minutes: form.type === 'meeting' ? form.duration_minutes : null,
@@ -293,9 +334,9 @@ onMounted(loadAll)
         <VCardTitle>Today &amp; overdue</VCardTitle>
       </VCardItem>
       <VList v-if="overdueOrToday.length" density="compact">
-        <VListItem v-for="task in overdueOrToday" :key="task.id">
+        <VListItem v-for="task in overdueOrToday" :key="task.id" style="cursor: pointer;" @click="openTaskDetail(task.id)">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @click.stop @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle :class="isOverdue(task) ? 'text-error' : ''">
             <VIcon :icon="typeIcon[task.type]" size="16" class="me-1" />
@@ -312,7 +353,7 @@ onMounted(loadAll)
             </VChip>
           </VListItemSubtitle>
           <template #append>
-            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click="removeTask(task)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click.stop="removeTask(task)" />
           </template>
         </VListItem>
       </VList>
@@ -326,9 +367,9 @@ onMounted(loadAll)
         <VCardTitle>Upcoming</VCardTitle>
       </VCardItem>
       <VList v-if="upcoming.length" density="compact">
-        <VListItem v-for="task in upcoming" :key="task.id">
+        <VListItem v-for="task in upcoming" :key="task.id" style="cursor: pointer;" @click="openTaskDetail(task.id)">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @click.stop @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle>
             <VIcon :icon="typeIcon[task.type]" size="16" class="me-1" />
@@ -345,7 +386,7 @@ onMounted(loadAll)
             </VChip>
           </VListItemSubtitle>
           <template #append>
-            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click="removeTask(task)" />
+            <VBtn icon="tabler-trash" variant="text" size="small" :loading="busyTaskId === task.id" :disabled="busyTaskId === task.id" @click.stop="removeTask(task)" />
           </template>
         </VListItem>
       </VList>
@@ -362,9 +403,9 @@ onMounted(loadAll)
     </div>
     <VCard v-if="showDone">
       <VList v-if="doneList.length" density="compact">
-        <VListItem v-for="task in doneList" :key="task.id">
+        <VListItem v-for="task in doneList" :key="task.id" style="cursor: pointer;" @click="openTaskDetail(task.id)">
           <template #prepend>
-            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @update:model-value="toggleDone(task)" />
+            <VCheckbox :model-value="task.done" hide-details :disabled="busyTaskId === task.id" @click.stop @update:model-value="toggleDone(task)" />
           </template>
           <VListItemTitle class="text-decoration-line-through text-medium-emphasis">
             {{ task.title }}
@@ -401,6 +442,7 @@ onMounted(loadAll)
           no-filter
         />
         <VTextField v-model="form.title" label="Title" density="compact" />
+        <VTextarea v-model="form.notes" label="Notes (optional)" rows="2" density="compact" />
         <VSelect
           v-model="form.deal_id" label="Deal (optional)" density="compact" clearable
           :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
@@ -439,18 +481,62 @@ onMounted(loadAll)
     </VCard>
   </VDialog>
 
-  <VDialog v-model="detailDialog" max-width="360">
-    <VCard v-if="detailTask" :title="detailTask.title">
+  <VDialog v-model="detailDialog" max-width="480">
+    <VCard v-if="detailLoading" title="Loading...">
+      <VCardText class="text-center pa-8">
+        <VProgressCircular indeterminate />
+      </VCardText>
+    </VCard>
+    <VCard v-else-if="detailTask" :title="detailTask.title">
       <template #append>
         <VBtn icon="tabler-x" variant="text" size="small" @click="detailDialog = false" />
       </template>
-      <VCardText>
-        <p class="text-body-2 mb-1">
-          {{ contactLabel(detailTask.contact_id) }} · {{ assigneeName(detailTask) }}
-        </p>
-        <p v-if="detailTask.due_at" class="text-body-2 text-medium-emphasis mb-0">
-          {{ new Date(detailTask.due_at).toLocaleString('en-IN') }}
-        </p>
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="detailError" type="error" variant="tonal" density="compact">
+          {{ detailError }}
+        </VAlert>
+        <div>
+          <p class="text-body-2 mb-1">
+            {{ contactLabel(detailTask.contact_id) }} · {{ assigneeName(detailTask) }}
+          </p>
+          <p v-if="detailTask.due_at" class="text-body-2 text-medium-emphasis mb-0">
+            Due {{ new Date(detailTask.due_at).toLocaleString('en-IN') }}
+          </p>
+          <p v-if="detailTask.outcome" class="text-body-2 text-medium-emphasis mb-0">
+            Outcome: {{ detailTask.outcome }}
+          </p>
+        </div>
+
+        <div>
+          <p class="text-subtitle-2 mb-2">
+            Notes
+          </p>
+          <VTextarea v-model="detailNotesDraft" rows="3" density="compact" placeholder="Add notes about this task..." />
+          <div class="d-flex justify-end mt-1">
+            <VBtn size="small" :loading="savingNotes" :disabled="detailNotesDraft === (detailTask.notes || '')" @click="saveDetailNotes">
+              Save notes
+            </VBtn>
+          </div>
+        </div>
+
+        <div>
+          <p class="text-subtitle-2 mb-2">
+            History
+          </p>
+          <p v-if="!detailTask.activity.length" class="text-caption text-medium-emphasis mb-0">
+            No history recorded yet.
+          </p>
+          <VTimeline v-else density="compact" side="end" truncate-line="both" line-inset="8">
+            <VTimelineItem v-for="entry in detailTask.activity" :key="entry.id" size="x-small" dot-color="primary">
+              <p class="text-body-2 mb-0">
+                {{ entry.detail }}
+              </p>
+              <p class="text-caption text-medium-emphasis mb-0">
+                {{ new Date(entry.created_at).toLocaleString('en-IN') }}
+              </p>
+            </VTimelineItem>
+          </VTimeline>
+        </div>
       </VCardText>
       <VCardActions>
         <VBtn size="small" variant="text" @click="toggleDone(detailTask); detailDialog = false">
