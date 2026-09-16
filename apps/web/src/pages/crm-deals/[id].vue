@@ -121,6 +121,10 @@ function initial() {
   return (c?.name || c?.phone || c?.email || '?').slice(0, 1).toUpperCase()
 }
 
+// --- Internal approval request (distinct from the pipeline's own stage-approval gate above --
+// this is an ad hoc "let me ask someone" request, not a required condition to advance a stage) --
+const requestApprovalDialog = ref(false)
+
 async function updateOwner(ownerUserId: string | null) {
   if (!detail.value)
     return
@@ -419,6 +423,9 @@ onMounted(load)
           <VChip :color="detail.deal.status === 'won' ? 'success' : detail.deal.status === 'lost' ? 'error' : undefined" size="small">
             {{ detail.deal.status }}
           </VChip>
+          <VBtn variant="tonal" size="small" prepend-icon="tabler-checkbox" @click="requestApprovalDialog = true">
+            Request approval
+          </VBtn>
         </VCardText>
         <VDivider />
         <VCardText class="d-flex flex-wrap gap-3">
@@ -709,4 +716,9 @@ onMounted(load)
       </VCardActions>
     </VCard>
   </VDialog>
+
+  <RequestApprovalDialog
+    v-if="detail" v-model="requestApprovalDialog" record-type="deal" :record-id="detail.deal.id"
+    :default-title="`Approval for ${dealTitle()}`"
+  />
 </template>

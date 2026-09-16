@@ -425,6 +425,27 @@ function invoiceForQuote(quote: Quote) {
 // separately so "New invoice" has somewhere to actually show its result.
 const directInvoices = computed(() => salesInvoices.value.filter(i => !i.quote_id))
 
+// --- Internal approval request (Quote/Invoice) ------------------------------------------------
+
+const requestApprovalDialog = ref(false)
+const requestApprovalRecordType = ref<'quote' | 'sales_invoice'>('quote')
+const requestApprovalRecordId = ref('')
+const requestApprovalDefaultTitle = ref('')
+
+function openRequestApprovalForQuote(quote: Quote) {
+  requestApprovalRecordType.value = 'quote'
+  requestApprovalRecordId.value = quote.id
+  requestApprovalDefaultTitle.value = `Approval for quote ${quote.quote_number || dealContactLabel(quote)}`
+  requestApprovalDialog.value = true
+}
+
+function openRequestApprovalForInvoice(invoice: SalesInvoice) {
+  requestApprovalRecordType.value = 'sales_invoice'
+  requestApprovalRecordId.value = invoice.id
+  requestApprovalDefaultTitle.value = `Approval for invoice ${invoice.invoice_number || '(draft)'}`
+  requestApprovalDialog.value = true
+}
+
 async function convertToInvoice(quote: Quote) {
   busy.value = quote.id
   actionError.value = ''
@@ -625,6 +646,7 @@ onMounted(async () => {
           <td>
             <div class="d-flex ga-1 flex-wrap justify-end align-center">
               <VBtn icon="tabler-eye" size="small" variant="text" title="View" @click="openView(quote)" />
+              <VBtn icon="tabler-checkbox" size="small" variant="text" title="Request internal approval" @click="openRequestApprovalForQuote(quote)" />
               <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === quote.id" title="Download PDF" @click="downloadPdf(quote)" />
               <VBtn v-if="quote.status === 'draft'" icon="tabler-pencil" size="small" variant="text" title="Edit line items" @click="openEdit(quote)" />
               <VBtn v-if="quote.status !== 'draft'" icon="tabler-copy" size="small" variant="text" :loading="busy === quote.id" title="Revise (clone into a new linked draft)" @click="reviseQuote(quote)" />
@@ -642,6 +664,7 @@ onMounted(async () => {
                 <VChip size="small" :color="invoiceForQuote(quote)!.status === 'paid' ? 'success' : invoiceForQuote(quote)!.status === 'cancelled' ? 'error' : invoiceForQuote(quote)!.status === 'partially_paid' ? 'warning' : 'default'" variant="tonal">
                   {{ invoiceForQuote(quote)!.invoice_number }} · {{ invoiceForQuote(quote)!.status.replace('_', ' ') }}
                 </VChip>
+                <VBtn icon="tabler-checkbox" size="small" variant="text" title="Request internal approval" @click="openRequestApprovalForInvoice(invoiceForQuote(quote)!)" />
                 <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === invoiceForQuote(quote)!.id" title="Download tax invoice" @click="downloadInvoicePdf(invoiceForQuote(quote)!)" />
                 <VBtn icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Send tax invoice via WhatsApp" @click="sendInvoiceWhatsapp(invoiceForQuote(quote)!)" />
                 <VBtn v-if="!['paid', 'cancelled'].includes(invoiceForQuote(quote)!.status)" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoiceForQuote(quote)!.id" title="Record payment" @click="openRecordPayment(invoiceForQuote(quote)!)" />
@@ -687,6 +710,7 @@ onMounted(async () => {
           </td>
           <td>
             <div class="d-flex ga-1 flex-wrap justify-end align-center">
+              <VBtn icon="tabler-checkbox" size="small" variant="text" title="Request internal approval" @click="openRequestApprovalForInvoice(invoice)" />
               <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === invoice.id" title="Download" @click="downloadInvoicePdf(invoice)" />
               <VBtn icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === invoice.id" title="Send via WhatsApp" @click="sendInvoiceWhatsapp(invoice)" />
               <VBtn v-if="!['paid', 'cancelled'].includes(invoice.status)" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoice.id" title="Record payment" @click="openRecordPayment(invoice)" />
@@ -1039,4 +1063,9 @@ onMounted(async () => {
       </VCardActions>
     </VCard>
   </VDialog>
+
+  <RequestApprovalDialog
+    v-model="requestApprovalDialog" :record-type="requestApprovalRecordType" :record-id="requestApprovalRecordId"
+    :default-title="requestApprovalDefaultTitle"
+  />
 </template>

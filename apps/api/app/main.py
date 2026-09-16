@@ -25,6 +25,7 @@ from .channels import router as channels_router
 from .crm import router as crm_router, send_due_scheduled_reports
 from .crm_documents import router as crm_documents_router
 from .crm_email import poll_all_email_inboxes, public_router as crm_email_public_router, renew_graph_subscriptions, router as crm_email_router
+from .crm_approvals import router as crm_approvals_router
 from .crm_quotes import router as crm_quotes_router
 from .crm_public import router as crm_public_router
 from .crm_sequences import router as crm_sequences_router, run_due_steps as run_due_sequence_steps
@@ -150,6 +151,7 @@ app.include_router(catalog_woocommerce_router)
 app.include_router(catalog_woocommerce_public_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
+app.include_router(crm_approvals_router)
 app.include_router(crm_router)
 app.include_router(crm_documents_router)
 app.include_router(crm_email_router)

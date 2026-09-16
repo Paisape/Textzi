@@ -110,6 +110,11 @@ export const CRM_NAV_ITEMS = [
     icon: { icon: 'tabler-file-text' },
   },
   {
+    title: 'Approvals',
+    to: { name: 'crm-approvals' },
+    icon: { icon: 'tabler-checkbox' },
+  },
+  {
     title: 'Automation',
     to: { name: 'crm-automation' },
     icon: { icon: 'tabler-route' },

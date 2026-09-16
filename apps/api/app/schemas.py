@@ -2914,6 +2914,49 @@ class DocumentTemplateUpdateRequest(BaseModel):
     body: str | None = Field(default=None, min_length=1)
 
 
+class ApprovalStageOut(BaseModel):
+    id: str
+    position: int
+    approver_user_ids: list[str]
+    approver_names: list[str]
+    status: str
+    approved_by_user_id: str | None
+    approved_by_name: str | None
+    approved_at: str | None
+    comment: str | None
+
+
+class ApprovalRequestOut(BaseModel):
+    id: str
+    record_type: str | None
+    record_id: str | None
+    record_label: str | None = None  # a short human label for the linked record, resolved by the caller
+    title: str
+    description: str | None
+    requested_by_user_id: str
+    requested_by_name: str | None
+    status: str
+    stages: list[ApprovalStageOut]
+    created_at: str
+    resolved_at: str | None
+
+
+class ApprovalStageCreateRequest(BaseModel):
+    approver_user_ids: list[str] = Field(min_length=1)
+
+
+class ApprovalRequestCreateRequest(BaseModel):
+    record_type: str | None = Field(default=None, pattern="^(deal|quote|sales_invoice)$")
+    record_id: str | None = None
+    title: str = Field(min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+    stages: list[ApprovalStageCreateRequest] = Field(min_length=1, max_length=10)
+
+
+class ApprovalActionRequest(BaseModel):
+    comment: str | None = Field(default=None, max_length=500)
+
+
 class QuoteOut(BaseModel):
     id: str
     deal_id: str | None

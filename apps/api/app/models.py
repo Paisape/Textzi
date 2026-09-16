@@ -2211,6 +2211,58 @@ class TaskActivity(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
 
 
+class ApprovalRequest(Base):
+    """A single, generalized internal approval request -- replaces the earlier idea of bolting
+    another one-off approval flag onto Quote/Deal/Invoice individually (Quote.approval_status/
+    approvals and Deal.stage_approvals both predate this and are left as-is, since they're
+    threshold-triggered/pipeline-stage-triggered system behavior, not a request a person opens by
+    hand; this is the "let me ask someone" system a human explicitly starts).
+    record_type/record_id are both nullable together -- a standalone request (no linked Deal/
+    Quote/Invoice at all, e.g. "can I offer this customer a special discount") has both null;
+    an attached one sets record_type to "deal"|"quote"|"sales_invoice" and record_id to that row's
+    id. Deliberately not a polymorphic FK (no single table every record type shares) -- a plain
+    type+id pair, resolved by whichever endpoint needs the actual row, same shape already used
+    elsewhere in this codebase (e.g. CustomFieldDefinition.applies_to).
+    Purely internal -- never rendered on any customer-facing page (the public quote-signing page,
+    WhatsApp sends, invoice PDFs) so nothing here needs a "hide from customer" flag; keeping it out
+    of every customer-facing serializer is enough, same discipline as CrmSettings.
+    status is the request's own overall status, derived from its stages (see ApprovalStage) --
+    "pending" while any stage is still open, "approved" once every stage has approved in order,
+    "rejected" the moment any single stage rejects (a rejection short-circuits every later stage,
+    they never open)."""
+    __tablename__ = "approval_requests"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
+    record_type: Mapped[str | None] = mapped_column(String(20), nullable=True)  # "deal" | "quote" | "sales_invoice" | None
+    record_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    title: Mapped[str] = mapped_column(String(200))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    requested_by_user_id: Mapped[str] = mapped_column(ForeignKey("users.id"))
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # "pending" | "approved" | "rejected" | "cancelled"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class ApprovalStage(Base):
+    """One stage in an ApprovalRequest's sequential chain -- position 0 opens immediately, each
+    later position only becomes actionable once the one before it is approved (status stays
+    "waiting" until then, matching a real multi-level sign-off: Manager approves first, then
+    Finance, then the Board, not all three asked at once). approver_user_ids is a plain JSON list
+    (same pattern as TicketGroup.member_user_ids/CrmSettings.quote_approver_user_ids elsewhere in
+    this codebase) -- any one of the listed approvers signing off satisfies the stage, matching
+    "ask the board" meaning any board member's yes is enough, not literally everyone.
+    approved_by_user_id/approved_at record who actually acted, once someone does."""
+    __tablename__ = "approval_stages"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    approval_request_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), index=True)
+    position: Mapped[int] = mapped_column(Integer)
+    approver_user_ids: Mapped[list] = mapped_column(JSON, default=list)
+    status: Mapped[str] = mapped_column(String(20), default="waiting")  # "waiting" | "pending" | "approved" | "rejected"
+    approved_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
+
+
 class Quote(Base):
     """A GST-aware proforma quote, optionally tied to a Deal -- deliberately not an IRN-registered
     e-invoice (mandatory only above Rs 5 crore turnover, well past this product's SME target) so
