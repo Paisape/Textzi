@@ -13,9 +13,22 @@ export const WABA_NAV_ITEMS = [
     icon: { icon: 'tabler-message-circle' },
   },
   {
-    title: 'Customers',
+    // Renamed from "Customers" -- confirmed with the user this list is really "everyone who's
+    // messaged the business" (a visitor/chat directory), not a real customer record. Route name
+    // stays waba-customers (not renaming the route/file itself, same "don't mass-rename URLs for
+    // a cosmetic win" reasoning as Addendum 7's own decision elsewhere in this app).
+    title: 'Contacts',
     to: { name: 'waba-customers' },
     icon: { icon: 'tabler-users' },
+  },
+  {
+    // Customer conversion itself is a real CRM-plan-gated action (Addendum 2's own decision --
+    // not something this changes), but the nav entry is shown to every WABA user regardless, so
+    // a WABA-only account can at least see the same upgrade prompt the page already shows rather
+    // than the whole concept being invisible to them.
+    title: 'Customers',
+    to: { name: 'crm-customers' },
+    icon: { icon: 'tabler-user-check' },
   },
   {
     title: 'Campaigns',
