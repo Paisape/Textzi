@@ -1180,7 +1180,7 @@ def convert_conversation_to_deal(
     existing = db.scalar(select(Deal).where(Deal.converted_from_conversation_id == conversation_id))
     if existing:
         raise HTTPException(status_code=409, detail="This conversation was already converted to a deal")
-    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact)
+    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact, payload.title)
     deal = Deal(
         entity_id=entity.id, contact_id=contact.id, name=payload.deal_name, source="whatsapp_conversation", converted_from_conversation_id=conversation_id,
         pipeline_id=payload.pipeline_id or _get_or_create_default_pipeline(db, entity.id).id, stage=payload.stage, value=payload.value, probability=payload.probability,
@@ -1207,7 +1207,7 @@ def convert_conversation_to_customer(
     existing = db.scalar(select(Customer).where(Customer.converted_from_conversation_id == conversation_id))
     if existing:
         raise HTTPException(status_code=409, detail="This conversation was already converted to a customer")
-    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact)
+    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact, payload.title)
     customer = Customer(
         entity_id=entity.id, contact_id=contact.id, converted_from_conversation_id=conversation_id,
         owner_user_id=payload.owner_user_id, notes=payload.notes,
@@ -1285,7 +1285,7 @@ def convert_contact_to_deal(
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     waba_contact = _get_owned_contact(db, entity.id, contact_id)
-    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact)
+    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact, payload.title)
     existing = db.scalar(select(Deal).where(Deal.contact_id == contact.id, Deal.entity_id == entity.id, Deal.status == "open"))
     if existing:
         raise HTTPException(status_code=409, detail=f"This contact already has an open deal (created {existing.created_at.date().isoformat()}) -- close it before creating a new one")
@@ -1310,7 +1310,7 @@ def convert_contact_to_customer(
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     waba_contact = _get_owned_contact(db, entity.id, contact_id)
-    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact)
+    contact = _get_or_create_crm_contact_from_waba(db, entity.id, waba_contact, payload.title)
     if db.scalar(select(Customer).where(Customer.contact_id == contact.id)):
         raise HTTPException(status_code=409, detail="This contact is already linked to a customer")
     customer = Customer(entity_id=entity.id, contact_id=contact.id, owner_user_id=payload.owner_user_id, notes=payload.notes)

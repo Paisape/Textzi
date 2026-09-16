@@ -447,7 +447,7 @@ async function convertToTicket() {
 // own, so it stays a direct action). Only one of the two can be open at a time.
 type PipelineStage = { name: string, probability: number, forecast_category: string }
 type Pipeline = { id: string, name: string, stages: PipelineStage[] }
-const crmForm = ref<{ mode: 'lead' | 'deal' | 'customer', company_name: string, pipeline_id: string | null, stage: string, value: number | null, probability: number | null, owner_user_id: string | null, notes: string } | null>(null)
+const crmForm = ref<{ mode: 'lead' | 'deal' | 'customer', title: string, company_name: string, deal_name: string, pipeline_id: string | null, stage: string, value: number | null, probability: number | null, owner_user_id: string | null, notes: string } | null>(null)
 const crmFormSubmitting = ref(false)
 const crmFormError = ref('')
 const pipelines = ref<Pipeline[]>([])
@@ -493,21 +493,21 @@ async function runMacro(macroId: string) {
 }
 
 function openLeadForm() {
-  crmForm.value = { mode: 'lead', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'lead', title: '', company_name: '', deal_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
   crmFormError.value = ''
 }
 
 function openDealForm() {
   const defaultPipeline = pipelines.value[0] || null
   crmForm.value = {
-    mode: 'deal', company_name: '', pipeline_id: defaultPipeline?.id || null, stage: defaultPipeline?.stages[0]?.name || 'inquiry',
+    mode: 'deal', title: '', company_name: '', deal_name: '', pipeline_id: defaultPipeline?.id || null, stage: defaultPipeline?.stages[0]?.name || 'inquiry',
     value: null, probability: defaultPipeline?.stages[0]?.probability ?? null, owner_user_id: null, notes: '',
   }
   crmFormError.value = ''
 }
 
 function openCustomerForm() {
-  crmForm.value = { mode: 'customer', company_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
+  crmForm.value = { mode: 'customer', title: '', company_name: '', deal_name: '', pipeline_id: null, stage: '', value: null, probability: null, owner_user_id: null, notes: '' }
   crmFormError.value = ''
 }
 
@@ -525,13 +525,17 @@ async function submitCrmForm() {
     if (crmForm.value.mode === 'lead') {
       await $api(`/v1/crm/conversations/${activeConversation.value.id}/convert-to-lead`, {
         method: 'POST',
-        body: { company_name: crmForm.value.company_name || null, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+        body: {
+          company_name: crmForm.value.company_name || null, title: crmForm.value.title || null,
+          owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null,
+        },
       })
     }
     else if (crmForm.value.mode === 'deal') {
       await $api(`/v1/crm/conversations/${activeConversation.value.id}/convert-to-deal`, {
         method: 'POST',
         body: {
+          deal_name: crmForm.value.deal_name || null, title: crmForm.value.title || null,
           pipeline_id: crmForm.value.pipeline_id, stage: crmForm.value.stage, value: crmForm.value.value,
           probability: crmForm.value.probability, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null,
         },
@@ -540,7 +544,7 @@ async function submitCrmForm() {
     else {
       await $api(`/v1/crm/conversations/${activeConversation.value.id}/convert-to-customer`, {
         method: 'POST',
-        body: { owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
+        body: { title: crmForm.value.title || null, owner_user_id: crmForm.value.owner_user_id, notes: crmForm.value.notes || null },
       })
     }
     crmForm.value = null
@@ -1807,6 +1811,12 @@ watch(statusFilter, loadConversations)
             {{ crmFormError }}
           </VAlert>
           <VTextField
+            v-model="crmForm.title"
+            label="Title / designation (optional)"
+            density="compact"
+            class="mb-3"
+          />
+          <VTextField
             v-if="crmForm.mode === 'lead'"
             v-model="crmForm.company_name"
             label="Company (optional)"
@@ -1814,6 +1824,7 @@ watch(statusFilter, loadConversations)
             class="mb-3"
           />
           <template v-if="crmForm.mode === 'deal'">
+            <VTextField v-model="crmForm.deal_name" label="Deal name (optional)" density="compact" class="mb-3" />
             <VSelect
               v-model="crmForm.pipeline_id"
               :items="pipelines.map(p => ({ title: p.name, value: p.id }))"

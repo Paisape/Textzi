@@ -3393,6 +3393,7 @@ class LeadCreateFromConversationRequest(BaseModel):
 
 class DealCreateFromConversationRequest(BaseModel):
     deal_name: str | None = Field(default=None, max_length=160)
+    title: str | None = Field(default=None, max_length=120)
     pipeline_id: str | None = None
     stage: str = Field(default="inquiry", min_length=1, max_length=40)
     value: float | None = Field(default=None, ge=0)
@@ -3423,6 +3424,7 @@ class DealCreateRequest(BaseModel):
 
 
 class CustomerCreateFromConversationRequest(BaseModel):
+    title: str | None = Field(default=None, max_length=120)
     owner_user_id: str | None = None
     notes: str | None = None
 
