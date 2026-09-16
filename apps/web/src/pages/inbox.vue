@@ -269,6 +269,18 @@ async function loadAssignableUsers() {
   }
 }
 
+type TicketGroup = { id: string, name: string }
+const ticketGroups = ref<TicketGroup[]>([])
+
+async function loadTicketGroups() {
+  try {
+    ticketGroups.value = await $api<TicketGroup[]>('/v1/waba/ticket-groups')
+  }
+  catch {
+    // Non-critical -- the group picker just shows no groups this session.
+  }
+}
+
 const messagesContainer = ref<HTMLElement>()
 
 // Every chat app scrolls to the newest message by default -- without this the thread opens (or
@@ -409,7 +421,7 @@ function handleConversionError(error: any, fallback: string) {
 
 const convertingToTicket = ref(false)
 const convertDialog = ref(false)
-const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null, group_id: null as string | null })
 
 function openConvertDialog() {
   if (!activeConversation.value)
@@ -418,6 +430,7 @@ function openConvertDialog() {
   convertForm.priority = 'medium'
   convertForm.category = 'question'
   convertForm.assigned_user_id = activeConversation.value.assigned_user_id
+  convertForm.group_id = null
   convertDialog.value = true
 }
 
@@ -1302,6 +1315,7 @@ onMounted(() => {
   loadLabels()
   loadCannedResponses()
   loadAssignableUsers()
+  loadTicketGroups()
   loadCrmPipelines()
   loadMacros()
   connectSocket()
@@ -2317,6 +2331,10 @@ watch(statusFilter, loadConversations)
         <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
       </template>
       <VCardText class="d-flex flex-column gap-3">
+        <p class="text-caption text-medium-emphasis mb-0">
+          This whole conversation becomes the ticket -- every message on it stays visible in the
+          ticket view, nothing is lost or re-typed.
+        </p>
         <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
         <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
         <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
@@ -2324,6 +2342,11 @@ watch(statusFilter, loadConversations)
           v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
           :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
           placeholder="Unassigned"
+        />
+        <VSelect
+          v-model="convertForm.group_id" label="Group" density="compact" clearable
+          :items="ticketGroups.map(g => ({ title: g.name, value: g.id }))"
+          placeholder="No group"
         />
       </VCardText>
       <VCardActions>

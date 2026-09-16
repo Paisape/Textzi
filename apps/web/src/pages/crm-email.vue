@@ -189,7 +189,7 @@ async function selectThread(id: string) {
 
 const convertingToTicket = ref(false)
 const convertDialog = ref(false)
-const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null })
+const convertForm = reactive({ subject: '', priority: 'medium', category: 'question', assigned_user_id: null as string | null, group_id: null as string | null })
 
 function openConvertDialog() {
   if (!selected.value)
@@ -198,6 +198,7 @@ function openConvertDialog() {
   convertForm.priority = 'medium'
   convertForm.category = 'question'
   convertForm.assigned_user_id = null
+  convertForm.group_id = null
   convertDialog.value = true
 }
 
@@ -235,15 +236,18 @@ const quotes = ref<Quote[]>([])
 const signatureHtml = ref('')
 
 type AssignableUser = { id: string, full_name: string }
+type TicketGroup = { id: string, name: string }
 const assignableUsers = ref<AssignableUser[]>([])
+const ticketGroups = ref<TicketGroup[]>([])
 
 async function loadPickerData() {
-  const [cannedResult, quoteResult, accountResult, mySignatureResult, userResult] = await Promise.all([
+  const [cannedResult, quoteResult, accountResult, mySignatureResult, userResult, groupResult] = await Promise.all([
     $api<CannedResponse[]>('/v1/waba/canned-responses').catch(() => []),
     $api<Quote[]>('/v1/crm/quotes').catch(() => []),
     $api<EmailAccountInfo>('/v1/crm/email/account').catch(() => null),
     $api<{ signature_html: string | null }>('/v1/crm/email/my-signature').catch(() => null),
     $api<AssignableUser[]>('/v1/waba/assignable-users').catch(() => []),
+    $api<TicketGroup[]>('/v1/waba/ticket-groups').catch(() => []),
   ])
   cannedResponses.value = cannedResult
   quotes.value = quoteResult
@@ -251,6 +255,7 @@ async function loadPickerData() {
   // mailbox is used by the whole team, so each person's messages should carry their own name.
   signatureHtml.value = mySignatureResult?.signature_html || accountResult?.signature_html || ''
   assignableUsers.value = userResult
+  ticketGroups.value = groupResult
 }
 
 function withSignature(html: string) {
@@ -785,6 +790,10 @@ onMounted(() => {
         <VBtn icon="tabler-x" variant="text" size="small" @click="convertDialog = false" />
       </template>
       <VCardText class="d-flex flex-column gap-3">
+        <p class="text-caption text-medium-emphasis mb-0">
+          This whole email thread becomes the ticket -- every message on it stays visible in the
+          ticket view, nothing is lost or re-typed.
+        </p>
         <VTextField v-model="convertForm.subject" label="Subject" density="compact" />
         <VSelect v-model="convertForm.priority" label="Priority" :items="['low', 'medium', 'high', 'urgent']" density="compact" class="text-capitalize" />
         <VSelect v-model="convertForm.category" label="Category" :items="['question', 'incident', 'problem', 'task']" density="compact" class="text-capitalize" />
@@ -792,6 +801,11 @@ onMounted(() => {
           v-model="convertForm.assigned_user_id" label="Assign to" density="compact" clearable
           :items="assignableUsers.map(u => ({ title: u.full_name, value: u.id }))"
           placeholder="Unassigned"
+        />
+        <VSelect
+          v-model="convertForm.group_id" label="Group" density="compact" clearable
+          :items="ticketGroups.map(g => ({ title: g.name, value: g.id }))"
+          placeholder="No group"
         />
       </VCardText>
       <VCardActions>

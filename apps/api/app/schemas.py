@@ -1867,6 +1867,7 @@ class ConvertToTicketRequest(BaseModel):
     priority: str | None = Field(default=None, pattern="^(low|medium|high|urgent)$")
     category: str | None = Field(default=None, pattern="^(question|incident|problem|task)$")
     assigned_user_id: str | None = None
+    group_id: str | None = None
 
 
 class CreateTicketRequest(BaseModel):

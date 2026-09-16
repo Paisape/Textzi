@@ -415,6 +415,11 @@ def convert_conversation_to_ticket(conversation_id: str, payload: ConvertToTicke
         if not assignee or assignee.organization_id != user.organization_id:
             raise HTTPException(status_code=422, detail="assigned_user_id must belong to your organization")
         conversation.assigned_user_id = payload.assigned_user_id
+    if payload.group_id:
+        group = db.get(TicketGroup, payload.group_id)
+        if not group or group.entity_id != entity.id:
+            raise HTTPException(status_code=422, detail="group_id must belong to your organization")
+        conversation.group_id = payload.group_id
     sla = db.get(SlaPolicy, entity.id)
     if sla and sla.enabled:
         conversation.resolution_due_at = datetime.now(timezone.utc) + timedelta(minutes=sla.resolution_minutes)
