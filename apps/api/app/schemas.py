@@ -2872,7 +2872,8 @@ class DocumentTemplateUpdateRequest(BaseModel):
 
 class QuoteOut(BaseModel):
     id: str
-    deal_id: str
+    deal_id: str | None
+    contact_id: str
     quote_number: str | None
     line_items: list[QuoteLineItem]
     status: str
@@ -2931,7 +2932,8 @@ class SalesInvoiceCancelRequest(BaseModel):
 
 class SalesInvoiceOut(BaseModel):
     id: str
-    deal_id: str
+    deal_id: str | None
+    contact_id: str
     quote_id: str | None
     invoice_number: str | None
     line_items: list[QuoteLineItem]
@@ -2951,7 +2953,11 @@ class SalesInvoiceOut(BaseModel):
 
 
 class QuoteCreateRequest(BaseModel):
-    deal_id: str
+    # Exactly one of these must be set -- deal_id for a quote tied to a sales pipeline, contact_id
+    # for a standalone quote created straight against a CRM contact (matches Zoho CRM's own Quote,
+    # which is a top-level object only optionally linked to a Deal).
+    deal_id: str | None = None
+    contact_id: str | None = None
     line_items: list[QuoteLineItem] = Field(min_length=1)
 
 

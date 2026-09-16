@@ -2165,16 +2165,23 @@ class Task(Base):
 
 
 class Quote(Base):
-    """A GST-aware proforma quote tied to a Deal -- deliberately not an IRN-registered e-invoice
-    (mandatory only above Rs 5 crore turnover, well past this product's SME target) so this stays
-    a simple PDF-generation feature, not an Invoice Registration Portal integration. line_items is
-    [{"description", "hsn_code", "quantity", "unit_price"}, ...]; CGST+SGST vs IGST is computed at
-    send time from services.state_code_from_gstin (entity state vs the deal's own state), not
-    stored, so a GSTIN correction before sending doesn't require editing stale stored tax lines."""
+    """A GST-aware proforma quote, optionally tied to a Deal -- deliberately not an IRN-registered
+    e-invoice (mandatory only above Rs 5 crore turnover, well past this product's SME target) so
+    this stays a simple PDF-generation feature, not an Invoice Registration Portal integration.
+    line_items is [{"description", "hsn_code", "quantity", "unit_price"}, ...]; CGST+SGST vs IGST
+    is computed at send time from services.state_code_from_gstin (entity state vs the contact's
+    own state), not stored, so a GSTIN correction before sending doesn't require editing stale
+    stored tax lines.
+    deal_id is nullable (matching Zoho CRM's own Quote, which is standalone and only optionally
+    linked to a Deal): a quote can be created straight against a contact_id with no sales pipeline
+    involved. Exactly one of deal_id/contact_id is set -- when deal_id is set, contact_id mirrors
+    the deal's own contact_id at creation time (kept for a uniform "quote's contact" lookup that
+    never needs to join through Deal); see crm_quotes._quote_contact_id."""
     __tablename__ = "quotes"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
-    deal_id: Mapped[str] = mapped_column(ForeignKey("deals.id"), index=True)
+    deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), index=True, nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(ForeignKey("crm_contacts.id"), index=True, nullable=True)
     quote_number: Mapped[str | None] = mapped_column(String(20), nullable=True, unique=True)
     line_items: Mapped[list] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="draft")  # "draft" | "sent" | "accepted" | "rejected"
@@ -2219,12 +2226,15 @@ class SalesInvoice(Base):
     all (create_direct_sales_invoice) for a simple sale that never needed a negotiation step --
     more than one SalesInvoice can exist per Deal either way (milestone/partial billing), the
     only real constraint is a given Quote converts to at most one invoice.
+    deal_id is nullable for the same reason as Quote.deal_id -- converting a standalone (dealless)
+    Quote carries its contact_id straight over instead.
     line_items snapshotted the same way Quote.line_items are -- editing a Product/DiscountRule
     later must never change an already-issued invoice's numbers."""
     __tablename__ = "sales_invoices"
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
-    deal_id: Mapped[str] = mapped_column(ForeignKey("deals.id"), index=True)
+    deal_id: Mapped[str | None] = mapped_column(ForeignKey("deals.id"), index=True, nullable=True)
+    contact_id: Mapped[str | None] = mapped_column(ForeignKey("crm_contacts.id"), index=True, nullable=True)
     quote_id: Mapped[str | None] = mapped_column(ForeignKey("quotes.id"), nullable=True)
     invoice_number: Mapped[str | None] = mapped_column(String(24), nullable=True, unique=True)
     line_items: Mapped[list] = mapped_column(JSON, default=list)

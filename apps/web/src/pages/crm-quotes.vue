@@ -13,7 +13,8 @@ type Deal = { id: string, contact: CrmContact, stage: string, status: string }
 type LineItem = { description: string, hsn_code: string, quantity: number, unit_price: number, product_id?: string | null, tax_rate?: number | null, discount_percent?: number }
 type Quote = {
   id: string
-  deal_id: string
+  deal_id: string | null
+  contact_id: string
   quote_number: string | null
   line_items: LineItem[]
   status: 'draft' | 'sent' | 'accepted' | 'rejected'
@@ -35,7 +36,8 @@ type Quote = {
 }
 type SalesInvoice = {
   id: string
-  deal_id: string
+  deal_id: string | null
+  contact_id: string
   quote_id: string | null
   invoice_number: string | null
   status: 'issued' | 'partially_paid' | 'paid' | 'cancelled'
@@ -55,6 +57,7 @@ type Product = { id: string, name: string, sku: string | null, hsn_code: string,
 const quotes = ref<Quote[]>([])
 const salesInvoices = ref<SalesInvoice[]>([])
 const deals = ref<Deal[]>([])
+const contacts = ref<CrmContact[]>([])
 const products = ref<Product[]>([])
 const loading = ref(false)
 const loadError = ref('')
@@ -84,9 +87,13 @@ function iCanApprove(quote: Quote) {
 
 const visibleQuotes = computed(() => pendingMyApprovalOnly.value ? quotes.value.filter(iCanApprove) : quotes.value)
 
-function dealContactLabel(dealId: string) {
-  const deal = deals.value.find(d => d.id === dealId)
-  return deal ? (deal.contact.name || deal.contact.phone || deal.contact.email || 'Unknown') : '…'
+function dealContactLabel(quote: Quote) {
+  if (quote.deal_id) {
+    const deal = deals.value.find(d => d.id === quote.deal_id)
+    return deal ? (deal.contact.name || deal.contact.phone || deal.contact.email || 'Unknown') : '…'
+  }
+  const contact = contacts.value.find(c => c.id === quote.contact_id)
+  return contact ? `${contact.name || contact.phone || contact.email || 'Unknown'} (no deal)` : '…'
 }
 
 async function loadAll() {
@@ -94,15 +101,17 @@ async function loadAll() {
   loadError.value = ''
   crmInactive.value = false
   try {
-    const [quoteResult, invoiceResult, dealResult, productResult] = await Promise.all([
+    const [quoteResult, invoiceResult, dealResult, contactResult, productResult] = await Promise.all([
       $api<Quote[]>('/v1/crm/quotes'),
       $api<SalesInvoice[]>('/v1/crm/quotes/invoices'),
       $api<Deal[]>('/v1/crm/deals'),
+      $api<CrmContact[]>('/v1/crm/contacts'),
       $api<Product[]>('/v1/crm/quotes/products'),
     ])
     quotes.value = quoteResult
     salesInvoices.value = invoiceResult
     deals.value = dealResult
+    contacts.value = contactResult
     products.value = productResult.filter(p => p.active)
   }
   catch (error: any) {
@@ -131,14 +140,16 @@ const statusColor: Record<string, string> = { draft: undefined as any, sent: 'in
 // --- Create dialog -------------------------------------------------------------------------
 
 const dialog = ref(false)
-const form = reactive({ deal_id: '', line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }] as LineItem[] })
+const form = reactive({ mode: 'deal' as 'deal' | 'contact', deal_id: '', contact_id: '', line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }] as LineItem[] })
 const saving = ref(false)
 const saveError = ref('')
 const editingQuoteId = ref<string | null>(null)
 
 function openCreate() {
   editingQuoteId.value = null
+  form.mode = 'deal'
   form.deal_id = typeof route.query.deal_id === 'string' ? route.query.deal_id : ''
+  form.contact_id = ''
   form.line_items = [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }]
   saveError.value = ''
   dialog.value = true
@@ -146,7 +157,9 @@ function openCreate() {
 
 function openEdit(quote: Quote) {
   editingQuoteId.value = quote.id
-  form.deal_id = quote.deal_id
+  form.mode = quote.deal_id ? 'deal' : 'contact'
+  form.deal_id = quote.deal_id || ''
+  form.contact_id = quote.deal_id ? '' : quote.contact_id
   form.line_items = quote.line_items.map(item => ({ ...item }))
   saveError.value = ''
   dialog.value = true
@@ -182,7 +195,7 @@ function isBundleLine(item: LineItem) {
 const draftTotal = computed(() => form.line_items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unit_price || 0), 0))
 
 async function save() {
-  if (!form.deal_id || !form.line_items.length)
+  if (!form.line_items.length || (form.mode === 'deal' ? !form.deal_id : !form.contact_id))
     return
   saving.value = true
   saveError.value = ''
@@ -194,7 +207,10 @@ async function save() {
         quotes.value[index] = updated
     }
     else {
-      const created = await $api<Quote>('/v1/crm/quotes', { method: 'POST', body: { deal_id: form.deal_id, line_items: form.line_items } })
+      const created = await $api<Quote>('/v1/crm/quotes', {
+        method: 'POST',
+        body: form.mode === 'deal' ? { deal_id: form.deal_id, line_items: form.line_items } : { contact_id: form.contact_id, line_items: form.line_items },
+      })
       quotes.value.unshift(created)
     }
     dialog.value = false
@@ -457,7 +473,7 @@ onMounted(async () => {
             <span v-if="quote.quote_number">{{ quote.quote_number }}</span>
             <span v-else class="text-medium-emphasis font-italic">Not yet numbered</span>
           </td>
-          <td>{{ dealContactLabel(quote.deal_id) }}</td>
+          <td>{{ dealContactLabel(quote) }}</td>
           <td>
             {{ inr(quote.total) }}
             <p v-if="quote.discount_total" class="text-caption text-medium-emphasis mb-0">
@@ -524,10 +540,25 @@ onMounted(async () => {
         <VAlert v-if="saveError" type="error" variant="tonal" density="compact">
           {{ saveError }}
         </VAlert>
+        <VBtnToggle v-if="!editingQuoteId" v-model="form.mode" density="compact" mandatory color="primary" variant="outlined" divided>
+          <VBtn value="deal" size="small">
+            Tied to a deal
+          </VBtn>
+          <VBtn value="contact" size="small">
+            Standalone (no deal)
+          </VBtn>
+        </VBtnToggle>
         <VSelect
+          v-if="form.mode === 'deal'"
           v-model="form.deal_id" :disabled="!!editingQuoteId"
-          :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
+          :items="deals.filter(d => d.status === 'open' || d.id === form.deal_id).map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
           label="Deal" density="compact"
+        />
+        <VSelect
+          v-else
+          v-model="form.contact_id" :disabled="!!editingQuoteId"
+          :items="contacts.map(c => ({ title: c.name || c.phone || c.email || 'Unknown', value: c.id }))"
+          label="Contact" density="compact"
         />
 
         <div>
@@ -565,7 +596,7 @@ onMounted(async () => {
         <VBtn variant="text" @click="dialog = false">
           Cancel
         </VBtn>
-        <VBtn color="primary" :loading="saving" :disabled="!form.deal_id" @click="save">
+        <VBtn color="primary" :loading="saving" :disabled="form.mode === 'deal' ? !form.deal_id : !form.contact_id" @click="save">
           {{ editingQuoteId ? 'Save' : 'Create' }}
         </VBtn>
       </VCardActions>

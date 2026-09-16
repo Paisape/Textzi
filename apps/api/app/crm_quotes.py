@@ -378,6 +378,27 @@ def _deal_price_list_id(db: Session, deal: Deal) -> str | None:
     return company.price_list_id if company else None
 
 
+def _contact_price_list_id(db: Session, contact: CrmContact | None) -> str | None:
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
+    return company.price_list_id if company else None
+
+
+def _quote_contact(db: Session, quote: Quote) -> CrmContact | None:
+    """A quote's contact is either its deal's contact (deal_id set) or its own contact_id
+    (standalone quote, no deal) -- exactly one of the two is ever set on a given quote."""
+    if quote.deal_id:
+        deal = db.get(Deal, quote.deal_id)
+        return db.get(CrmContact, deal.contact_id) if deal else None
+    return db.get(CrmContact, quote.contact_id) if quote.contact_id else None
+
+
+def _invoice_contact(db: Session, invoice: "SalesInvoice") -> CrmContact | None:
+    if invoice.deal_id:
+        deal = db.get(Deal, invoice.deal_id)
+        return db.get(CrmContact, deal.contact_id) if deal else None
+    return db.get(CrmContact, invoice.contact_id) if invoice.contact_id else None
+
+
 def _expand_bundle(db: Session, price_list_id: str | None, item: QuoteLineItem) -> list[QuoteLineItem]:
     """A bundle line item becomes one real line per component, quantity multiplied through, each
     priced independently (price-list override applies per component, same as a standalone sale of
@@ -461,8 +482,7 @@ def _compute_totals(db: Session, line_items: list, entity_state: str | None, com
 
 
 def _quote_out(db: Session, quote: Quote) -> QuoteOut:
-    deal = db.get(Deal, quote.deal_id)
-    contact = db.get(CrmContact, deal.contact_id) if deal else None
+    contact = _quote_contact(db, quote)
     company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     entity = db.get(Entity, quote.entity_id)
     organization = db.get(Organization, entity.organization_id) if entity else None
@@ -472,7 +492,8 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     settings_row = db.get(CrmSettings, quote.entity_id)
     approvers_required = (settings_row.quote_approver_user_ids or []) if settings_row else []
     return QuoteOut(
-        id=quote.id, deal_id=quote.deal_id, quote_number=quote.quote_number, line_items=quote.line_items, status=quote.status,
+        id=quote.id, deal_id=quote.deal_id, contact_id=quote.contact_id or (contact.id if contact else ""),
+        quote_number=quote.quote_number, line_items=quote.line_items, status=quote.status,
         subtotal=totals["subtotal"], discount_total=totals["discount_total"],
         cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
         has_pdf=bool(quote.pdf_path), approval_status=quote.approval_status, approvals=quote.approvals or [],
@@ -482,7 +503,7 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     )
 
 
-def _render_line_items_pdf(doc_label: str, doc_number: str | None, line_items: list, contact: CrmContact, company: Company | None, organization, totals: dict, tax_invoice: bool = False) -> bytes:
+def _render_line_items_pdf(doc_label: str, doc_number: str | None, line_items: list, contact: CrmContact | None, company: Company | None, organization, totals: dict, tax_invoice: bool = False) -> bytes:
     """Shared by Quote (doc_label="Quote", tax_invoice=False) and SalesInvoice
     (doc_label="TAX INVOICE", tax_invoice=True) -- both a proforma and a real tax invoice are the
     same header/party/item-table/totals layout; a real invoice additionally gets a signatory
@@ -498,7 +519,7 @@ def _render_line_items_pdf(doc_label: str, doc_number: str | None, line_items: l
     pdf.set_font("Helvetica", "B", 12)
     pdf.cell(0, 8, _safe_text(f"{doc_label} {doc_number or '(draft)'}"), ln=True)
     pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, _safe_text(f"To: {company.name if company else (contact.name or contact.phone or 'Customer')}"), ln=True)
+    pdf.cell(0, 6, _safe_text(f"To: {company.name if company else (contact.name or contact.phone if contact else None) or 'Customer'}"), ln=True)
     if company and company.gstin:
         pdf.cell(0, 6, _safe_text(f"GSTIN: {company.gstin}"), ln=True)
     pdf.ln(4)
@@ -575,11 +596,26 @@ def list_quotes(deal_id: str | None = None, pending_my_approval: bool = False, u
 def create_quote(payload: QuoteCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    deal = db.scalar(select(Deal).where(Deal.id == payload.deal_id, Deal.entity_id == entity.id))
-    if not deal:
-        raise HTTPException(status_code=404, detail="Deal not found")
-    price_list_id = _deal_price_list_id(db, deal)
-    quote = Quote(entity_id=entity.id, deal_id=deal.id, line_items=_apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id), created_by_user_id=user.id)
+    if not payload.deal_id and not payload.contact_id:
+        raise HTTPException(status_code=422, detail="A quote needs either a deal_id or a contact_id")
+    deal_id: str | None = None
+    contact_id: str | None = None
+    if payload.deal_id:
+        deal = db.scalar(select(Deal).where(Deal.id == payload.deal_id, Deal.entity_id == entity.id))
+        if not deal:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        price_list_id = _deal_price_list_id(db, deal)
+        deal_id = deal.id
+    else:
+        contact = db.scalar(select(CrmContact).where(CrmContact.id == payload.contact_id, CrmContact.entity_id == entity.id))
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        price_list_id = _contact_price_list_id(db, contact)
+        contact_id = contact.id
+    quote = Quote(
+        entity_id=entity.id, deal_id=deal_id, contact_id=contact_id,
+        line_items=_apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id), created_by_user_id=user.id,
+    )
     db.add(quote)
     db.commit()
     db.refresh(quote)
@@ -608,8 +644,11 @@ def update_quote_line_items(quote_id: str, payload: QuoteLineItemsUpdateRequest,
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.status != "draft":
         raise HTTPException(status_code=409, detail="Only a draft quote's line items can be edited")
-    deal = db.get(Deal, quote.deal_id)
-    price_list_id = _deal_price_list_id(db, deal) if deal else None
+    if quote.deal_id:
+        deal = db.get(Deal, quote.deal_id)
+        price_list_id = _deal_price_list_id(db, deal) if deal else None
+    else:
+        price_list_id = _contact_price_list_id(db, _quote_contact(db, quote))
     quote.line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
     db.commit()
     db.refresh(quote)
@@ -664,9 +703,8 @@ def approve_quote(quote_id: str, user: User = Depends(require_user), db: Session
 
 
 def _get_pdf_bytes(db: Session, quote: Quote) -> bytes:
-    deal = db.get(Deal, quote.deal_id)
-    contact = db.get(CrmContact, deal.contact_id)
-    company = db.get(Company, contact.company_id) if contact.company_id else None
+    contact = _quote_contact(db, quote)
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     entity = db.get(Entity, quote.entity_id)
     organization = db.get(Organization, entity.organization_id)
     entity_state = organization.state_code or state_code_from_gstin(organization.gstin)
@@ -695,9 +733,8 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
         raise HTTPException(status_code=404, detail="Quote not found")
     if quote.approval_status == "pending":
         raise HTTPException(status_code=422, detail="This quote is waiting for manager approval before it can be sent")
-    deal = db.get(Deal, quote.deal_id)
-    contact = db.get(CrmContact, deal.contact_id)
-    if not contact.phone:
+    contact = _quote_contact(db, quote)
+    if not contact or not contact.phone:
         raise HTTPException(status_code=422, detail="This contact has no phone number to send to")
     wa_id = "".join(ch for ch in contact.phone if ch.isdigit())
     connection = db.get(WabaConnection, entity.id)
@@ -729,7 +766,8 @@ def send_quote_via_whatsapp(quote_id: str, user: User = Depends(require_user), d
 
     quote.status = "sent"
     quote.sent_at = datetime.now(timezone.utc)
-    if deal.owner_user_id and deal.owner_user_id != user.id:
+    deal = db.get(Deal, quote.deal_id) if quote.deal_id else None
+    if deal and deal.owner_user_id and deal.owner_user_id != user.id:
         notify_user(db, entity.id, deal.owner_user_id, "quote_sent", "Quote sent", f"{quote.quote_number} was sent to {contact.name or contact.phone}", "/crm-quotes")
     db.commit()
     db.refresh(quote)
@@ -748,8 +786,7 @@ def list_sales_invoices(deal_id: str | None = None, user: User = Depends(require
 
 
 def _sales_invoice_out(db: Session, invoice: SalesInvoice) -> SalesInvoiceOut:
-    deal = db.get(Deal, invoice.deal_id)
-    contact = db.get(CrmContact, deal.contact_id) if deal else None
+    contact = _invoice_contact(db, invoice)
     company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     entity = db.get(Entity, invoice.entity_id)
     organization = db.get(Organization, entity.organization_id) if entity else None
@@ -758,7 +795,8 @@ def _sales_invoice_out(db: Session, invoice: SalesInvoice) -> SalesInvoiceOut:
     totals = _compute_totals(db, invoice.line_items, entity_state, company_state)
     amount_paid = float(invoice.amount_paid)
     return SalesInvoiceOut(
-        id=invoice.id, deal_id=invoice.deal_id, quote_id=invoice.quote_id, invoice_number=invoice.invoice_number,
+        id=invoice.id, deal_id=invoice.deal_id, contact_id=invoice.contact_id or (contact.id if contact else ""),
+        quote_id=invoice.quote_id, invoice_number=invoice.invoice_number,
         line_items=invoice.line_items, status=invoice.status,
         subtotal=totals["subtotal"], discount_total=totals["discount_total"],
         cgst=totals["cgst"], sgst=totals["sgst"], igst=totals["igst"], total=totals["total"],
@@ -770,9 +808,8 @@ def _sales_invoice_out(db: Session, invoice: SalesInvoice) -> SalesInvoiceOut:
 
 
 def _get_sales_invoice_pdf_bytes(db: Session, invoice: SalesInvoice) -> bytes:
-    deal = db.get(Deal, invoice.deal_id)
-    contact = db.get(CrmContact, deal.contact_id)
-    company = db.get(Company, contact.company_id) if contact.company_id else None
+    contact = _invoice_contact(db, invoice)
+    company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     entity = db.get(Entity, invoice.entity_id)
     organization = db.get(Organization, entity.organization_id)
     entity_state = organization.state_code or state_code_from_gstin(organization.gstin)
@@ -781,13 +818,17 @@ def _get_sales_invoice_pdf_bytes(db: Session, invoice: SalesInvoice) -> bytes:
     return _render_line_items_pdf("TAX INVOICE", invoice.invoice_number, invoice.line_items, contact, company, organization, totals, tax_invoice=True)
 
 
-def _issue_sales_invoice(db: Session, entity: Entity, deal_id: str, line_items: list, user_id: str | None, quote_id: str | None = None) -> SalesInvoice:
+def _issue_sales_invoice(
+    db: Session, entity: Entity, line_items: list, user_id: str | None,
+    deal_id: str | None = None, contact_id: str | None = None, quote_id: str | None = None,
+) -> SalesInvoice:
     """Shared by convert_quote_to_invoice and create_direct_sales_invoice -- both produce the
     same real, sequence-numbered SalesInvoice + PDF, differing only in where line_items/quote_id
     come from. More than one invoice can exist per Deal (milestone/partial billing across
     multiple invoices is allowed); the only real constraint is a given Quote converts at most
-    once (enforced by the caller checking quote.converted_invoice_id first)."""
-    invoice = SalesInvoice(entity_id=entity.id, deal_id=deal_id, quote_id=quote_id, line_items=line_items, created_by_user_id=user_id)
+    once (enforced by the caller checking quote.converted_invoice_id first). Exactly one of
+    deal_id/contact_id is set, mirroring Quote's own deal_id/contact_id split."""
+    invoice = SalesInvoice(entity_id=entity.id, deal_id=deal_id, contact_id=contact_id, quote_id=quote_id, line_items=line_items, created_by_user_id=user_id)
     db.add(invoice)
     db.flush()
 
@@ -822,9 +863,11 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
     if quote.converted_invoice_id:
         raise HTTPException(status_code=409, detail="This quote has already been converted to an invoice")
 
-    invoice = _issue_sales_invoice(db, entity, quote.deal_id, quote.line_items, user.id, quote_id=quote.id)
+    invoice = _issue_sales_invoice(
+        db, entity, quote.line_items, user.id, deal_id=quote.deal_id, contact_id=quote.contact_id, quote_id=quote.id,
+    )
     quote.converted_invoice_id = invoice.id
-    deal = db.get(Deal, quote.deal_id)
+    deal = db.get(Deal, quote.deal_id) if quote.deal_id else None
     if deal and deal.owner_user_id and deal.owner_user_id != user.id:
         notify_user(db, entity.id, deal.owner_user_id, "invoice_generated", "Invoice generated", f"{invoice.invoice_number} was generated from {quote.quote_number}", "/crm-quotes")
     db.commit()
@@ -848,7 +891,7 @@ def create_direct_sales_invoice(deal_id: str, payload: SalesInvoiceCreateRequest
     price_list_id = _deal_price_list_id(db, deal)
     line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
 
-    invoice = _issue_sales_invoice(db, entity, deal.id, line_items, user.id)
+    invoice = _issue_sales_invoice(db, entity, line_items, user.id, deal_id=deal.id)
     if deal.owner_user_id and deal.owner_user_id != user.id:
         deal_contact = db.get(CrmContact, deal.contact_id)
         notify_user(db, entity.id, deal.owner_user_id, "invoice_generated", "Invoice generated", f"{invoice.invoice_number} was generated for {deal_contact.name if deal_contact else 'your deal'}", "/crm-quotes")
@@ -875,9 +918,8 @@ def send_sales_invoice_via_whatsapp(invoice_id: str, user: User = Depends(requir
     invoice = db.get(SalesInvoice, invoice_id)
     if not invoice or invoice.entity_id != entity.id:
         raise HTTPException(status_code=404, detail="Invoice not found")
-    deal = db.get(Deal, invoice.deal_id)
-    contact = db.get(CrmContact, deal.contact_id)
-    if not contact.phone:
+    contact = _invoice_contact(db, invoice)
+    if not contact or not contact.phone:
         raise HTTPException(status_code=422, detail="This contact has no phone number to send to")
     wa_id = "".join(ch for ch in contact.phone if ch.isdigit())
     connection = db.get(WabaConnection, entity.id)

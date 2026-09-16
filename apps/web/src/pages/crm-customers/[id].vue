@@ -476,16 +476,72 @@ async function convertToTicket() {
   }
 }
 
-// crm-quotes.vue's own new-quote form already reads ?deal_id= to pre-select a deal -- pass this
-// customer's single deal when there's exactly one (the common case), otherwise just land on the
-// page and let the agent pick, same as every other "New X" quick action here.
-function newQuote() {
+// --- New quote (inline, matches the New Deal/New Task quick actions) -----------------------
+
+type Product = { id: string, name: string, sku: string | null, hsn_code: string, unit_price: number, tax_rate: number | null, is_bundle: boolean, active: boolean }
+const products = ref<Product[]>([])
+const newQuoteDialog = ref(false)
+const newQuoteForm = reactive({ deal_id: null as string | null, line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0, product_id: null as string | null }] })
+const newQuoteSaving = ref(false)
+const newQuoteError = ref('')
+
+async function newQuote() {
   if (!summary.value)
     return
-  if (summary.value.deals.length === 1)
-    router.push(`/crm-quotes?deal_id=${summary.value.deals[0].id}`)
-  else
-    router.push('/crm-quotes')
+  newQuoteForm.deal_id = summary.value.deals.find(d => d.status === 'open')?.id ?? null
+  newQuoteForm.line_items = [{ description: '', hsn_code: '', quantity: 1, unit_price: 0, product_id: null }]
+  newQuoteError.value = ''
+  newQuoteDialog.value = true
+  if (!products.value.length) {
+    try {
+      products.value = (await $api<Product[]>('/v1/crm/quotes/products')).filter(p => p.active)
+    }
+    catch {
+      // Product picker is a convenience -- the line items still work as free-text if this fails.
+    }
+  }
+}
+
+function addNewQuoteLine() {
+  newQuoteForm.line_items.push({ description: '', hsn_code: '', quantity: 1, unit_price: 0, product_id: null })
+}
+
+function removeNewQuoteLine(index: number) {
+  if (newQuoteForm.line_items.length > 1)
+    newQuoteForm.line_items.splice(index, 1)
+}
+
+function pickNewQuoteProduct(item: typeof newQuoteForm.line_items[number], productId: string | null) {
+  item.product_id = productId
+  const product = products.value.find(p => p.id === productId)
+  if (product) {
+    item.description = product.name
+    item.hsn_code = product.hsn_code
+    item.unit_price = product.is_bundle ? 0 : product.unit_price
+  }
+}
+
+const newQuoteDraftTotal = computed(() => newQuoteForm.line_items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unit_price || 0), 0))
+
+async function createQuoteInline() {
+  if (!summary.value)
+    return
+  newQuoteSaving.value = true
+  newQuoteError.value = ''
+  try {
+    const body = newQuoteForm.deal_id
+      ? { deal_id: newQuoteForm.deal_id, line_items: newQuoteForm.line_items }
+      : { contact_id: summary.value.customer.contact.id, line_items: newQuoteForm.line_items }
+    const created = await $api<Quote>('/v1/crm/quotes', { method: 'POST', body })
+    summary.value.quotes.unshift(created)
+    newQuoteDialog.value = false
+  }
+  catch (error: any) {
+    newQuoteError.value = extractErrorMessage(error, 'Could not create this quote.')
+  }
+  finally {
+    newQuoteSaving.value = false
+  }
 }
 
 onMounted(load)
@@ -1068,6 +1124,58 @@ onMounted(load)
         </VBtn>
         <VBtn color="primary" :loading="newDealSaving" @click="createDealInline">
           Create deal
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="newQuoteDialog" max-width="640">
+    <VCard title="New quote">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="newQuoteDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="newQuoteError" type="error" variant="tonal" density="compact">
+          {{ newQuoteError }}
+        </VAlert>
+        <VSelect
+          v-model="newQuoteForm.deal_id" label="Deal (optional)" density="compact" clearable
+          :items="summary!.deals.map(d => ({ title: `${d.name || 'Untitled deal'} -- ${d.stage}`, value: d.id }))"
+          :hint="summary?.deals.length ? undefined : 'This customer has no deal -- the quote will be created standalone, tied directly to their contact record.'"
+          persistent-hint
+        />
+        <div>
+          <div class="d-flex align-center justify-space-between mb-2">
+            <span class="text-subtitle-2">Line items</span>
+            <VBtn size="small" variant="text" prepend-icon="tabler-plus" @click="addNewQuoteLine">
+              Add line
+            </VBtn>
+          </div>
+          <div v-for="(item, index) in newQuoteForm.line_items" :key="index" class="d-flex ga-2 align-center mb-2">
+            <VSelect
+              v-if="products.length"
+              :model-value="item.product_id" placeholder="Pick a product (optional)" density="compact" hide-details clearable
+              style="max-width: 160px;" :items="products.map(p => ({ title: p.is_bundle ? `${p.name} (bundle)` : p.name, value: p.id }))"
+              @update:model-value="(v: string | null) => pickNewQuoteProduct(item, v)"
+            />
+            <VTextField v-model="item.description" placeholder="Description" density="compact" hide-details style="flex: 2;" />
+            <VTextField v-model="item.hsn_code" placeholder="HSN" density="compact" hide-details style="max-width: 90px;" />
+            <VTextField v-model.number="item.quantity" type="number" placeholder="Qty" density="compact" hide-details style="max-width: 80px;" />
+            <VTextField v-model.number="item.unit_price" type="number" placeholder="Unit price" density="compact" hide-details style="max-width: 110px;" />
+            <VBtn icon="tabler-x" size="small" variant="text" :disabled="newQuoteForm.line_items.length === 1" @click="removeNewQuoteLine(index)" />
+          </div>
+          <p class="text-caption text-medium-emphasis text-end mb-0">
+            Subtotal (before GST): {{ new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 2 }).format(newQuoteDraftTotal) }}
+          </p>
+        </div>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="newQuoteDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="newQuoteSaving" @click="createQuoteInline">
+          Create
         </VBtn>
       </VCardActions>
     </VCard>

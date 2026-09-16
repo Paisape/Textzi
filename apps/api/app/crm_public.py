@@ -14,7 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .crm import rescore_lead
-from .crm_quotes import _quote_out
+from .crm_quotes import _quote_contact, _quote_out
 from .crm_sequences import apply_lead_routing
 from .database import get_db
 from .models import BookingLink, BusinessHours, Company, CrmContact, CustomFieldDefinition, Deal, Entity, Lead, Organization, Quote, Task, WebForm
@@ -128,8 +128,7 @@ def _get_sendable_quote(db: Session, quote_id: str) -> Quote:
 
 def _public_quote_out(db: Session, quote: Quote) -> PublicQuoteOut:
     out = _quote_out(db, quote)
-    deal = db.get(Deal, quote.deal_id)
-    contact = db.get(CrmContact, deal.contact_id) if deal else None
+    contact = _quote_contact(db, quote)
     company = db.get(Company, contact.company_id) if contact and contact.company_id else None
     return PublicQuoteOut(
         quote_number=out.quote_number, line_items=out.line_items, status=out.status,
