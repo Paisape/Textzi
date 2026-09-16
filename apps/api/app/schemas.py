@@ -3578,6 +3578,17 @@ class CustomerOut(BaseModel):
     created_at: str
 
 
+class CustomerListEntryOut(CustomerOut):
+    # Extra columns for the Customers list page, matching the WABA Contacts list's own shape
+    # (Name/Mobile/Source/Owner/Last activity/Status) -- resolved via each customer's linked WABA
+    # Contact (Contact.crm_contact_id), when one exists; a CRM-native customer with no WhatsApp
+    # history simply gets nulls/zero here, same "not every contact has WhatsApp activity" fact
+    # already true throughout this codebase (e.g. _recent_activity).
+    open_ticket_count: int
+    open_deal_id: str | None  # a currently-open Deal for this contact, if any (independent of deal_id, the ORIGINATING deal)
+    last_activity_at: str | None
+
+
 class CustomerUpdateRequest(BaseModel):
     owner_user_id: str | None = None
     notes: str | None = None

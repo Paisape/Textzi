@@ -16,6 +16,9 @@ type Customer = {
   notes: string | null
   custom_fields: Record<string, any>
   created_at: string
+  open_ticket_count: number
+  open_deal_id: string | null
+  last_activity_at: string | null
 }
 type AssignableUser = { id: string, full_name: string, email: string }
 type CustomField = { id: string, name: string, field_type: 'text' | 'number' | 'date' | 'dropdown', options: string[], required: boolean }
@@ -77,6 +80,35 @@ function sourceLabel(customer: Customer) {
   return 'Manual'
 }
 
+function formatDate(value: string | null) {
+  return value ? new Date(value).toLocaleString('en-IN', { dateStyle: 'medium', timeStyle: 'short' }) : '—'
+}
+
+const exportingCsv = ref(false)
+
+function exportCsv() {
+  exportingCsv.value = true
+  try {
+    const rows = [['Name', 'Mobile', 'Email', 'Source', 'Owner', 'Open tickets', 'Last activity', 'Created']]
+    for (const customer of filteredCustomers.value) {
+      rows.push([
+        customer.contact.name || '', customer.contact.phone || '', customer.contact.email || '',
+        sourceLabel(customer), ownerName(customer), String(customer.open_ticket_count),
+        customer.last_activity_at || '', customer.created_at,
+      ])
+    }
+    const csv = rows.map(row => row.map(cell => `"${cell.replace(/"/g, '""')}"`).join(',')).join('\n')
+    const link = document.createElement('a')
+    link.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }))
+    link.download = 'customers.csv'
+    link.click()
+    URL.revokeObjectURL(link.href)
+  }
+  finally {
+    exportingCsv.value = false
+  }
+}
+
 // --- New customer ------------------------------------------------------------------------------
 
 const newDialog = ref(false)
@@ -125,6 +157,35 @@ async function createCustomer() {
   }
 }
 
+// --- CSV import ------------------------------------------------------------------------------
+
+const importDialog = ref(false)
+const importFile = ref<File[]>([])
+const importing = ref(false)
+const importError = ref('')
+const importResult = ref<{ created: number, skipped: number, errors: string[] } | null>(null)
+
+async function onImportFile() {
+  const file = importFile.value[0]
+  if (!file)
+    return
+  importing.value = true
+  importError.value = ''
+  importResult.value = null
+  try {
+    const formData = new FormData()
+    formData.append('file', file)
+    importResult.value = await $api('/v1/crm/customers/import', { method: 'POST', body: formData })
+    await loadAll()
+  }
+  catch (error: any) {
+    importError.value = extractErrorMessage(error, 'Could not import this file.')
+  }
+  finally {
+    importing.value = false
+  }
+}
+
 onMounted(loadAll)
 </script>
 
@@ -139,9 +200,17 @@ onMounted(loadAll)
         conversation, or added manually for a customer with no sales process to track.
       </p>
     </div>
-    <VBtn color="primary" prepend-icon="tabler-plus" @click="openNewDialog">
-      New customer
-    </VBtn>
+    <div class="d-flex align-center gap-3">
+      <VBtn variant="tonal" prepend-icon="tabler-upload" @click="importDialog = true">
+        Import CSV
+      </VBtn>
+      <VBtn variant="tonal" prepend-icon="tabler-download" :loading="exportingCsv" :disabled="exportingCsv" @click="exportCsv">
+        Export CSV
+      </VBtn>
+      <VBtn color="primary" prepend-icon="tabler-plus" @click="openNewDialog">
+        New customer
+      </VBtn>
+    </div>
   </div>
 
   <VAlert v-if="crmInactive" type="warning" variant="tonal" class="mb-4">
@@ -164,10 +233,15 @@ onMounted(loadAll)
     <VTable>
       <thead>
         <tr>
-          <th>Contact</th>
+          <th>Name</th>
+          <th>Mobile no</th>
+          <th>Email</th>
           <th>Source</th>
           <th>Owner</th>
+          <th>Last activity</th>
+          <th>Status</th>
           <th>Created</th>
+          <th />
         </tr>
       </thead>
       <tbody>
@@ -178,9 +252,26 @@ onMounted(loadAll)
           <td>
             {{ customer.contact.name || customer.contact.phone || customer.contact.email || 'Unknown' }}
           </td>
+          <td>{{ customer.contact.phone || '—' }}</td>
+          <td>{{ customer.contact.email || '—' }}</td>
           <td>{{ sourceLabel(customer) }}</td>
           <td>{{ ownerName(customer) }}</td>
+          <td>{{ formatDate(customer.last_activity_at) }}</td>
+          <td>
+            <VChip v-if="customer.open_deal_id" size="small" color="warning" variant="tonal">
+              Open deal
+            </VChip>
+            <VChip v-if="customer.open_ticket_count" size="small" color="error" variant="tonal" class="ml-1">
+              {{ customer.open_ticket_count }} open ticket{{ customer.open_ticket_count === 1 ? '' : 's' }}
+            </VChip>
+            <span v-if="!customer.open_deal_id && !customer.open_ticket_count" class="text-medium-emphasis">—</span>
+          </td>
           <td>{{ new Date(customer.created_at).toLocaleDateString() }}</td>
+          <td>
+            <RouterLink :to="`/crm-customers/${customer.id}`" class="font-weight-medium" @click.stop>
+              View
+            </RouterLink>
+          </td>
         </tr>
       </tbody>
     </VTable>
@@ -233,6 +324,31 @@ onMounted(loadAll)
           Create
         </VBtn>
       </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="importDialog" max-width="480">
+    <VCard>
+      <VCardTitle>Import customers</VCardTitle>
+      <VCardText>
+        <p class="text-body-2 text-medium-emphasis mb-3">
+          A CSV with a <code>name</code> column (required) and optional <code>phone</code>/
+          <code>email</code>/<code>title</code> columns. A row matching an existing customer's
+          phone or email is skipped, not duplicated.
+        </p>
+        <VAlert v-if="importError" type="error" variant="tonal" density="compact" class="mb-3">
+          {{ importError }}
+        </VAlert>
+        <VAlert v-if="importResult" type="success" variant="tonal" density="compact" class="mb-3">
+          {{ importResult.created }} created, {{ importResult.skipped }} skipped.
+        </VAlert>
+        <VFileInput v-model="importFile" accept=".csv" label="CSV file" :loading="importing" @update:model-value="onImportFile" />
+      </VCardText>
+      <VCardText class="d-flex justify-end pt-0">
+        <VBtn variant="text" @click="importDialog = false">
+          Close
+        </VBtn>
+      </VCardText>
     </VCard>
   </VDialog>
 </template>

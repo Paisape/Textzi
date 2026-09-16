@@ -33,7 +33,7 @@ from .schemas import (
     ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
     CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
-    CustomerCreateRequest, CustomerDetailOut, CustomerLogEntryOut, CustomerNoteCreateRequest, CustomerNoteOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
+    CustomerCreateRequest, CustomerDetailOut, CustomerListEntryOut, CustomerLogEntryOut, CustomerNoteCreateRequest, CustomerNoteOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
     DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
     DealNotesUpdateRequest, DealOut, DealOwnerUpdateRequest, DealStageEventOut, DealStageHistoryOut, DealStageUpdateRequest, DealStatusUpdateRequest,
@@ -607,6 +607,39 @@ def import_leads(file: UploadFile = File(...), user: User = Depends(require_user
     return ImportResultOut(created=created, skipped=skipped, errors=errors[:20])
 
 
+@router.post("/customers/import", response_model=ImportResultOut)
+def import_customers(file: UploadFile = File(...), user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Same fixed-header CSV contract as /contacts/import and /leads/import -- a row whose phone/
+    email already has a Customer record is skipped, not overwritten, so re-uploading the same file
+    twice is always safe. company goes into the contact's linked Company record (matching /contacts/
+    import's own behavior, not free text -- a Customer is a real converted account, closer to a
+    Contact's own shape than a pre-qualification Lead's)."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    raw = file.file.read().decode("utf-8-sig", errors="replace")
+    reader = csv.DictReader(io.StringIO(raw))
+    created = 0
+    skipped = 0
+    errors: list[str] = []
+    for i, row in enumerate(reader, start=2):
+        name = (row.get("name") or "").strip()
+        phone = (row.get("phone") or "").strip() or None
+        email = (row.get("email") or "").strip() or None
+        title = (row.get("title") or "").strip() or None
+        if not name:
+            errors.append(f"Row {i}: missing name")
+            skipped += 1
+            continue
+        contact = _resolve_or_create_contact(db, entity.id, None, name, phone, email, title)
+        if db.scalar(select(Customer).where(Customer.contact_id == contact.id)):
+            skipped += 1
+            continue
+        db.add(Customer(entity_id=entity.id, contact_id=contact.id))
+        created += 1
+    db.commit()
+    return ImportResultOut(created=created, skipped=skipped, errors=errors[:20])
+
+
 @router.post("/contacts/merge", response_model=CrmContactOut)
 def merge_contacts(payload: MergeContactsRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Reassigns every Lead/Deal/Customer/Task/Attachment (and the reverse WhatsApp-contact link)
@@ -964,13 +997,61 @@ def bulk_update_deal_stage(payload: DealBulkStageRequest, user: User = Depends(r
     return DealBulkStageResult(updated=[_deal_out(d, contacts.get(d.contact_id)) for d in updated], skipped=skipped)
 
 
-@router.get("/customers", response_model=list[CustomerOut])
+@router.get("/customers", response_model=list[CustomerListEntryOut])
 def list_customers(user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Extra columns beyond the base CustomerOut (open ticket count, an open Deal if any, last
+    activity) are resolved via each customer's linked WABA Contact (Contact.crm_contact_id) --
+    batched across every customer on the page in a handful of queries, not a per-row call into
+    get_customer_summary's own heavier per-record aggregation (which would be an N+1 query pattern
+    here, fine for one customer's detail page, not for a whole list)."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     customers = db.scalars(select(Customer).where(Customer.entity_id == entity.id).order_by(Customer.created_at.desc())).all()
-    contacts = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_([customer.contact_id for customer in customers]))).all()} if customers else {}
-    return [_customer_out(customer, contacts[customer.contact_id]) for customer in customers]
+    if not customers:
+        return []
+    contact_ids = [c.contact_id for c in customers]
+    contacts = {c.id: c for c in db.scalars(select(CrmContact).where(CrmContact.id.in_(contact_ids))).all()}
+
+    open_deals = db.scalars(select(Deal).where(Deal.contact_id.in_(contact_ids), Deal.status == "open")).all()
+    open_deal_by_contact = {d.contact_id: d.id for d in open_deals}
+
+    waba_contacts = db.scalars(select(Contact).where(Contact.entity_id == entity.id, Contact.crm_contact_id.in_(contact_ids))).all()
+    waba_contact_by_crm_id = {c.crm_contact_id: c for c in waba_contacts}
+    waba_contact_ids = [c.id for c in waba_contacts]
+
+    conversations = db.scalars(select(Conversation).where(Conversation.contact_id.in_(waba_contact_ids))).all() if waba_contact_ids else []
+    open_ticket_count_by_waba_contact: dict[str, int] = {}
+    last_message_at_by_conversation: dict[str, datetime] = {}
+    conversation_to_waba_contact = {c.id: c.contact_id for c in conversations}
+    for c in conversations:
+        if c.is_ticket and c.status != "resolved":
+            open_ticket_count_by_waba_contact[c.contact_id] = open_ticket_count_by_waba_contact.get(c.contact_id, 0) + 1
+
+    conversation_ids = [c.id for c in conversations]
+    last_activity_by_waba_contact: dict[str, datetime] = {}
+    if conversation_ids:
+        rows = db.execute(
+            select(ConversationMessage.conversation_id, func.max(ConversationMessage.created_at))
+            .where(ConversationMessage.conversation_id.in_(conversation_ids), ConversationMessage.is_private.is_(False))
+            .group_by(ConversationMessage.conversation_id),
+        ).all()
+        for conversation_id, last_at in rows:
+            waba_contact_id = conversation_to_waba_contact.get(conversation_id)
+            if waba_contact_id and (waba_contact_id not in last_activity_by_waba_contact or last_at > last_activity_by_waba_contact[waba_contact_id]):
+                last_activity_by_waba_contact[waba_contact_id] = last_at
+
+    out = []
+    for customer in customers:
+        contact = contacts[customer.contact_id]
+        waba_contact = waba_contact_by_crm_id.get(customer.contact_id)
+        last_activity = last_activity_by_waba_contact.get(waba_contact.id) if waba_contact else None
+        out.append(CustomerListEntryOut(
+            **_customer_out(customer, contact).model_dump(),
+            open_ticket_count=open_ticket_count_by_waba_contact.get(waba_contact.id, 0) if waba_contact else 0,
+            open_deal_id=open_deal_by_contact.get(customer.contact_id),
+            last_activity_at=last_activity.isoformat() if last_activity else None,
+        ))
+    return out
 
 
 @router.post("/customers", response_model=CustomerOut)
