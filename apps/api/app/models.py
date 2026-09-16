@@ -2211,6 +2211,13 @@ class Quote(Base):
     signed_by_name: Mapped[str | None] = mapped_column(String(160), nullable=True)
     signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     signed_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # Set when this quote was created via the "Revise" action on another quote -- forms a linked
+    # chain (revises_quote_id -> revises_quote_id -> ... -> the original, revises_quote_id=None).
+    # Zoho CRM itself has no real quote-versioning feature (confirmed: their own community forum
+    # has open requests for it) -- their pattern is just creating another quote under the same
+    # deal with no link back. This is a deliberate improvement over that gap, not a Zoho parity
+    # item: a real, followable chain instead of a pile of unlinked quotes.
+    revises_quote_id: Mapped[str | None] = mapped_column(ForeignKey("quotes.id"), nullable=True)
 
 
 class SalesInvoice(Base):

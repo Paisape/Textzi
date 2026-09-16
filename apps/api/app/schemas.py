@@ -2892,6 +2892,8 @@ class QuoteOut(BaseModel):
     sent_at: str | None
     signed_by_name: str | None = None
     signed_at: str | None = None
+    revises_quote_id: str | None = None
+    revision_number: int = 1
 
 
 class PublicQuoteOut(BaseModel):
@@ -2917,8 +2919,11 @@ class PublicQuoteSignRequest(BaseModel):
 
 
 class SalesInvoiceCreateRequest(BaseModel):
-    # Backs the direct-sale path (POST /deals/{deal_id}/invoices, no Quote involved) -- deal_id
-    # comes from the URL path, not repeated here.
+    # Backs the direct-sale path (no Quote involved). Exactly one of deal_id/contact_id, same
+    # split as QuoteCreateRequest -- a direct invoice can be issued standalone against a contact,
+    # not just against a deal.
+    deal_id: str | None = None
+    contact_id: str | None = None
     line_items: list[QuoteLineItem]
 
 
@@ -2950,6 +2955,22 @@ class SalesInvoiceOut(BaseModel):
     created_at: str
     sent_at: str | None
     paid_at: str | None
+
+
+class QuoteApprovalOut(BaseModel):
+    user_id: str
+    user_name: str | None
+    approved_at: str
+
+
+class QuoteDetailOut(QuoteOut):
+    contact_name: str | None
+    contact_phone: str | None
+    contact_email: str | None
+    deal_name: str | None
+    approval_log: list[QuoteApprovalOut]
+    invoice: SalesInvoiceOut | None
+    revision_chain: list[QuoteOut]  # every quote in this chain, oldest first, including this one
 
 
 class QuoteCreateRequest(BaseModel):

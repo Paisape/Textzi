@@ -33,6 +33,18 @@ type Quote = {
   sent_at: string | null
   signed_by_name: string | null
   signed_at: string | null
+  revises_quote_id: string | null
+  revision_number: number
+}
+type QuoteApproval = { user_id: string, user_name: string | null, approved_at: string }
+type QuoteDetail = Quote & {
+  contact_name: string | null
+  contact_phone: string | null
+  contact_email: string | null
+  deal_name: string | null
+  approval_log: QuoteApproval[]
+  invoice: SalesInvoice | null
+  revision_chain: Quote[]
 }
 type SalesInvoice = {
   id: string
@@ -223,6 +235,109 @@ async function save() {
   }
 }
 
+// --- New invoice dialog (direct, no quote) ------------------------------------------------
+// Matches Zoho's own Invoices module having its own independent "New" action -- the backend
+// endpoint (POST /v1/crm/quotes/invoices) already existed but had no UI anywhere.
+
+const invoiceDialog = ref(false)
+const invoiceForm = reactive({ mode: 'deal' as 'deal' | 'contact', deal_id: '', contact_id: '', line_items: [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }] as LineItem[] })
+const invoiceSaving = ref(false)
+const invoiceSaveError = ref('')
+
+function openCreateInvoice() {
+  invoiceForm.mode = 'deal'
+  invoiceForm.deal_id = ''
+  invoiceForm.contact_id = ''
+  invoiceForm.line_items = [{ description: '', hsn_code: '', quantity: 1, unit_price: 0 }]
+  invoiceSaveError.value = ''
+  invoiceDialog.value = true
+}
+
+function addInvoiceLine() {
+  invoiceForm.line_items.push({ description: '', hsn_code: '', quantity: 1, unit_price: 0 })
+}
+
+function removeInvoiceLine(index: number) {
+  if (invoiceForm.line_items.length > 1)
+    invoiceForm.line_items.splice(index, 1)
+}
+
+function pickInvoiceProduct(item: LineItem, productId: string | null) {
+  item.product_id = productId
+  const product = products.value.find(p => p.id === productId)
+  if (product) {
+    item.description = product.name
+    item.hsn_code = product.hsn_code
+    item.unit_price = product.is_bundle ? 0 : product.unit_price
+    item.tax_rate = product.is_bundle ? null : product.tax_rate
+  }
+}
+
+const invoiceDraftTotal = computed(() => invoiceForm.line_items.reduce((sum, item) => sum + (item.quantity || 0) * (item.unit_price || 0), 0))
+
+async function saveInvoice() {
+  if (!invoiceForm.line_items.length || (invoiceForm.mode === 'deal' ? !invoiceForm.deal_id : !invoiceForm.contact_id))
+    return
+  invoiceSaving.value = true
+  invoiceSaveError.value = ''
+  try {
+    const created = await $api<SalesInvoice>('/v1/crm/quotes/invoices', {
+      method: 'POST',
+      body: invoiceForm.mode === 'deal'
+        ? { deal_id: invoiceForm.deal_id, line_items: invoiceForm.line_items }
+        : { contact_id: invoiceForm.contact_id, line_items: invoiceForm.line_items },
+    })
+    salesInvoices.value.unshift(created)
+    invoiceDialog.value = false
+  }
+  catch (error: any) {
+    invoiceSaveError.value = extractErrorMessage(error, 'Could not create this invoice.')
+  }
+  finally {
+    invoiceSaving.value = false
+  }
+}
+
+// --- View dialog -------------------------------------------------------------------------
+
+const viewDialog = ref(false)
+const viewQuote = ref<QuoteDetail | null>(null)
+const viewLoading = ref(false)
+const viewError = ref('')
+
+async function openView(quote: Quote) {
+  viewDialog.value = true
+  viewLoading.value = true
+  viewError.value = ''
+  viewQuote.value = null
+  try {
+    viewQuote.value = await $api<QuoteDetail>(`/v1/crm/quotes/${quote.id}`)
+  }
+  catch (error: any) {
+    viewError.value = extractErrorMessage(error, 'Could not load this quote.')
+  }
+  finally {
+    viewLoading.value = false
+  }
+}
+
+async function reviseQuote(quote: Quote) {
+  busy.value = quote.id
+  actionError.value = ''
+  try {
+    const created = await $api<Quote>(`/v1/crm/quotes/${quote.id}/revise`, { method: 'POST' })
+    quotes.value.unshift(created)
+    viewDialog.value = false
+    openEdit(created)
+  }
+  catch (error: any) {
+    actionError.value = extractErrorMessage(error, 'Could not create a revision of this quote.')
+  }
+  finally {
+    busy.value = null
+  }
+}
+
 // --- Actions ---------------------------------------------------------------------------------
 
 async function removeQuote(quote: Quote) {
@@ -305,6 +420,10 @@ async function setStatus(quote: Quote, status: 'accepted' | 'rejected') {
 function invoiceForQuote(quote: Quote) {
   return salesInvoices.value.find(i => i.id === quote.converted_invoice_id)
 }
+
+// Invoices issued directly (no quote at all) don't show up in the Quotes table above -- listed
+// separately so "New invoice" has somewhere to actually show its result.
+const directInvoices = computed(() => salesInvoices.value.filter(i => !i.quote_id))
 
 async function convertToInvoice(quote: Quote) {
   busy.value = quote.id
@@ -431,11 +550,14 @@ onMounted(async () => {
         Quotes
       </h1>
       <p class="text-medium-emphasis">
-        GST-compliant proforma quotes tied to a deal — send via WhatsApp, then convert to an invoice once accepted.
+        GST-compliant proforma quotes and invoices — send a quote via WhatsApp then convert once accepted, or issue an invoice directly for a simple sale.
       </p>
     </div>
     <div class="d-flex align-center gap-4">
       <VCheckbox v-model="pendingMyApprovalOnly" label="Pending my approval" density="compact" hide-details />
+      <VBtn variant="tonal" prepend-icon="tabler-plus" @click="openCreateInvoice">
+        New invoice
+      </VBtn>
       <VBtn color="primary" prepend-icon="tabler-plus" @click="openCreate">
         New quote
       </VBtn>
@@ -472,6 +594,9 @@ onMounted(async () => {
           <td>
             <span v-if="quote.quote_number">{{ quote.quote_number }}</span>
             <span v-else class="text-medium-emphasis font-italic">Not yet numbered</span>
+            <VChip v-if="quote.revision_number > 1" size="x-small" variant="tonal" class="ms-1">
+              Rev {{ quote.revision_number }}
+            </VChip>
           </td>
           <td>{{ dealContactLabel(quote) }}</td>
           <td>
@@ -499,8 +624,10 @@ onMounted(async () => {
           </td>
           <td>
             <div class="d-flex ga-1 flex-wrap justify-end align-center">
+              <VBtn icon="tabler-eye" size="small" variant="text" title="View" @click="openView(quote)" />
               <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === quote.id" title="Download PDF" @click="downloadPdf(quote)" />
               <VBtn v-if="quote.status === 'draft'" icon="tabler-pencil" size="small" variant="text" title="Edit line items" @click="openEdit(quote)" />
+              <VBtn v-if="quote.status !== 'draft'" icon="tabler-copy" size="small" variant="text" :loading="busy === quote.id" title="Revise (clone into a new linked draft)" @click="reviseQuote(quote)" />
               <VBtn v-if="iCanApprove(quote)" icon="tabler-circle-check" size="small" variant="text" color="success" :loading="busy === quote.id" title="Approve" @click="approveQuote(quote)" />
               <VBtn
                 v-if="quote.status === 'draft' && quote.approval_status !== 'pending'"
@@ -529,6 +656,46 @@ onMounted(async () => {
     <p v-if="!loading && !visibleQuotes.length" class="text-medium-emphasis text-center pa-6">
       {{ pendingMyApprovalOnly ? 'Nothing waiting on your approval.' : 'No quotes yet.' }}
     </p>
+  </VCard>
+
+  <VCard v-if="!crmInactive && directInvoices.length" class="mt-6">
+    <VCardText>
+      <h2 class="text-h6 mb-0">
+        Invoices issued directly
+      </h2>
+      <p class="text-medium-emphasis mb-0">
+        No quote step -- issued straight for a simple sale.
+      </p>
+    </VCardText>
+    <VTable>
+      <thead>
+        <tr>
+          <th>Invoice #</th>
+          <th>Total</th>
+          <th>Status</th>
+          <th />
+        </tr>
+      </thead>
+      <tbody>
+        <tr v-for="invoice in directInvoices" :key="invoice.id">
+          <td>{{ invoice.invoice_number || 'Not yet numbered' }}</td>
+          <td>{{ inr(invoice.total) }}</td>
+          <td>
+            <VChip size="small" :color="invoice.status === 'paid' ? 'success' : invoice.status === 'cancelled' ? 'error' : invoice.status === 'partially_paid' ? 'warning' : 'default'" variant="tonal">
+              {{ invoice.status.replace('_', ' ') }}
+            </VChip>
+          </td>
+          <td>
+            <div class="d-flex ga-1 flex-wrap justify-end align-center">
+              <VBtn icon="tabler-download" size="small" variant="text" :loading="busy === invoice.id" title="Download" @click="downloadInvoicePdf(invoice)" />
+              <VBtn icon="tabler-brand-whatsapp" size="small" variant="text" color="success" :loading="busy === invoice.id" title="Send via WhatsApp" @click="sendInvoiceWhatsapp(invoice)" />
+              <VBtn v-if="!['paid', 'cancelled'].includes(invoice.status)" icon="tabler-cash" size="small" variant="text" color="success" :loading="busy === invoice.id" title="Record payment" @click="openRecordPayment(invoice)" />
+              <VBtn v-if="invoice.status !== 'cancelled'" icon="tabler-ban" size="small" variant="text" color="error" :loading="busy === invoice.id" title="Cancel (issues a credit note)" @click="openCancelInvoice(invoice)" />
+            </div>
+          </td>
+        </tr>
+      </tbody>
+    </VTable>
   </VCard>
 
   <VDialog v-model="dialog" max-width="640" persistent>
@@ -604,6 +771,224 @@ onMounted(async () => {
         </VBtn>
         <VBtn color="primary" :loading="saving" :disabled="form.mode === 'deal' ? !form.deal_id : !form.contact_id" @click="save">
           {{ editingQuoteId ? 'Save' : 'Create' }}
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="invoiceDialog" max-width="640" persistent>
+    <VCard title="New invoice">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="invoiceDialog = false" />
+      </template>
+      <VCardText class="d-flex flex-column gap-4">
+        <VAlert v-if="invoiceSaveError" type="error" variant="tonal" density="compact">
+          {{ invoiceSaveError }}
+        </VAlert>
+        <VAlert type="info" variant="tonal" density="compact">
+          Issues a real tax invoice directly, with no quote/negotiation step.
+        </VAlert>
+        <div class="d-flex ga-2">
+          <VBtn
+            size="small" :variant="invoiceForm.mode === 'deal' ? 'flat' : 'outlined'"
+            :color="invoiceForm.mode === 'deal' ? 'primary' : undefined" @click="invoiceForm.mode = 'deal'"
+          >
+            Tied to a deal
+          </VBtn>
+          <VBtn
+            size="small" :variant="invoiceForm.mode === 'contact' ? 'flat' : 'outlined'"
+            :color="invoiceForm.mode === 'contact' ? 'primary' : undefined" @click="invoiceForm.mode = 'contact'"
+          >
+            Standalone (no deal)
+          </VBtn>
+        </div>
+        <VSelect
+          v-if="invoiceForm.mode === 'deal'"
+          v-model="invoiceForm.deal_id"
+          :items="deals.filter(d => d.status === 'open').map(d => ({ title: d.contact.name || d.contact.phone || d.contact.email || 'Unknown', value: d.id }))"
+          label="Deal" density="compact"
+        />
+        <VSelect
+          v-else
+          v-model="invoiceForm.contact_id"
+          :items="contacts.map(c => ({ title: c.name || c.phone || c.email || 'Unknown', value: c.id }))"
+          label="Contact" density="compact"
+        />
+
+        <div>
+          <div class="d-flex align-center justify-space-between mb-2">
+            <span class="text-subtitle-2">Line items</span>
+            <VBtn size="small" variant="text" prepend-icon="tabler-plus" @click="addInvoiceLine">
+              Add line
+            </VBtn>
+          </div>
+          <div v-for="(item, index) in invoiceForm.line_items" :key="index" class="d-flex ga-2 align-center mb-2">
+            <VSelect
+              v-if="products.length"
+              :model-value="item.product_id" placeholder="Pick a product (optional)" density="compact" hide-details clearable
+              style="max-width: 160px;" :items="products.map(p => ({ title: p.is_bundle ? `${p.name} (bundle)` : p.name, value: p.id }))"
+              @update:model-value="(v: string | null) => pickInvoiceProduct(item, v)"
+            />
+            <VTextField v-model="item.description" placeholder="Description" density="compact" hide-details style="flex: 2;" />
+            <VTextField v-model="item.hsn_code" placeholder="HSN" density="compact" hide-details style="max-width: 90px;" />
+            <VTextField v-model.number="item.quantity" type="number" placeholder="Qty" density="compact" hide-details style="max-width: 80px;" />
+            <VTextField v-model.number="item.unit_price" type="number" placeholder="Unit price" density="compact" hide-details style="max-width: 110px;" />
+            <VBtn icon="tabler-x" size="small" variant="text" :disabled="invoiceForm.line_items.length === 1" @click="removeInvoiceLine(index)" />
+          </div>
+          <p class="text-caption text-medium-emphasis text-end mb-0">
+            Subtotal (before GST): {{ inr(invoiceDraftTotal) }}
+          </p>
+        </div>
+      </VCardText>
+      <VCardActions>
+        <VSpacer />
+        <VBtn variant="text" @click="invoiceDialog = false">
+          Cancel
+        </VBtn>
+        <VBtn color="primary" :loading="invoiceSaving" :disabled="invoiceForm.mode === 'deal' ? !invoiceForm.deal_id : !invoiceForm.contact_id" @click="saveInvoice">
+          Create
+        </VBtn>
+      </VCardActions>
+    </VCard>
+  </VDialog>
+
+  <VDialog v-model="viewDialog" max-width="720">
+    <VCard title="Quote details">
+      <template #append>
+        <VBtn icon="tabler-x" variant="text" size="small" @click="viewDialog = false" />
+      </template>
+      <VCardText v-if="viewLoading" class="text-center pa-8">
+        <VProgressCircular indeterminate />
+      </VCardText>
+      <VCardText v-else-if="viewError">
+        <VAlert type="error" variant="tonal" density="compact">
+          {{ viewError }}
+        </VAlert>
+      </VCardText>
+      <VCardText v-else-if="viewQuote" class="d-flex flex-column gap-4">
+        <div class="d-flex align-center justify-space-between flex-wrap ga-2">
+          <div>
+            <p class="text-h6 mb-0">
+              {{ viewQuote.quote_number || 'Not yet numbered' }}
+              <VChip v-if="viewQuote.revision_number > 1" size="small" variant="tonal" class="ms-1">
+                Revision {{ viewQuote.revision_number }}
+              </VChip>
+            </p>
+            <p class="text-medium-emphasis mb-0">
+              {{ viewQuote.deal_name || viewQuote.contact_name || 'Unknown' }}
+              <span v-if="viewQuote.contact_phone || viewQuote.contact_email">
+                · {{ viewQuote.contact_phone || viewQuote.contact_email }}
+              </span>
+            </p>
+          </div>
+          <VChip :color="statusColor[viewQuote.status]">
+            {{ viewQuote.status }}
+          </VChip>
+        </div>
+
+        <VTable density="compact">
+          <thead>
+            <tr>
+              <th>Description</th>
+              <th>HSN</th>
+              <th>Qty</th>
+              <th>Unit price</th>
+              <th>Discount</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(item, i) in viewQuote.line_items" :key="i">
+              <td>{{ item.description }}</td>
+              <td>{{ item.hsn_code }}</td>
+              <td>{{ item.quantity }}</td>
+              <td>{{ inr(item.unit_price) }}</td>
+              <td>{{ item.discount_percent ? `${item.discount_percent}%` : '—' }}</td>
+            </tr>
+          </tbody>
+        </VTable>
+        <div class="text-end">
+          <p class="mb-0">
+            Subtotal: {{ inr(viewQuote.subtotal) }}
+          </p>
+          <p v-if="viewQuote.discount_total" class="mb-0">
+            Discount: -{{ inr(viewQuote.discount_total) }}
+          </p>
+          <p v-if="viewQuote.cgst" class="mb-0">
+            CGST + SGST: {{ inr(viewQuote.cgst + viewQuote.sgst) }}
+          </p>
+          <p v-if="viewQuote.igst" class="mb-0">
+            IGST: {{ inr(viewQuote.igst) }}
+          </p>
+          <p class="text-h6 mb-0">
+            Total: {{ inr(viewQuote.total) }}
+          </p>
+        </div>
+
+        <div v-if="viewQuote.approval_status !== 'not_required'">
+          <p class="text-subtitle-2 mb-2">
+            Approval history
+          </p>
+          <VChip size="small" :color="viewQuote.approval_status === 'pending' ? 'warning' : viewQuote.approval_status === 'approved' ? 'success' : 'error'" variant="tonal" class="mb-2">
+            {{ viewQuote.approval_status }}
+          </VChip>
+          <p v-if="!viewQuote.approval_log.length" class="text-medium-emphasis text-body-2 mb-0">
+            No approvals recorded yet.
+          </p>
+          <ul v-else class="mb-0" style="padding-left: 1.2rem;">
+            <li v-for="a in viewQuote.approval_log" :key="a.user_id + a.approved_at" class="text-body-2">
+              {{ a.user_name || 'Unknown user' }} approved on {{ new Date(a.approved_at).toLocaleString() }}
+            </li>
+          </ul>
+        </div>
+
+        <div v-if="viewQuote.signed_by_name">
+          <p class="text-subtitle-2 mb-1">
+            Customer signature
+          </p>
+          <p class="text-body-2 mb-0">
+            {{ viewQuote.status === 'accepted' ? 'Accepted' : 'Rejected' }} by {{ viewQuote.signed_by_name }} on {{ new Date(viewQuote.signed_at!).toLocaleString() }}
+          </p>
+        </div>
+
+        <div v-if="viewQuote.invoice">
+          <p class="text-subtitle-2 mb-2">
+            Converted invoice
+          </p>
+          <div class="d-flex align-center ga-2 flex-wrap">
+            <VChip size="small" :color="viewQuote.invoice.status === 'paid' ? 'success' : viewQuote.invoice.status === 'cancelled' ? 'error' : viewQuote.invoice.status === 'partially_paid' ? 'warning' : 'default'" variant="tonal">
+              {{ viewQuote.invoice.invoice_number }} · {{ viewQuote.invoice.status.replace('_', ' ') }}
+            </VChip>
+            <span class="text-body-2 text-medium-emphasis">{{ inr(viewQuote.invoice.total) }} · Paid {{ inr(viewQuote.invoice.amount_paid) }}</span>
+            <VBtn icon="tabler-download" size="small" variant="text" title="Download invoice" @click="downloadInvoicePdf(viewQuote.invoice)" />
+          </div>
+        </div>
+
+        <div v-if="viewQuote.revision_chain.length > 1">
+          <p class="text-subtitle-2 mb-2">
+            Revision chain
+          </p>
+          <div class="d-flex flex-column ga-1">
+            <div
+              v-for="rev in viewQuote.revision_chain" :key="rev.id"
+              class="d-flex align-center ga-2 text-body-2"
+              :class="{ 'font-weight-bold': rev.id === viewQuote.id }"
+            >
+              <VChip size="x-small" variant="tonal">
+                Rev {{ rev.revision_number }}
+              </VChip>
+              <span>{{ rev.quote_number || 'Not yet numbered' }} · {{ rev.status }} · {{ inr(rev.total) }}</span>
+              <span v-if="rev.id === viewQuote.id" class="text-medium-emphasis">(this one)</span>
+            </div>
+          </div>
+        </div>
+      </VCardText>
+      <VCardActions v-if="viewQuote">
+        <VBtn v-if="viewQuote.status !== 'draft'" variant="tonal" :loading="busy === viewQuote.id" @click="reviseQuote(viewQuote)">
+          Revise
+        </VBtn>
+        <VSpacer />
+        <VBtn variant="text" @click="viewDialog = false">
+          Close
         </VBtn>
       </VCardActions>
     </VCard>

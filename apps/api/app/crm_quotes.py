@@ -30,8 +30,8 @@ from .permissions import require_channel_scope, require_page_scope_for, require_
 from .schemas import (
     BundleItemOut, DiscountRuleCreateRequest, DiscountRuleOut, DiscountRuleUpdateRequest, PriceListCreateRequest,
     PriceListEntryOut, PriceListEntrySetRequest, PriceListOut, PriceListUpdateRequest, ProductCreateRequest, ProductOut,
-    ProductUpdateRequest, QuoteCreateRequest, QuoteLineItem, QuoteLineItemsUpdateRequest, QuoteOut, SalesInvoiceCancelRequest,
-    SalesInvoiceCreateRequest, SalesInvoiceOut, SalesInvoiceRecordPaymentRequest,
+    ProductUpdateRequest, QuoteApprovalOut, QuoteCreateRequest, QuoteDetailOut, QuoteLineItem, QuoteLineItemsUpdateRequest,
+    QuoteOut, SalesInvoiceCancelRequest, SalesInvoiceCreateRequest, SalesInvoiceOut, SalesInvoiceRecordPaymentRequest,
 )
 from .services import DomainError, channel_active, get_gst_rate, indian_financial_year_label, notify_user as _notify_user_row, resolve_user_entity, state_code_from_gstin
 from .waba_realtime import publish_notification
@@ -481,6 +481,21 @@ def _compute_totals(db: Session, line_items: list, entity_state: str | None, com
     }
 
 
+def _quote_revision_chain_ids(db: Session, quote: Quote) -> list[str]:
+    """Walks revises_quote_id back to the original, then returns the full chain oldest-first
+    (including this quote). A plain Python walk, not a recursive SQL query -- chains are always
+    short (a handful of revisions at most) so this is simpler than a CTE for no real cost."""
+    chain = [quote.id]
+    current = quote
+    while current.revises_quote_id:
+        current = db.get(Quote, current.revises_quote_id)
+        if not current or current.id in chain:  # guard against a corrupt cycle
+            break
+        chain.append(current.id)
+    chain.reverse()
+    return chain
+
+
 def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     contact = _quote_contact(db, quote)
     company = db.get(Company, contact.company_id) if contact and contact.company_id else None
@@ -491,6 +506,7 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
     totals = _compute_totals(db, quote.line_items, entity_state, company_state)
     settings_row = db.get(CrmSettings, quote.entity_id)
     approvers_required = (settings_row.quote_approver_user_ids or []) if settings_row else []
+    revision_number = _quote_revision_chain_ids(db, quote).index(quote.id) + 1
     return QuoteOut(
         id=quote.id, deal_id=quote.deal_id, contact_id=quote.contact_id or (contact.id if contact else ""),
         quote_number=quote.quote_number, line_items=quote.line_items, status=quote.status,
@@ -500,6 +516,7 @@ def _quote_out(db: Session, quote: Quote) -> QuoteOut:
         approvers_required=approvers_required, converted_invoice_id=quote.converted_invoice_id,
         created_at=quote.created_at.isoformat(), sent_at=quote.sent_at.isoformat() if quote.sent_at else None,
         signed_by_name=quote.signed_by_name, signed_at=quote.signed_at.isoformat() if quote.signed_at else None,
+        revises_quote_id=quote.revises_quote_id, revision_number=revision_number,
     )
 
 
@@ -818,6 +835,68 @@ def _get_sales_invoice_pdf_bytes(db: Session, invoice: SalesInvoice) -> bytes:
     return _render_line_items_pdf("TAX INVOICE", invoice.invoice_number, invoice.line_items, contact, company, organization, totals, tax_invoice=True)
 
 
+@router.get("/{quote_id}", response_model=QuoteDetailOut)
+def get_quote_detail(quote_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """The single quote-detail view -- line items, full approval log (who + when, not just a
+    count), the linked invoice if one was issued, and the full revision chain this quote belongs
+    to. Backs the "View" action on the Quotes list, closing the "can only see this via PDF
+    download" gap."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    quote = db.get(Quote, quote_id)
+    if not quote or quote.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    out = _quote_out(db, quote)
+    contact = _quote_contact(db, quote)
+    deal = db.get(Deal, quote.deal_id) if quote.deal_id else None
+
+    approver_ids = [a["user_id"] for a in (quote.approvals or [])]
+    approvers = {u.id: u for u in db.scalars(select(User).where(User.id.in_(approver_ids))).all()} if approver_ids else {}
+    approval_log = [
+        QuoteApprovalOut(user_id=a["user_id"], user_name=approvers[a["user_id"]].full_name if a["user_id"] in approvers else None, approved_at=a["approved_at"])
+        for a in (quote.approvals or [])
+    ]
+
+    invoice = db.get(SalesInvoice, quote.converted_invoice_id) if quote.converted_invoice_id else None
+    chain_ids = _quote_revision_chain_ids(db, quote)
+    chain_quotes = {q.id: q for q in db.scalars(select(Quote).where(Quote.id.in_(chain_ids))).all()}
+    revision_chain = [_quote_out(db, chain_quotes[qid]) for qid in chain_ids if qid in chain_quotes]
+
+    return QuoteDetailOut(
+        **out.model_dump(),
+        contact_name=contact.name if contact else None, contact_phone=contact.phone if contact else None,
+        contact_email=contact.email if contact else None, deal_name=deal.name if deal else None,
+        approval_log=approval_log, invoice=_sales_invoice_out(db, invoice) if invoice else None,
+        revision_chain=revision_chain,
+    )
+
+
+@router.post("/{quote_id}/revise", response_model=QuoteOut)
+def revise_quote(quote_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Clones this quote's line items into a new draft quote linked back via revises_quote_id --
+    a real, followable revision chain (Zoho CRM itself has no equivalent: their own community
+    forum has open feature requests for quote versioning, confirmed this session -- their pattern
+    is just creating an unlinked second quote under the same deal). Only makes sense on a quote
+    that's already gone somewhere (sent/accepted/rejected) -- revising a draft is just editing it
+    directly via PATCH."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    original = db.get(Quote, quote_id)
+    if not original or original.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Quote not found")
+    if original.status == "draft":
+        raise HTTPException(status_code=409, detail="A draft quote can be edited directly -- revise is for a quote that's already been sent")
+    revision = Quote(
+        entity_id=entity.id, deal_id=original.deal_id, contact_id=original.contact_id,
+        line_items=[dict(item) for item in original.line_items], created_by_user_id=user.id,
+        revises_quote_id=original.id,
+    )
+    db.add(revision)
+    db.commit()
+    db.refresh(revision)
+    return _quote_out(db, revision)
+
+
 def _issue_sales_invoice(
     db: Session, entity: Entity, line_items: list, user_id: str | None,
     deal_id: str | None = None, contact_id: str | None = None, quote_id: str | None = None,
@@ -875,28 +954,52 @@ def convert_quote_to_invoice(quote_id: str, user: User = Depends(require_user), 
     return _sales_invoice_out(db, invoice)
 
 
-@router.post("/deals/{deal_id}/invoices", response_model=SalesInvoiceOut)
-def create_direct_sales_invoice(deal_id: str, payload: SalesInvoiceCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Issues a SalesInvoice straight against a Deal, no Quote/negotiation step needed -- for a
-    simple direct sale, or for milestone/partial billing (a second, third, ... invoice against
-    the same deal; nothing here limits a Deal to one invoice, matching real-world "bill in
-    stages" use cases a strict one-quote-one-invoice rule would otherwise block)."""
+@router.post("/invoices", response_model=SalesInvoiceOut)
+def create_direct_sales_invoice(payload: SalesInvoiceCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Issues a SalesInvoice straight against a Deal or a standalone Contact, no Quote/negotiation
+    step needed -- matches Zoho's own Invoices module having its own independent "New" action, not
+    just a convert-from-Quote path. Also used for milestone/partial billing (a second, third, ...
+    invoice against the same deal; nothing here limits a Deal to one invoice, matching real-world
+    "bill in stages" use cases a strict one-quote-one-invoice rule would otherwise block)."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    deal = db.scalar(select(Deal).where(Deal.id == deal_id, Deal.entity_id == entity.id))
-    if not deal:
-        raise HTTPException(status_code=404, detail="Deal not found")
+    if not payload.deal_id and not payload.contact_id:
+        raise HTTPException(status_code=422, detail="An invoice needs either a deal_id or a contact_id")
     if not payload.line_items:
         raise HTTPException(status_code=422, detail="At least one line item is required")
-    price_list_id = _deal_price_list_id(db, deal)
+    deal: Deal | None = None
+    deal_id: str | None = None
+    contact_id: str | None = None
+    if payload.deal_id:
+        deal = db.scalar(select(Deal).where(Deal.id == payload.deal_id, Deal.entity_id == entity.id))
+        if not deal:
+            raise HTTPException(status_code=404, detail="Deal not found")
+        price_list_id = _deal_price_list_id(db, deal)
+        deal_id = deal.id
+    else:
+        contact = db.scalar(select(CrmContact).where(CrmContact.id == payload.contact_id, CrmContact.entity_id == entity.id))
+        if not contact:
+            raise HTTPException(status_code=404, detail="Contact not found")
+        price_list_id = _contact_price_list_id(db, contact)
+        contact_id = contact.id
     line_items = _apply_line_item_defaults(db, entity.id, payload.line_items, price_list_id)
 
-    invoice = _issue_sales_invoice(db, entity, line_items, user.id, deal_id=deal.id)
-    if deal.owner_user_id and deal.owner_user_id != user.id:
+    invoice = _issue_sales_invoice(db, entity, line_items, user.id, deal_id=deal_id, contact_id=contact_id)
+    if deal and deal.owner_user_id and deal.owner_user_id != user.id:
         deal_contact = db.get(CrmContact, deal.contact_id)
         notify_user(db, entity.id, deal.owner_user_id, "invoice_generated", "Invoice generated", f"{invoice.invoice_number} was generated for {deal_contact.name if deal_contact else 'your deal'}", "/crm-quotes")
     db.commit()
     db.refresh(invoice)
+    return _sales_invoice_out(db, invoice)
+
+
+@router.get("/invoices/{invoice_id}", response_model=SalesInvoiceOut)
+def get_sales_invoice_detail(invoice_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    invoice = db.get(SalesInvoice, invoice_id)
+    if not invoice or invoice.entity_id != entity.id:
+        raise HTTPException(status_code=404, detail="Invoice not found")
     return _sales_invoice_out(db, invoice)
 
 
