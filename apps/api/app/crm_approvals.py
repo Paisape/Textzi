@@ -10,18 +10,22 @@ Quote, and SalesInvoice rows for the record_label resolution, so it would create
 circular-import shape living inside any one of those. crm.py/crm_quotes.py stay untouched by this
 file; this one just reads their tables directly (all in the same CRM data domain, no cross-channel
 isolation concern the way WABA/SMS have)."""
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import ApprovalRequest, ApprovalStage, CrmContact, Deal, Entity, Quote, SalesInvoice, User
+from .models import ApprovalActivity, ApprovalDocument, ApprovalRequest, ApprovalStage, CrmContact, Deal, Entity, Quote, SalesInvoice, User
 from .permissions import require_channel_scope
-from .schemas import ApprovalActionRequest, ApprovalRequestCreateRequest, ApprovalRequestOut, ApprovalStageOut
-from .services import DomainError, channel_active, notify_user as _notify_user_row, resolve_user_entity
+from .schemas import (
+    ApprovalActionRequest, ApprovalActivityOut, ApprovalDocumentOut, ApprovalRequestCreateRequest, ApprovalRequestOut, ApprovalStageOut,
+)
+from .services import DomainError, channel_active, notify_user as _notify_user_row, resolve_user_entity, save_upload
 from .waba_realtime import publish_notification
 
 router = APIRouter(prefix="/v1/crm/approvals", tags=["crm-approvals"], dependencies=[Depends(require_channel_scope("crm"))])
@@ -43,6 +47,10 @@ def _resolve_entity(db: Session, user: User) -> Entity:
 def _require_crm(db: Session, entity_id: str) -> None:
     if not channel_active(db, entity_id, "crm"):
         raise HTTPException(status_code=422, detail="Upgrade to the CRM plan to use internal approvals")
+
+
+def _log_activity(db: Session, approval_request_id: str, user_id: str | None, kind: str, detail: str) -> None:
+    db.add(ApprovalActivity(approval_request_id=approval_request_id, user_id=user_id, kind=kind, detail=detail))
 
 
 def _record_label(db: Session, record_type: str | None, record_id: str | None) -> str | None:
@@ -75,19 +83,47 @@ def _stage_out(db: Session, stage: ApprovalStage, users: dict[str, User]) -> App
 
 def _request_out(db: Session, request: ApprovalRequest) -> ApprovalRequestOut:
     stages = db.scalars(select(ApprovalStage).where(ApprovalStage.approval_request_id == request.id).order_by(ApprovalStage.position)).all()
+    documents = db.scalars(select(ApprovalDocument).where(ApprovalDocument.approval_request_id == request.id).order_by(ApprovalDocument.created_at)).all()
+    activity_rows = db.scalars(select(ApprovalActivity).where(ApprovalActivity.approval_request_id == request.id).order_by(ApprovalActivity.created_at)).all()
+
     user_ids: set[str] = {request.requested_by_user_id}
     for stage in stages:
         user_ids.update(stage.approver_user_ids or [])
         if stage.approved_by_user_id:
             user_ids.add(stage.approved_by_user_id)
+    for doc in documents:
+        if doc.uploaded_by_user_id:
+            user_ids.add(doc.uploaded_by_user_id)
+    for a in activity_rows:
+        if a.user_id:
+            user_ids.add(a.user_id)
     users = {u.id: u for u in db.scalars(select(User).where(User.id.in_(user_ids))).all()}
     requester = users.get(request.requested_by_user_id)
+
+    document_outs = [
+        ApprovalDocumentOut(
+            id=d.id, version_group_id=d.version_group_id, version_number=d.version_number, filename=d.filename,
+            content_type=d.content_type, size=d.size, uploaded_by_user_id=d.uploaded_by_user_id,
+            uploaded_by_name=users[d.uploaded_by_user_id].full_name if d.uploaded_by_user_id in users else None,
+            created_at=d.created_at.isoformat(),
+        )
+        for d in documents
+    ]
+    activity_outs = [
+        ApprovalActivityOut(
+            id=a.id, user_id=a.user_id, user_name=users[a.user_id].full_name if a.user_id in users else None,
+            kind=a.kind, detail=a.detail, created_at=a.created_at.isoformat(),
+        )
+        for a in activity_rows
+    ]
+
     return ApprovalRequestOut(
         id=request.id, record_type=request.record_type, record_id=request.record_id,
         record_label=_record_label(db, request.record_type, request.record_id),
         title=request.title, description=request.description,
         requested_by_user_id=request.requested_by_user_id, requested_by_name=requester.full_name if requester else None,
         status=request.status, stages=[_stage_out(db, s, users) for s in stages],
+        documents=document_outs, activity=activity_outs,
         created_at=request.created_at.isoformat(), resolved_at=request.resolved_at.isoformat() if request.resolved_at else None,
     )
 
@@ -135,7 +171,10 @@ def get_approval_request(request_id: str, user: User = Depends(require_user), db
 def create_approval_request(payload: ApprovalRequestCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    if payload.record_type and not payload.record_id:
+    # "policy" is a pure category tag for a standalone request (an internal policy/board approval
+    # with nothing to link to) -- it never has a real backing row, unlike deal/quote/sales_invoice,
+    # which always do. Only those three require a record_id.
+    if payload.record_type in ("deal", "quote", "sales_invoice") and not payload.record_id:
         raise HTTPException(status_code=422, detail="record_id is required when record_type is set")
     if payload.record_id and not _record_label(db, payload.record_type, payload.record_id):
         raise HTTPException(status_code=404, detail="Linked record not found")
@@ -157,6 +196,7 @@ def create_approval_request(payload: ApprovalRequestCreateRequest, user: User = 
             approval_request_id=request.id, position=i, approver_user_ids=stage_payload.approver_user_ids,
             status="pending" if i == 0 else "waiting",
         ))
+    _log_activity(db, request.id, user.id, "created", f"{user.full_name} raised this request ({len(payload.stages)} stage{'s' if len(payload.stages) != 1 else ''})")
     db.commit()
     db.refresh(request)
 
@@ -180,6 +220,7 @@ def cancel_approval_request(request_id: str, user: User = Depends(require_user),
         raise HTTPException(status_code=409, detail="Only a pending request can be cancelled")
     request.status = "cancelled"
     request.resolved_at = datetime.now(timezone.utc)
+    _log_activity(db, request.id, user.id, "cancelled", f"{user.full_name} cancelled this request")
     db.commit()
     db.refresh(request)
     return _request_out(db, request)
@@ -199,6 +240,12 @@ def _act_on_stage(db: Session, request: ApprovalRequest, user: User, entity_id: 
     stage.approved_by_user_id = user.id
     stage.approved_at = datetime.now(timezone.utc)
     stage.comment = comment
+
+    action_word = "approved" if approve else "rejected"
+    detail = f"{user.full_name} {action_word} stage {stage.position + 1}"
+    if comment:
+        detail += f' -- "{comment}"'
+    _log_activity(db, request.id, user.id, f"stage_{action_word}", detail)
 
     if not approve:
         request.status = "rejected"
@@ -251,3 +298,82 @@ def reject_stage(request_id: str, payload: ApprovalActionRequest = ApprovalActio
     db.commit()
     db.refresh(request)
     return _request_out(db, request)
+
+
+def _get_owned_request(db: Session, entity_id: str, request_id: str) -> ApprovalRequest:
+    request = db.get(ApprovalRequest, request_id)
+    if not request or request.entity_id != entity_id:
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    return request
+
+
+@router.post("/{request_id}/documents", response_model=ApprovalDocumentOut)
+def upload_approval_document(
+    request_id: str, file: UploadFile = File(...), version_group_id: str | None = None,
+    user: User = Depends(require_user), db: Session = Depends(get_db),
+):
+    """A fresh document (no version_group_id given) starts its own version-1 group. Passing an
+    existing version_group_id (from a prior upload's own response) instead adds the next revision
+    of that same document -- e.g. re-uploading a policy draft after a reviewer's requested edits,
+    with the full revision history kept, not overwritten."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    request = _get_owned_request(db, entity.id, request_id)
+    stored_path, content = save_upload(file, "crm_approval_documents")
+
+    if version_group_id:
+        existing = db.scalars(
+            select(ApprovalDocument).where(ApprovalDocument.approval_request_id == request_id, ApprovalDocument.version_group_id == version_group_id),
+        ).all()
+        if not existing:
+            raise HTTPException(status_code=404, detail="No document with this version_group_id on this request")
+        version_number = max(d.version_number for d in existing) + 1
+    else:
+        version_group_id = str(uuid.uuid4())
+        version_number = 1
+
+    document = ApprovalDocument(
+        approval_request_id=request_id, version_group_id=version_group_id, version_number=version_number,
+        filename=file.filename or "document", stored_path=stored_path, content_type=file.content_type or "application/octet-stream",
+        size=len(content), uploaded_by_user_id=user.id,
+    )
+    db.add(document)
+    kind = "document_revised" if version_number > 1 else "document_attached"
+    detail = f"{user.full_name} " + (f"uploaded revision {version_number} of {document.filename}" if version_number > 1 else f"attached {document.filename}")
+    _log_activity(db, request.id, user.id, kind, detail)
+    db.commit()
+    db.refresh(document)
+    users = {user.id: user}
+    return ApprovalDocumentOut(
+        id=document.id, version_group_id=document.version_group_id, version_number=document.version_number,
+        filename=document.filename, content_type=document.content_type, size=document.size,
+        uploaded_by_user_id=document.uploaded_by_user_id, uploaded_by_name=users[document.uploaded_by_user_id].full_name,
+        created_at=document.created_at.isoformat(),
+    )
+
+
+@router.get("/{request_id}/documents/{document_id}/download")
+def download_approval_document(request_id: str, document_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    _get_owned_request(db, entity.id, request_id)
+    document = db.get(ApprovalDocument, document_id)
+    if not document or document.approval_request_id != request_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return FileResponse(document.stored_path, media_type=document.content_type, filename=document.filename)
+
+
+@router.delete("/{request_id}/documents/{document_id}")
+def delete_approval_document(request_id: str, document_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
+    """Removing a document doesn't remove its earlier revisions -- only the one row -- so deleting
+    a mistaken re-upload never destroys the version history around it."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    request = _get_owned_request(db, entity.id, request_id)
+    document = db.get(ApprovalDocument, document_id)
+    if not document or document.approval_request_id != request_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    _log_activity(db, request.id, user.id, "document_removed", f"{user.full_name} removed {document.filename} (revision {document.version_number})")
+    db.delete(document)
+    db.commit()
+    return {"deleted": True}

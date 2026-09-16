@@ -2263,6 +2263,42 @@ class ApprovalStage(Base):
     comment: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
+class ApprovalDocument(Base):
+    """A file attached to an ApprovalRequest -- e.g. the actual policy document, board resolution
+    draft, or discount memo someone wants signed off on. version_group_id ties every revision of
+    "the same document" together (set to this row's own id on the first upload, carried forward
+    unchanged on every re-upload after that) so the request can show "3 revisions of this file",
+    not just a flat pile of unrelated attachments; version_number is 1/2/3/... within that group.
+    Reuses services.save_upload -- same extension-allowlist/size-cap/uuid-filename convention as
+    every other upload in this app (Attachment, DLT documents, the GST certificate)."""
+    __tablename__ = "approval_documents"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    approval_request_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), index=True)
+    version_group_id: Mapped[str] = mapped_column(String(36), index=True)
+    version_number: Mapped[int] = mapped_column(Integer, default=1)
+    filename: Mapped[str] = mapped_column(String(255))
+    stored_path: Mapped[str] = mapped_column(String(500))
+    content_type: Mapped[str] = mapped_column(String(100), default="application/octet-stream")
+    size: Mapped[int] = mapped_column(Integer, default=0)
+    uploaded_by_user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ApprovalActivity(Base):
+    """Full step-by-step audit trail for one ApprovalRequest -- same append-only shape as
+    ConversationActivity/TaskActivity elsewhere in this app. Confirmed as a real gap: a stage's own
+    comment/approved_by/approved_at only ever shows the LATEST action on that stage, with no
+    record of the request being created, a document being attached/revised, or (for board/policy
+    use) a full readable history a compliance reviewer could audit later."""
+    __tablename__ = "approval_activity"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    approval_request_id: Mapped[str] = mapped_column(ForeignKey("approval_requests.id"), index=True)
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id"), nullable=True)
+    kind: Mapped[str] = mapped_column(String(40))  # "created"|"document_attached"|"document_revised"|"stage_approved"|"stage_rejected"|"cancelled"
+    detail: Mapped[str] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+
 class Quote(Base):
     """A GST-aware proforma quote, optionally tied to a Deal -- deliberately not an IRN-registered
     e-invoice (mandatory only above Rs 5 crore turnover, well past this product's SME target) so

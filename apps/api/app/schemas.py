@@ -2927,6 +2927,27 @@ class ApprovalStageOut(BaseModel):
     comment: str | None
 
 
+class ApprovalDocumentOut(BaseModel):
+    id: str
+    version_group_id: str
+    version_number: int
+    filename: str
+    content_type: str
+    size: int
+    uploaded_by_user_id: str | None
+    uploaded_by_name: str | None
+    created_at: str
+
+
+class ApprovalActivityOut(BaseModel):
+    id: str
+    user_id: str | None
+    user_name: str | None
+    kind: str
+    detail: str
+    created_at: str
+
+
 class ApprovalRequestOut(BaseModel):
     id: str
     record_type: str | None
@@ -2938,6 +2959,8 @@ class ApprovalRequestOut(BaseModel):
     requested_by_name: str | None
     status: str
     stages: list[ApprovalStageOut]
+    documents: list[ApprovalDocumentOut] = []
+    activity: list[ApprovalActivityOut] = []
     created_at: str
     resolved_at: str | None
 
@@ -2947,7 +2970,7 @@ class ApprovalStageCreateRequest(BaseModel):
 
 
 class ApprovalRequestCreateRequest(BaseModel):
-    record_type: str | None = Field(default=None, pattern="^(deal|quote|sales_invoice)$")
+    record_type: str | None = Field(default=None, pattern="^(deal|quote|sales_invoice|policy)$")
     record_id: str | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)
