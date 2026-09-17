@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import ApprovalActivity, ApprovalDocument, ApprovalRequest, ApprovalStage, CrmContact, Deal, Entity, Quote, SalesInvoice, User
+from .models import ApprovalActivity, ApprovalDocument, ApprovalRequest, ApprovalStage, Contact, Conversation, CrmContact, Deal, Entity, Quote, SalesInvoice, User
 from .permissions import require_channel_scope
 from .schemas import (
     ApprovalActionRequest, ApprovalActivityOut, ApprovalDocumentOut, ApprovalRequestCreateRequest, ApprovalRequestOut, ApprovalStageOut,
@@ -68,6 +68,12 @@ def _record_label(db: Session, record_type: str | None, record_id: str | None) -
     if record_type == "sales_invoice":
         invoice = db.get(SalesInvoice, record_id)
         return f"Invoice · {invoice.invoice_number or '(draft)'}" if invoice else None
+    if record_type == "ticket":
+        conversation = db.get(Conversation, record_id)
+        if not conversation:
+            return None
+        contact = db.get(Contact, conversation.contact_id)
+        return f"Ticket {conversation.ticket_number or '(unnumbered)'} · {contact.name if contact else 'Unknown'}"
     return None
 
 
@@ -172,9 +178,9 @@ def create_approval_request(payload: ApprovalRequestCreateRequest, user: User = 
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     # "policy" is a pure category tag for a standalone request (an internal policy/board approval
-    # with nothing to link to) -- it never has a real backing row, unlike deal/quote/sales_invoice,
-    # which always do. Only those three require a record_id.
-    if payload.record_type in ("deal", "quote", "sales_invoice") and not payload.record_id:
+    # with nothing to link to) -- it never has a real backing row, unlike deal/quote/sales_invoice/
+    # ticket, which always do. Only those four require a record_id.
+    if payload.record_type in ("deal", "quote", "sales_invoice", "ticket") and not payload.record_id:
         raise HTTPException(status_code=422, detail="record_id is required when record_type is set")
     if payload.record_id and not _record_label(db, payload.record_type, payload.record_id):
         raise HTTPException(status_code=404, detail="Linked record not found")

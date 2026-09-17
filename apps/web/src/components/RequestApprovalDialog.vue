@@ -5,7 +5,7 @@
 // attach an approval without duplicating the create-request form three times.
 const props = defineProps<{
   modelValue: boolean
-  recordType?: 'deal' | 'quote' | 'sales_invoice'
+  recordType?: 'deal' | 'quote' | 'sales_invoice' | 'ticket'
   recordId?: string
   defaultTitle?: string
 }>()

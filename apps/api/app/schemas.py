@@ -2970,7 +2970,7 @@ class ApprovalStageCreateRequest(BaseModel):
 
 
 class ApprovalRequestCreateRequest(BaseModel):
-    record_type: str | None = Field(default=None, pattern="^(deal|quote|sales_invoice|policy)$")
+    record_type: str | None = Field(default=None, pattern="^(deal|quote|sales_invoice|ticket|policy)$")
     record_id: str | None = None
     title: str = Field(min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=5000)

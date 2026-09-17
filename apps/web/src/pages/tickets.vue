@@ -279,6 +279,7 @@ watch(activeFilter, loadTickets)
 // --- Selected ticket + thread ------------------------------------------------------------------
 
 const selected = ref<TicketDetail | null>(null)
+const requestApprovalDialog = ref(false)
 const threadLoading = ref(false)
 const threadError = ref('')
 const customerCompany = ref<Company | null>(null)
@@ -662,6 +663,7 @@ onMounted(() => {
           <VChip size="small" color="info" prepend-icon="tabler-ticket">
             {{ selected.ticket_number }}
           </VChip>
+          <VBtn icon="tabler-checkbox" size="small" variant="text" title="Request internal approval" @click="requestApprovalDialog = true" />
           <VSpacer />
           <VSelect
             :model-value="selected.status" :items="STATUS_ITEMS" density="compact" variant="outlined" hide-details
@@ -1007,6 +1009,11 @@ onMounted(() => {
       </VCardActions>
     </VCard>
   </VDialog>
+
+  <RequestApprovalDialog
+    v-if="selected" v-model="requestApprovalDialog" record-type="ticket" :record-id="selected.id"
+    :default-title="`Approval for ticket ${selected.ticket_number || selected.subject || contactLabel(selected.contact)}`"
+  />
 </template>
 
 <style scoped>

@@ -33,7 +33,7 @@ type ApprovalDocument = {
 type ApprovalActivity = { id: string, user_id: string | null, user_name: string | null, kind: string, detail: string, created_at: string }
 type ApprovalRequest = {
   id: string
-  record_type: 'deal' | 'quote' | 'sales_invoice' | 'policy' | null
+  record_type: 'deal' | 'quote' | 'sales_invoice' | 'ticket' | 'policy' | null
   record_id: string | null
   record_label: string | null
   title: string
@@ -86,6 +86,10 @@ const pendingMyActionOnly = ref(true)
 
 const STATUS_COLORS: Record<string, string> = { pending: 'warning', approved: 'success', rejected: 'error', cancelled: 'default' }
 const RECORD_ROUTES: Record<string, string> = { deal: '/crm-deals', quote: '/crm-quotes', sales_invoice: '/crm-quotes' }
+// Tickets have no routable per-record URL (tickets.vue is a single in-page list+detail toggle,
+// not addressed by id) -- linking to the list is the honest option rather than faking a deep link
+// that doesn't exist.
+const TICKET_LIST_ROUTE = '/tickets'
 
 async function loadAll() {
   loading.value = true
@@ -115,6 +119,8 @@ watch(pendingMyActionOnly, loadAll)
 function recordLink(request: ApprovalRequest) {
   if (!request.record_type || !request.record_id)
     return null
+  if (request.record_type === 'ticket')
+    return TICKET_LIST_ROUTE
   return `${RECORD_ROUTES[request.record_type]}/${request.record_id}`
 }
 
