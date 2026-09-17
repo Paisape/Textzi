@@ -2523,11 +2523,21 @@ class SavedReport(Base):
     entity_id: Mapped[str] = mapped_column(ForeignKey("entities.id"), index=True)
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     name: Mapped[str] = mapped_column(String(120))
-    object_type: Mapped[str] = mapped_column(String(20))  # "deal" | "lead" | "task"
+    object_type: Mapped[str] = mapped_column(String(20))  # "deal" | "lead" | "task" | "quote" | "sales_invoice" | "company"
     group_by: Mapped[str] = mapped_column(String(40))
+    # A second grouping dimension turns a flat bar/table into a matrix/cross-tab report (e.g. rows
+    # = stage, columns = owner) -- Zoho's own "Matrix Report", confirmed via research this session
+    # as a standard, expected Report Builder capability, not an enterprise-only feature. Null keeps
+    # every existing saved report exactly as it was (a flat, single-dimension report).
+    group_by_2: Mapped[str | None] = mapped_column(String(40), nullable=True)
     measure: Mapped[str] = mapped_column(String(40))
-    chart_type: Mapped[str] = mapped_column(String(20), default="bar")  # "bar" | "donut" | "table"
+    chart_type: Mapped[str] = mapped_column(String(20), default="bar")  # "bar" | "donut" | "table" | "matrix" | "kpi"
     filters: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Both null = all-time (this report's original, unchanged behavior). Set together to scope the
+    # underlying rows to a fixed window -- a real date-range filter, confirmed via research this
+    # session as standard across every competitor's report builder (Zoho/HubSpot both offer this).
+    date_from: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    date_to: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # None = not scheduled. "weekly" fires the runner's Monday pass; "monthly" fires its 1st-of-
     # month pass -- see crm.py's send_due_scheduled_reports (same daily-check-what's-due shape as
     # every other scheduled job in this codebase, not a per-report cron).
@@ -2556,6 +2566,11 @@ class Dashboard(Base):
     # actually needs); a missing entry defaults to "half" in _dashboard_out, so every dashboard
     # created before this existed renders exactly as it did before.
     widget_widths: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Null = each widget's own saved date_from/date_to (today's existing behavior, unchanged for
+    # every dashboard created before this existed). A number of days overrides every widget on this
+    # dashboard at once when running it -- HubSpot's own dashboard-level date filter, confirmed via
+    # research this session as the standard "change the range once, every widget updates" pattern.
+    date_range_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

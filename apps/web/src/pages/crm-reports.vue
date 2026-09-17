@@ -36,11 +36,29 @@ type ExtendedReports = {
   outstanding_value: number
   follow_up: { total: number, done: number, overdue: number, done_rate: number | null }
 }
+type PeriodComparison = { current: number, previous: number, pct_change: number | null }
+type SalesVelocity = { velocity: number, open_opportunity_count: number, win_rate: number, avg_deal_size: number, avg_sales_cycle_days: number | null }
+type StageConversionRow = { stage: string, position: number, entered_count: number, advanced_count: number, conversion_pct: number | null, avg_days_in_stage: number | null }
+type DealAgingRow = { deal_id: string, deal_name: string, contact_name: string | null, stage: string, days_in_stage: number, value: number | null, owner_name: string | null }
+type ActivityLeaderboardRow = { user_id: string, full_name: string, tasks_completed: number, deals_won: number, deals_won_value: number, score: number }
+type QuotaAttainmentRow = { user_id: string, full_name: string, target_value: number, actual_value: number, attainment_pct: number | null }
+type AdvancedReports = {
+  sales_velocity: SalesVelocity
+  stage_conversion: StageConversionRow[]
+  deal_aging: DealAgingRow[]
+  activity_leaderboard: ActivityLeaderboardRow[]
+  quota_attainment: QuotaAttainmentRow[]
+  open_pipeline_comparison: PeriodComparison
+  won_value_comparison: PeriodComparison
+  deals_won_comparison: PeriodComparison
+  win_rate_comparison: PeriodComparison
+}
 
 const pipelines = ref<Pipeline[]>([])
 const pipelineId = ref<string | null>(null)
 const reports = ref<Reports | null>(null)
 const extended = ref<ExtendedReports | null>(null)
+const advanced = ref<AdvancedReports | null>(null)
 const loading = ref(false)
 const loadError = ref('')
 const crmInactive = ref(false)
@@ -59,6 +77,12 @@ function inr(value: number) {
   return new Intl.NumberFormat('en-IN', { style: 'currency', currency: 'INR', maximumFractionDigits: 0 }).format(value)
 }
 
+function comparisonLabel(c: PeriodComparison | undefined) {
+  if (!c || c.pct_change === null)
+    return null
+  return c.pct_change
+}
+
 async function load() {
   loading.value = true
   loadError.value = ''
@@ -71,12 +95,19 @@ async function load() {
       params.pipeline_id = pipelineId.value
     if (periodDays.value)
       params.days = periodDays.value
-    const [reportsResult, extendedResult] = await Promise.all([
+    const advancedParams: Record<string, string | number> = {}
+    if (pipelineId.value)
+      advancedParams.pipeline_id = pipelineId.value
+    if (periodDays.value)
+      advancedParams.days = periodDays.value
+    const [reportsResult, extendedResult, advancedResult] = await Promise.all([
       $api<Reports>('/v1/crm/reports', { params }),
       $api<ExtendedReports>('/v1/crm/reports/extended', { params: periodDays.value ? { days: periodDays.value } : {} }),
+      $api<AdvancedReports>('/v1/crm/reports/advanced', { params: advancedParams }),
     ])
     reports.value = reportsResult
     extended.value = extendedResult
+    advanced.value = advancedResult
   }
   catch (error: any) {
     if (error?.response?.status === 422) {
@@ -174,6 +205,10 @@ onMounted(load)
             </p>
             <p class="text-caption text-medium-emphasis mb-0">
               {{ reports.open_count }} deals
+              <span v-if="comparisonLabel(advanced?.open_pipeline_comparison) !== null" :class="(comparisonLabel(advanced?.open_pipeline_comparison) as number) >= 0 ? 'text-success' : 'text-error'">
+                <VIcon :icon="(comparisonLabel(advanced?.open_pipeline_comparison) as number) >= 0 ? 'tabler-arrow-up-right' : 'tabler-arrow-down-right'" size="12" />
+                {{ Math.abs(comparisonLabel(advanced?.open_pipeline_comparison) as number) }}%
+              </span>
             </p>
           </VCardText>
         </VCard>
@@ -189,6 +224,10 @@ onMounted(load)
             </p>
             <p class="text-caption text-medium-emphasis mb-0">
               {{ reports.won_count }} deals
+              <span v-if="comparisonLabel(advanced?.won_value_comparison) !== null" :class="(comparisonLabel(advanced?.won_value_comparison) as number) >= 0 ? 'text-success' : 'text-error'">
+                <VIcon :icon="(comparisonLabel(advanced?.won_value_comparison) as number) >= 0 ? 'tabler-arrow-up-right' : 'tabler-arrow-down-right'" size="12" />
+                {{ Math.abs(comparisonLabel(advanced?.won_value_comparison) as number) }}%
+              </span>
             </p>
           </VCardText>
         </VCard>
@@ -216,6 +255,12 @@ onMounted(load)
             </p>
             <p class="text-h6 mb-0">
               {{ reports.win_rate !== null ? `${reports.win_rate}%` : '—' }}
+            </p>
+            <p class="text-caption text-medium-emphasis mb-0">
+              <span v-if="comparisonLabel(advanced?.win_rate_comparison) !== null" :class="(comparisonLabel(advanced?.win_rate_comparison) as number) >= 0 ? 'text-success' : 'text-error'">
+                <VIcon :icon="(comparisonLabel(advanced?.win_rate_comparison) as number) >= 0 ? 'tabler-arrow-up-right' : 'tabler-arrow-down-right'" size="12" />
+                {{ Math.abs(comparisonLabel(advanced?.win_rate_comparison) as number) }}% vs. prior period
+              </span>
             </p>
           </VCardText>
         </VCard>
@@ -370,6 +415,161 @@ onMounted(load)
             </VTable>
             <p v-if="!extended.by_product.length" class="text-medium-emphasis text-center pa-4 mb-0">
               No accepted quotes yet.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+  </template>
+
+  <template v-if="advanced">
+    <h2 class="text-h5 mt-6 mb-3">
+      Advanced
+    </h2>
+    <VRow class="mb-2">
+      <VCol cols="12" md="4">
+        <VCard>
+          <VCardText>
+            <p class="text-caption text-medium-emphasis mb-1">
+              Sales velocity
+            </p>
+            <p class="text-h6 mb-2">
+              {{ inr(advanced.sales_velocity.velocity) }} <span class="text-caption text-medium-emphasis">/ day</span>
+            </p>
+            <p class="text-caption text-medium-emphasis mb-0">
+              {{ advanced.sales_velocity.open_opportunity_count }} open opps · {{ advanced.sales_velocity.win_rate }}% win rate
+            </p>
+            <p class="text-caption text-medium-emphasis mb-0">
+              Avg deal {{ inr(advanced.sales_velocity.avg_deal_size) }} · Avg cycle {{ advanced.sales_velocity.avg_sales_cycle_days !== null ? `${advanced.sales_velocity.avg_sales_cycle_days}d` : '—' }}
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+      <VCol cols="12" md="8">
+        <VCard class="h-100">
+          <VCardText>
+            <h3 class="text-subtitle-1 mb-3">
+              Stage conversion
+            </h3>
+            <VTable density="compact">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Entered</th>
+                  <th>Advanced</th>
+                  <th>Conversion</th>
+                  <th>Avg days in stage</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in advanced.stage_conversion" :key="row.stage">
+                  <td>{{ row.stage }}</td>
+                  <td>{{ row.entered_count }}</td>
+                  <td>{{ row.advanced_count }}</td>
+                  <td>{{ row.conversion_pct !== null ? `${row.conversion_pct}%` : '—' }}</td>
+                  <td>{{ row.avg_days_in_stage !== null ? `${row.avg_days_in_stage}d` : '—' }}</td>
+                </tr>
+              </tbody>
+            </VTable>
+            <p v-if="!advanced.stage_conversion.length" class="text-medium-emphasis text-center pa-4 mb-0">
+              No stage history yet.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+
+    <VRow class="mb-2">
+      <VCol cols="12" md="6">
+        <VCard class="h-100">
+          <VCardText>
+            <h3 class="text-subtitle-1 mb-3">
+              Deal aging
+            </h3>
+            <VTable density="compact">
+              <thead>
+                <tr>
+                  <th>Deal</th>
+                  <th>Stage</th>
+                  <th>Days in stage</th>
+                  <th>Value</th>
+                  <th>Owner</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in advanced.deal_aging" :key="row.deal_id">
+                  <td>{{ row.deal_name }}</td>
+                  <td>{{ row.stage }}</td>
+                  <td class="text-error">
+                    {{ row.days_in_stage }}d
+                  </td>
+                  <td>{{ row.value !== null ? inr(row.value) : '—' }}</td>
+                  <td>{{ row.owner_name || '—' }}</td>
+                </tr>
+              </tbody>
+            </VTable>
+            <p v-if="!advanced.deal_aging.length" class="text-medium-emphasis text-center pa-4 mb-0">
+              No deals stuck in a stage right now.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+      <VCol cols="12" md="6">
+        <VCard class="h-100">
+          <VCardText>
+            <h3 class="text-subtitle-1 mb-3">
+              Activity leaderboard
+            </h3>
+            <VTable density="compact">
+              <thead>
+                <tr>
+                  <th>User</th>
+                  <th>Tasks done</th>
+                  <th>Deals won</th>
+                  <th>Won value</th>
+                  <th>Score</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="row in advanced.activity_leaderboard" :key="row.user_id">
+                  <td>{{ row.full_name }}</td>
+                  <td>{{ row.tasks_completed }}</td>
+                  <td>{{ row.deals_won }}</td>
+                  <td>{{ inr(row.deals_won_value) }}</td>
+                  <td>{{ row.score }}</td>
+                </tr>
+              </tbody>
+            </VTable>
+            <p v-if="!advanced.activity_leaderboard.length" class="text-medium-emphasis text-center pa-4 mb-0">
+              No activity in this period yet.
+            </p>
+          </VCardText>
+        </VCard>
+      </VCol>
+    </VRow>
+
+    <VRow class="mb-2">
+      <VCol cols="12">
+        <VCard>
+          <VCardText>
+            <h3 class="text-subtitle-1 mb-3">
+              Quota attainment
+            </h3>
+            <div v-if="advanced.quota_attainment.length" class="d-flex flex-column ga-4">
+              <div v-for="row in advanced.quota_attainment" :key="row.user_id">
+                <div class="d-flex justify-space-between mb-1">
+                  <span>{{ row.full_name }}</span>
+                  <span class="text-medium-emphasis">{{ inr(row.actual_value) }} / {{ inr(row.target_value) }} ({{ row.attainment_pct !== null ? `${row.attainment_pct}%` : '—' }})</span>
+                </div>
+                <VProgressLinear
+                  :model-value="Math.min(row.attainment_pct || 0, 100)"
+                  :color="(row.attainment_pct || 0) >= 100 ? 'success' : 'primary'"
+                  height="8" rounded
+                />
+              </div>
+            </div>
+            <p v-else class="text-medium-emphasis text-center pa-4 mb-0">
+              No active sales targets for this period.
             </p>
           </VCardText>
         </VCard>

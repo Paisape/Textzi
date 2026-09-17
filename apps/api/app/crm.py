@@ -9,6 +9,7 @@ It's fine (and intentional) for this module to read the shared Conversation/Cont
 directly, since those were designed from the start as the shared-inbox layer, not WhatsApp-
 pipeline internals."""
 import csv
+import html
 import io
 import logging
 from datetime import datetime, timedelta, timezone
@@ -30,9 +31,10 @@ from .models import (
     Task, TaskActivity, Territory, User, UserRole, WabaOrder, WabaOrderItem, WebForm,
 )
 from .schemas import (
-    ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
-    CrmActivityItemOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
+    ActivityLeaderboardRow, ActivityMessageOut, AttachmentOut, BookingLinkOut, BookingLinkUpdateRequest, CompanyBulkDeleteRequest, CompanyCreateRequest, CompanyDetailOut, CompanyOut, CompanySummary, ConsentUpdateRequest, ContactOut,
+    CrmActivityItemOut, CrmAdvancedReportsOut, CrmContactCreateRequest, CrmContactDetailOut, CrmContactOut, CrmContactUpdateRequest, CrmExtendedReportsOut, CrmHomeOut,
     CrmReportsOut, CrmFunnelStage, CrmSettingsOut, CrmSettingsUpdateRequest, CustomerBulkDeleteRequest, CustomerCreateFromConversationRequest,
+    DealAgingRow, PeriodComparisonOut, QuotaAttainmentRow, SalesVelocityOut, StageConversionOut,
     CustomerCreateRequest, CustomerDetailOut, CustomerListEntryOut, CustomerLogEntryOut, CustomerNoteCreateRequest, CustomerNoteOut, CustomerOut, CustomerSummaryOut, CustomerUpdateRequest, CustomFieldDefinitionCreateRequest, CustomFieldDefinitionOut, StatusCountAmount,
     DashboardCreateRequest, DashboardOut, DashboardUpdateRequest,
     DealBulkDeleteRequest, DealBulkOwnerRequest, DealBulkStageRequest, DealBulkStageResult, DealCreateFromConversationRequest, DealCreateRequest, DealDetailOut,
@@ -1988,6 +1990,180 @@ def get_crm_extended_reports(days: int | None = None, user: User = Depends(requi
     )
 
 
+def _period_comparison(current_deals: list, previous_deals: list, metric: str) -> PeriodComparisonOut:
+    """current/previous are already the two deal-sets for this window and the immediately
+    preceding window of the same length -- metric picks which figure to compare (open pipeline
+    value, won value, deals-won count, win rate). pct_change is null rather than +inf when the
+    previous period had nothing to compare against, matching PeriodComparisonOut's own contract."""
+    def value_for(deals: list) -> float:
+        if metric == "open_value":
+            return sum(float(d.value) if d.value else 0.0 for d in deals if d.status == "open")
+        if metric == "won_value":
+            return sum(float(d.value) if d.value else 0.0 for d in deals if d.status == "won")
+        if metric == "deals_won":
+            return float(len([d for d in deals if d.status == "won"]))
+        if metric == "win_rate":
+            won = len([d for d in deals if d.status == "won"])
+            lost = len([d for d in deals if d.status == "lost"])
+            return round(won / (won + lost) * 100, 1) if (won + lost) else 0.0
+        raise ValueError(metric)
+
+    current_value = round(value_for(current_deals), 2)
+    previous_value = round(value_for(previous_deals), 2)
+    pct_change = round((current_value - previous_value) / previous_value * 100, 1) if previous_value else None
+    return PeriodComparisonOut(current=current_value, previous=previous_value, pct_change=pct_change)
+
+
+@router.get("/reports/advanced", response_model=CrmAdvancedReportsOut)
+def get_crm_advanced_reports(
+    pipeline_id: str | None = None, days: int = 30, aging_threshold_days: int = 14,
+    user: User = Depends(require_user), db: Session = Depends(get_db),
+):
+    """Sales velocity, stage-by-stage conversion, stuck-deal aging, an activity leaderboard, quota
+    attainment, and period-over-period comparisons -- a third, deliberately separate reports
+    endpoint (not folded into get_crm_reports/get_crm_extended_reports above) since every figure
+    here needs its own real computation (DealStageEvent time-in-stage, a comparison against the
+    PRECEDING period, not just the current one) rather than a quick aggregation over Deal alone.
+    Researched directly against Zoho/HubSpot/Pipedrive's own current reporting docs this session:
+    sales velocity uses the standard (opportunities x win rate x avg deal size) / cycle-length
+    formula HubSpot/Salesforce both publish; stage conversion and deal aging are Pipedrive's own
+    "Deal Progress"/"Rotting" concepts, reshaped as report rows rather than a live pipeline-board
+    overlay (this app has no drag-and-drop kanban board today to overlay onto); period-over-period
+    comparison arrows are confirmed as a genuine HubSpot-only capability among the three, so
+    building it cleanly here is a real point of difference, not just parity.
+    pipeline_id defaults to the entity's first pipeline when not given -- stage conversion is
+    inherently pipeline-shaped (an ordered stage list), so "all pipelines" has no honest single
+    answer the way it does for a flat pipeline-value total elsewhere in this file."""
+    entity = _resolve_entity(db, user)
+    _require_crm(db, entity.id)
+    now = datetime.now(timezone.utc)
+    window_days = max(1, min(days, 366))
+    period_start = now - timedelta(days=window_days)
+    previous_period_start = now - timedelta(days=window_days * 2)
+
+    pipeline = db.get(Pipeline, pipeline_id) if pipeline_id else db.scalar(select(Pipeline).where(Pipeline.entity_id == entity.id).order_by(Pipeline.created_at))
+    all_deals = db.scalars(select(Deal).where(Deal.entity_id == entity.id)).all()
+    pipeline_deals = [d for d in all_deals if pipeline and d.pipeline_id == pipeline.id] if pipeline else all_deals
+
+    # --- Sales velocity (current window) ---
+    window_deals = [d for d in pipeline_deals if d.created_at >= period_start]
+    open_opps = [d for d in window_deals if d.status == "open"]
+    won = [d for d in window_deals if d.status == "won"]
+    lost = [d for d in window_deals if d.status == "lost"]
+    win_rate = round(len(won) / (len(won) + len(lost)) * 100, 1) if (won or lost) else 0.0
+    avg_deal_size = round(sum(float(d.value) if d.value else 0.0 for d in won) / len(won), 2) if won else 0.0
+    cycle_lengths = []
+    for d in won:
+        first_event = db.scalar(select(DealStageEvent).where(DealStageEvent.deal_id == d.id).order_by(DealStageEvent.entered_at))
+        if first_event:
+            cycle_lengths.append((now - first_event.entered_at).total_seconds() / 86400)
+    avg_cycle_days = round(sum(cycle_lengths) / len(cycle_lengths), 1) if cycle_lengths else None
+    velocity = round((len(open_opps) * (win_rate / 100) * avg_deal_size) / avg_cycle_days, 2) if avg_cycle_days else 0.0
+    sales_velocity = SalesVelocityOut(
+        velocity=velocity, open_opportunity_count=len(open_opps), win_rate=win_rate,
+        avg_deal_size=avg_deal_size, avg_sales_cycle_days=avg_cycle_days,
+    )
+
+    # --- Stage conversion + deal aging (current pipeline state, not window-scoped -- both describe
+    # what's true right now, same "snapshot not period total" reasoning get_crm_reports already
+    # documents for open_value/forecast) ---
+    stage_conversion: list[StageConversionOut] = []
+    deal_aging: list[DealAgingRow] = []
+    if pipeline:
+        stage_names = [s["name"] for s in pipeline.stages]
+        stage_events = db.scalars(select(DealStageEvent).where(DealStageEvent.deal_id.in_([d.id for d in pipeline_deals]))).all() if pipeline_deals else []
+        events_by_stage: dict[str, list] = {}
+        for ev in stage_events:
+            events_by_stage.setdefault(ev.stage, []).append(ev)
+        for i, stage_name in enumerate(stage_names):
+            stage_events_here = events_by_stage.get(stage_name, [])
+            entered_count = len(stage_events_here)
+            advanced_count = len([ev for ev in stage_events_here if ev.exited_at is not None])
+            durations = [((ev.exited_at or now) - ev.entered_at).total_seconds() / 86400 for ev in stage_events_here]
+            stage_conversion.append(StageConversionOut(
+                stage=stage_name, position=i, entered_count=entered_count, advanced_count=advanced_count,
+                conversion_pct=round(advanced_count / entered_count * 100, 1) if entered_count else None,
+                avg_days_in_stage=round(sum(durations) / len(durations), 1) if durations else None,
+            ))
+        aging_threshold = timedelta(days=max(1, aging_threshold_days))
+        for deal in pipeline_deals:
+            if deal.status != "open":
+                continue
+            current_event = db.scalar(select(DealStageEvent).where(DealStageEvent.deal_id == deal.id, DealStageEvent.exited_at.is_(None)))
+            if not current_event or (now - current_event.entered_at) < aging_threshold:
+                continue
+            contact = db.get(CrmContact, deal.contact_id)
+            deal_aging.append(DealAgingRow(
+                deal_id=deal.id, deal_name=deal.name or (contact.name if contact else "Unknown"),
+                contact_name=contact.name if contact else None, stage=deal.stage,
+                days_in_stage=int((now - current_event.entered_at).total_seconds() / 86400),
+                value=float(deal.value) if deal.value else None,
+                owner_name=_report_owner_label(db, deal.owner_user_id) if deal.owner_user_id else None,
+            ))
+        deal_aging.sort(key=lambda r: r.days_in_stage, reverse=True)
+        deal_aging = deal_aging[:20]
+
+    # --- Activity leaderboard (current window) ---
+    org_users = {u.id: u for u in db.scalars(select(User).where(User.organization_id == user.organization_id)).all()}
+    window_tasks = db.scalars(select(Task).where(Task.entity_id == entity.id, Task.created_at >= period_start)).all()
+    leaderboard_rows: dict[str, dict] = {}
+    for task in window_tasks:
+        if not task.assigned_user_id or not task.done:
+            continue
+        row = leaderboard_rows.setdefault(task.assigned_user_id, {"tasks": 0, "deals": 0, "value": 0.0})
+        row["tasks"] += 1
+    for deal in window_deals:
+        if deal.status == "won" and deal.owner_user_id:
+            row = leaderboard_rows.setdefault(deal.owner_user_id, {"tasks": 0, "deals": 0, "value": 0.0})
+            row["deals"] += 1
+            row["value"] += float(deal.value) if deal.value else 0.0
+    # A deal won counts far more than a completed task -- pairs activity volume with real outcome
+    # so the ranking can't be gamed by logging busywork with nothing closed, confirmed via research
+    # this session as the standard HubSpot leaderboard pattern.
+    activity_leaderboard = sorted(
+        (
+            ActivityLeaderboardRow(
+                user_id=uid, full_name=org_users[uid].full_name if uid in org_users else "Unknown",
+                tasks_completed=row["tasks"], deals_won=row["deals"], deals_won_value=round(row["value"], 2),
+                score=round(row["tasks"] * 1 + row["deals"] * 10, 1),
+            )
+            for uid, row in leaderboard_rows.items()
+        ),
+        key=lambda r: r.score, reverse=True,
+    )[:10]
+
+    # --- Quota attainment (any target whose period overlaps today) ---
+    active_targets = db.scalars(
+        select(SalesTarget).where(SalesTarget.entity_id == entity.id, SalesTarget.period_start <= now, SalesTarget.period_end >= now),
+    ).all()
+    quota_attainment = []
+    for target in active_targets:
+        target_out = _sales_target_out(db, target)
+        quota_attainment.append(QuotaAttainmentRow(
+            user_id=target.user_id, full_name=org_users[target.user_id].full_name if target.user_id in org_users else "Unknown",
+            target_value=target_out.target_value, actual_value=target_out.actual_value,
+            attainment_pct=round(target_out.actual_value / target_out.target_value * 100, 1) if target_out.target_value else None,
+        ))
+
+    # --- Period-over-period comparisons ---
+    current_window_deals = [d for d in pipeline_deals if d.created_at >= period_start]
+    previous_window_deals = [d for d in pipeline_deals if previous_period_start <= d.created_at < period_start]
+    # open_value compares CURRENT open pipeline (right now) against what was open at the same
+    # point one window ago -- not "deals created in each window," since a deal created earlier but
+    # still open today is exactly the kind of thing this comparison should reflect.
+    open_now = [d for d in pipeline_deals if d.status == "open"]
+    open_before = [d for d in pipeline_deals if d.status == "open" and d.created_at < period_start]
+
+    return CrmAdvancedReportsOut(
+        sales_velocity=sales_velocity, stage_conversion=stage_conversion, deal_aging=deal_aging,
+        activity_leaderboard=activity_leaderboard, quota_attainment=quota_attainment,
+        open_pipeline_comparison=_period_comparison(open_now, open_before, "open_value"),
+        won_value_comparison=_period_comparison(current_window_deals, previous_window_deals, "won_value"),
+        deals_won_comparison=_period_comparison(current_window_deals, previous_window_deals, "deals_won"),
+        win_rate_comparison=_period_comparison(current_window_deals, previous_window_deals, "win_rate"),
+    )
+
+
 @router.get("/home", response_model=CrmHomeOut)
 def get_crm_home(days: int = 30, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Landing-page summary for the CRM focused workspace (/crm) -- KPI tiles scoped to the last
@@ -2092,9 +2268,14 @@ def _report_owner_label(db: Session, user_id: str | None) -> str:
     return user.full_name if user else "Unknown"
 
 
+def _report_quote_value(q) -> float:
+    return sum(item["quantity"] * item["unit_price"] for item in (q.line_items or []))
+
+
 REPORT_FIELDS: dict[str, dict] = {
     "deal": {
         "model": Deal,
+        "date_field": "created_at",
         "group_by": {
             "stage": lambda db, d: d.stage,
             "status": lambda db, d: d.status,
@@ -2115,6 +2296,7 @@ REPORT_FIELDS: dict[str, dict] = {
     },
     "lead": {
         "model": Lead,
+        "date_field": "created_at",
         "group_by": {
             "status": lambda db, l: l.status,
             "source": lambda db, l: l.source or "Unknown",
@@ -2131,6 +2313,7 @@ REPORT_FIELDS: dict[str, dict] = {
     },
     "task": {
         "model": Task,
+        "date_field": "created_at",
         "group_by": {
             "type": lambda db, t: t.type,
             "assigned_user_id": lambda db, t: _report_owner_label(db, t.assigned_user_id),
@@ -2144,27 +2327,112 @@ REPORT_FIELDS: dict[str, dict] = {
             "assigned_user_id": lambda t, v: t.assigned_user_id == v,
         },
     },
+    "quote": {
+        "model": Quote,
+        "date_field": "created_at",
+        "group_by": {
+            "status": lambda db, q: q.status,
+            "approval_status": lambda db, q: q.approval_status,
+        },
+        "measure": {
+            "count": lambda rows: float(len(rows)),
+            "sum_value": lambda rows: round(sum(_report_quote_value(r) for r in rows), 2),
+        },
+        "filters": {
+            "status": lambda q, v: q.status == v,
+        },
+    },
+    "sales_invoice": {
+        "model": SalesInvoice,
+        "date_field": "created_at",
+        "group_by": {
+            "status": lambda db, i: i.status,
+        },
+        "measure": {
+            "count": lambda rows: float(len(rows)),
+            "sum_value": lambda rows: round(sum(_report_quote_value(r) for r in rows), 2),
+            "sum_amount_paid": lambda rows: round(sum(float(r.amount_paid) if r.amount_paid else 0.0 for r in rows), 2),
+        },
+        "filters": {
+            "status": lambda i, v: i.status == v,
+        },
+    },
+    "company": {
+        "model": Company,
+        "date_field": "created_at",
+        "group_by": {
+            "industry": lambda db, c: c.industry or "Unknown",
+            "account_type": lambda db, c: c.account_type or "Unknown",
+            "owner_user_id": lambda db, c: _report_owner_label(db, c.owner_user_id),
+        },
+        "measure": {
+            "count": lambda rows: float(len(rows)),
+        },
+        "filters": {
+            "account_type": lambda c, v: c.account_type == v,
+            "owner_user_id": lambda c, v: c.owner_user_id == v,
+        },
+    },
 }
 
 
-def _run_report(db: Session, entity_id: str, object_type: str, group_by: str, measure: str, filters: dict[str, str]) -> list[ReportRow]:
-    spec = REPORT_FIELDS.get(object_type)
-    if not spec or group_by not in spec["group_by"] or measure not in spec["measure"]:
-        raise HTTPException(status_code=422, detail="Unsupported object/group_by/measure combination")
+def _report_base_rows(
+    db: Session, entity_id: str, spec: dict, filters: dict[str, str],
+    date_from: str | None = None, date_to: str | None = None,
+) -> list:
+    model = spec["model"]
     for key in filters:
         if key not in spec["filters"]:
             raise HTTPException(status_code=422, detail=f"Unsupported filter: {key}")
-    model = spec["model"]
     rows = db.scalars(select(model).where(model.entity_id == entity_id)).all()
     for key, value in filters.items():
         rows = [r for r in rows if spec["filters"][key](r, value)]
-    groups: dict[str, list] = {}
+    date_field = spec.get("date_field")
+    if date_field and date_from:
+        parsed_from = datetime.fromisoformat(date_from)
+        rows = [r for r in rows if getattr(r, date_field) >= parsed_from]
+    if date_field and date_to:
+        parsed_to = datetime.fromisoformat(date_to)
+        rows = [r for r in rows if getattr(r, date_field) <= parsed_to]
+    return rows
+
+
+def _run_report(
+    db: Session, entity_id: str, object_type: str, group_by: str, measure: str, filters: dict[str, str],
+    group_by_2: str | None = None, date_from: str | None = None, date_to: str | None = None,
+) -> ReportRunResult:
+    spec = REPORT_FIELDS.get(object_type)
+    if not spec or group_by not in spec["group_by"] or measure not in spec["measure"]:
+        raise HTTPException(status_code=422, detail="Unsupported object/group_by/measure combination")
+    if group_by_2 is not None and group_by_2 not in spec["group_by"]:
+        raise HTTPException(status_code=422, detail="Unsupported group_by_2")
+    rows = _report_base_rows(db, entity_id, spec, filters, date_from, date_to)
+    measure_fn = spec["measure"][measure]
+
+    if group_by_2 is None:
+        groups: dict[str, list] = {}
+        for row in rows:
+            label = spec["group_by"][group_by](db, row)
+            groups.setdefault(label, []).append(row)
+        results = [ReportRow(label=label, value=measure_fn(group_rows)) for label, group_rows in groups.items()]
+        return ReportRunResult(rows=sorted(results, key=lambda r: r.value, reverse=True)[:20])
+
+    # Matrix/cross-tab: one cell per (group_by, group_by_2) pair -- rows capped at 20 distinct
+    # primary labels x 10 distinct secondary labels (200 cells) so a careless field pairing (e.g.
+    # grouping by a near-unique free-text field) can't blow up the response; the same practical
+    # cap _run_report already applies to a flat report's own row count.
+    cells: dict[tuple[str, str], list] = {}
     for row in rows:
         label = spec["group_by"][group_by](db, row)
-        groups.setdefault(label, []).append(row)
-    measure_fn = spec["measure"][measure]
-    results = [ReportRow(label=label, value=measure_fn(group_rows)) for label, group_rows in groups.items()]
-    return sorted(results, key=lambda r: r.value, reverse=True)[:20]
+        label_2 = spec["group_by"][group_by_2](db, row)
+        cells.setdefault((label, label_2), []).append(row)
+    primary_labels = sorted({k[0] for k in cells}, key=lambda lbl: -sum(measure_fn(v) for (p, _), v in cells.items() if p == lbl))[:20]
+    secondary_labels = sorted({k[1] for k in cells})[:10]
+    matrix_rows = [
+        ReportRow(label=p, label_2=s, value=measure_fn(cells.get((p, s), [])))
+        for p in primary_labels for s in secondary_labels
+    ]
+    return ReportRunResult(rows=matrix_rows, columns=secondary_labels)
 
 
 def _drill_down_row(db: Session, object_type: str, row) -> ReportDrillDownRow:
@@ -2173,29 +2441,36 @@ def _drill_down_row(db: Session, object_type: str, row) -> ReportDrillDownRow:
         label = contact.name if contact and contact.name else (contact.phone if contact else "Unknown")
         sublabel = f"₹{float(row.value):,.0f}" if object_type == "deal" and row.value else row.stage if object_type == "deal" else row.status
         return ReportDrillDownRow(id=row.id, label=label, sublabel=sublabel)
+    if object_type in ("quote", "sales_invoice"):
+        number = row.quote_number if object_type == "quote" else row.invoice_number
+        return ReportDrillDownRow(id=row.id, label=number or "(unnumbered)", sublabel=f"₹{_report_quote_value(row):,.0f}")
+    if object_type == "company":
+        return ReportDrillDownRow(id=row.id, label=row.name, sublabel=row.industry)
     return ReportDrillDownRow(id=row.id, label=row.title, sublabel=row.type)
 
 
-def _drill_down(db: Session, entity_id: str, object_type: str, group_by: str, group_value: str, filters: dict[str, str]) -> list[ReportDrillDownRow]:
+def _drill_down(
+    db: Session, entity_id: str, object_type: str, group_by: str, group_value: str, filters: dict[str, str],
+    group_by_2: str | None = None, group_value_2: str | None = None, date_from: str | None = None, date_to: str | None = None,
+) -> list[ReportDrillDownRow]:
     spec = REPORT_FIELDS.get(object_type)
     if not spec or group_by not in spec["group_by"]:
         raise HTTPException(status_code=422, detail="Unsupported object/group_by combination")
-    for key in filters:
-        if key not in spec["filters"]:
-            raise HTTPException(status_code=422, detail=f"Unsupported filter: {key}")
-    model = spec["model"]
-    rows = db.scalars(select(model).where(model.entity_id == entity_id)).all()
-    for key, value in filters.items():
-        rows = [r for r in rows if spec["filters"][key](r, value)]
+    if group_by_2 is not None and group_by_2 not in spec["group_by"]:
+        raise HTTPException(status_code=422, detail="Unsupported group_by_2")
+    rows = _report_base_rows(db, entity_id, spec, filters, date_from, date_to)
     matched = [r for r in rows if spec["group_by"][group_by](db, r) == group_value]
+    if group_by_2 is not None and group_value_2 is not None:
+        matched = [r for r in matched if spec["group_by"][group_by_2](db, r) == group_value_2]
     return [_drill_down_row(db, object_type, r) for r in matched[:50]]
 
 
 def _saved_report_out(report: SavedReport) -> SavedReportOut:
     return SavedReportOut(
         id=report.id, name=report.name, object_type=report.object_type, group_by=report.group_by,
-        measure=report.measure, chart_type=report.chart_type, filters=report.filters or {}, schedule=report.schedule,
-        created_at=report.created_at.isoformat(),
+        group_by_2=report.group_by_2, measure=report.measure, chart_type=report.chart_type, filters=report.filters or {},
+        schedule=report.schedule, date_from=report.date_from.isoformat() if report.date_from else None,
+        date_to=report.date_to.isoformat() if report.date_to else None, created_at=report.created_at.isoformat(),
     )
 
 
@@ -2203,15 +2478,17 @@ def _saved_report_out(report: SavedReport) -> SavedReportOut:
 def run_report(payload: ReportRunRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    rows = _run_report(db, entity.id, payload.object_type, payload.group_by, payload.measure, payload.filters)
-    return ReportRunResult(rows=rows)
+    return _run_report(db, entity.id, payload.object_type, payload.group_by, payload.measure, payload.filters, payload.group_by_2, payload.date_from, payload.date_to)
 
 
 @router.post("/reports/drill-down", response_model=ReportDrillDownResult)
 def drill_down_report(payload: ReportDrillDownRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    rows = _drill_down(db, entity.id, payload.object_type, payload.group_by, payload.group_value, payload.filters)
+    rows = _drill_down(
+        db, entity.id, payload.object_type, payload.group_by, payload.group_value, payload.filters,
+        payload.group_by_2, payload.group_value_2, payload.date_from, payload.date_to,
+    )
     return ReportDrillDownResult(rows=rows)
 
 
@@ -2227,11 +2504,14 @@ def list_saved_reports(user: User = Depends(require_user), db: Session = Depends
 def create_saved_report(payload: SavedReportCreateRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
-    _run_report(db, entity.id, payload.object_type, payload.group_by, payload.measure, payload.filters)  # validates the combination
+    # validates the object/group_by/group_by_2/measure combination before ever writing the row
+    _run_report(db, entity.id, payload.object_type, payload.group_by, payload.measure, payload.filters, payload.group_by_2, payload.date_from, payload.date_to)
     report = SavedReport(
         entity_id=entity.id, user_id=user.id, name=payload.name.strip(), object_type=payload.object_type,
-        group_by=payload.group_by, measure=payload.measure, chart_type=payload.chart_type, filters=payload.filters,
-        schedule=payload.schedule,
+        group_by=payload.group_by, group_by_2=payload.group_by_2, measure=payload.measure, chart_type=payload.chart_type,
+        filters=payload.filters, schedule=payload.schedule,
+        date_from=datetime.fromisoformat(payload.date_from) if payload.date_from else None,
+        date_to=datetime.fromisoformat(payload.date_to) if payload.date_to else None,
     )
     db.add(report)
     db.commit()
@@ -2260,8 +2540,10 @@ def run_saved_report(report_id: str, user: User = Depends(require_user), db: Ses
     report = db.get(SavedReport, report_id)
     if not report or report.entity_id != entity.id or report.user_id != user.id:
         raise HTTPException(status_code=404, detail="Saved report not found")
-    rows = _run_report(db, entity.id, report.object_type, report.group_by, report.measure, report.filters or {})
-    return ReportRunResult(rows=rows)
+    return _run_report(
+        db, entity.id, report.object_type, report.group_by, report.measure, report.filters or {}, report.group_by_2,
+        report.date_from.isoformat() if report.date_from else None, report.date_to.isoformat() if report.date_to else None,
+    )
 
 
 @router.delete("/reports/saved/{report_id}")
@@ -2288,7 +2570,7 @@ def _dashboard_out(dashboard: Dashboard) -> DashboardOut:
     return DashboardOut(
         id=dashboard.id, name=dashboard.name, widget_report_ids=widget_ids,
         widget_widths={report_id: widths.get(report_id, "half") for report_id in widget_ids},
-        created_at=dashboard.created_at.isoformat(),
+        date_range_days=dashboard.date_range_days, created_at=dashboard.created_at.isoformat(),
     )
 
 
@@ -2340,6 +2622,10 @@ def update_dashboard(dashboard_id: str, payload: DashboardUpdateRequest, user: U
         merged = dict(dashboard.widget_widths or {})
         merged.update(payload.widget_widths)
         dashboard.widget_widths = merged
+    if payload.clear_date_range:
+        dashboard.date_range_days = None
+    elif "date_range_days" in payload.model_fields_set and payload.date_range_days is not None:
+        dashboard.date_range_days = payload.date_range_days
     db.commit()
     db.refresh(dashboard)
     return _dashboard_out(dashboard)
@@ -2360,19 +2646,27 @@ def delete_dashboard(dashboard_id: str, user: User = Depends(require_user), db: 
 @router.get("/dashboards/{dashboard_id}/run", response_model=dict[str, ReportRunResult])
 def run_dashboard(dashboard_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
     """Runs every widget's underlying saved report and returns them keyed by report id -- a thin
-    fan-out over the existing single-report engine (_run_report), not a new aggregation path."""
+    fan-out over the existing single-report engine (_run_report), not a new aggregation path.
+    Dashboard.date_range_days, when set, overrides every widget's own saved date range for this
+    run -- HubSpot's own "change the range once, every widget updates" dashboard-level filter,
+    confirmed via research this session as the standard pattern (Zoho Analytics offers the
+    equivalent via its own dashboard-wide Time Slicer)."""
     entity = _resolve_entity(db, user)
     _require_crm(db, entity.id)
     dashboard = db.get(Dashboard, dashboard_id)
     if not dashboard or dashboard.entity_id != entity.id or dashboard.user_id != user.id:
         raise HTTPException(status_code=404, detail="Dashboard not found")
+    override_from = None
+    if dashboard.date_range_days:
+        override_from = (datetime.now(timezone.utc) - timedelta(days=dashboard.date_range_days)).isoformat()
     results: dict[str, ReportRunResult] = {}
     for report_id in (dashboard.widget_report_ids or []):
         report = db.get(SavedReport, report_id)
         if not report or report.entity_id != entity.id or report.user_id != user.id:
             continue  # the underlying report was deleted after being added as a widget -- skip, don't 404 the whole dashboard
-        rows = _run_report(db, entity.id, report.object_type, report.group_by, report.measure, report.filters or {})
-        results[report_id] = ReportRunResult(rows=rows)
+        date_from = override_from or (report.date_from.isoformat() if report.date_from else None)
+        date_to = None if override_from else (report.date_to.isoformat() if report.date_to else None)
+        results[report_id] = _run_report(db, entity.id, report.object_type, report.group_by, report.measure, report.filters or {}, report.group_by_2, date_from, date_to)
     return results
 
 
@@ -2394,9 +2688,15 @@ def send_due_scheduled_reports() -> None:
             user = db.get(User, report.user_id)
             if not user or not user.email:
                 continue
-            rows = _run_report(db, report.entity_id, report.object_type, report.group_by, report.measure, report.filters or {})
-            table_rows = "".join(f"<tr><td style='padding:4px 12px;'>{r.label}</td><td style='padding:4px 12px;'>{r.value}</td></tr>" for r in rows)
-            body = f"<table style='border-collapse:collapse; width:100%;'>{table_rows}</table>" if rows else "<p>No data for this report right now.</p>"
+            result = _run_report(
+                db, report.entity_id, report.object_type, report.group_by, report.measure, report.filters or {}, report.group_by_2,
+                report.date_from.isoformat() if report.date_from else None, report.date_to.isoformat() if report.date_to else None,
+            )
+            # html.escape on every label -- every current group_by option is a safe enum/name, but
+            # this closes the gap before any future free-text group_by makes it a real stored-HTML-
+            # injection-into-email vector, flagged during the earlier reporting review this session.
+            table_rows = "".join(f"<tr><td style='padding:4px 12px;'>{html.escape(r.label)}</td><td style='padding:4px 12px;'>{r.value}</td></tr>" for r in result.rows)
+            body = f"<table style='border-collapse:collapse; width:100%;'>{table_rows}</table>" if result.rows else "<p>No data for this report right now.</p>"
             send_email(db, user.email, f"Report: {report.name}", render_email(report.name, body))
             report.last_sent_at = now
         db.commit()

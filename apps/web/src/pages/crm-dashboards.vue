@@ -13,11 +13,18 @@ definePage({
 })
 
 type ObjectType = 'deal' | 'lead' | 'task'
-type ChartType = 'bar' | 'donut' | 'table'
+type ChartType = 'bar' | 'donut' | 'table' | 'matrix' | 'kpi'
 type ReportRow = { label: string, value: number }
 type SavedReport = { id: string, name: string, object_type: ObjectType, group_by: string, measure: string, chart_type: ChartType }
 type WidgetWidth = 'half' | 'full'
-type Dashboard = { id: string, name: string, widget_report_ids: string[], widget_widths: Record<string, WidgetWidth>, created_at: string }
+type Dashboard = { id: string, name: string, widget_report_ids: string[], widget_widths: Record<string, WidgetWidth>, date_range_days: number | null, created_at: string }
+
+const DATE_RANGE_OPTIONS = [
+  { title: 'Each report’s own range', value: null },
+  { title: 'Last 7 days', value: 7 },
+  { title: 'Last 30 days', value: 30 },
+  { title: 'Last 90 days', value: 90 },
+]
 
 const CHART_COLORS = ['#7367F0', '#28C76F', '#FF9F43', '#EA5455', '#00CFE8', '#82868B', '#5A8DEE', '#FFD93D']
 
@@ -253,6 +260,27 @@ async function removeWidget(reportId: string) {
   }
 }
 
+function kpiValueFor(reportId: string) {
+  const rows = widgetData.value[reportId] || []
+  return rows.reduce((sum, r) => sum + r.value, 0)
+}
+
+async function setDateRangeDays(days: number | null) {
+  if (!activeDashboard.value)
+    return
+  try {
+    const body: Record<string, unknown> = days === null ? { clear_date_range: true } : { date_range_days: days }
+    const updated = await $api<Dashboard>(`/v1/crm/dashboards/${activeDashboard.value.id}`, { method: 'PATCH', body })
+    const index = dashboards.value.findIndex(d => d.id === updated.id)
+    if (index !== -1)
+      dashboards.value[index] = updated
+    await runActiveDashboard()
+  }
+  catch (error: any) {
+    loadError.value = extractErrorMessage(error, 'Could not update the date range.')
+  }
+}
+
 function chartDataFor(reportId: string) {
   const rows = widgetData.value[reportId] || []
   return {
@@ -307,7 +335,7 @@ onMounted(loadAll)
         </VTab>
       </VTabs>
 
-      <div v-if="activeDashboard" class="d-flex ga-2 mb-4">
+      <div v-if="activeDashboard" class="d-flex ga-2 mb-4 align-center flex-wrap">
         <VBtn size="small" variant="tonal" prepend-icon="tabler-plus" :disabled="!availableReportsToAdd.length" @click="openAddWidget">
           Add widget
         </VBtn>
@@ -317,6 +345,10 @@ onMounted(loadAll)
         <VBtn size="small" variant="text" color="error" prepend-icon="tabler-trash" :loading="deletingDashboardId === activeDashboard.id" @click="deleteDashboard(activeDashboard)">
           Delete dashboard
         </VBtn>
+        <VSelect
+          :model-value="activeDashboard.date_range_days" :items="DATE_RANGE_OPTIONS" density="compact" hide-details
+          style="max-width: 220px;" class="ms-auto" @update:model-value="setDateRangeDays"
+        />
       </div>
 
       <VProgressLinear v-if="running" indeterminate class="mb-4" />
@@ -346,9 +378,14 @@ onMounted(loadAll)
               </template>
             </VCardItem>
             <VCardText>
-              <p v-if="!(widgetData[reportId] || []).length" class="text-medium-emphasis text-center pa-6 mb-0">
+              <p v-if="reportById(reportId)!.chart_type !== 'kpi' && !(widgetData[reportId] || []).length" class="text-medium-emphasis text-center pa-6 mb-0">
                 No data for this report yet.
               </p>
+              <div v-else-if="reportById(reportId)!.chart_type === 'kpi'" class="pa-4 text-center">
+                <p class="text-h3 mb-0">
+                  {{ kpiValueFor(reportId) }}
+                </p>
+              </div>
               <div v-else style="block-size: 280px;">
                 <Bar v-if="reportById(reportId)!.chart_type === 'bar'" :data="chartDataFor(reportId)" :options="chartOptions" />
                 <Doughnut v-else-if="reportById(reportId)!.chart_type === 'donut'" :data="chartDataFor(reportId)" :options="doughnutOptions" />

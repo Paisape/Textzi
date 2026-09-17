@@ -2602,26 +2602,120 @@ class CrmExtendedReportsOut(BaseModel):
 
 
 class ReportRunRequest(BaseModel):
-    object_type: str = Field(pattern="^(deal|lead|task)$")
+    object_type: str = Field(pattern="^(deal|lead|task|quote|sales_invoice|company)$")
     group_by: str = Field(min_length=1, max_length=40)
+    group_by_2: str | None = Field(default=None, max_length=40)  # matrix/cross-tab: an optional second dimension
     measure: str = Field(min_length=1, max_length=40)
     filters: dict[str, str] = Field(default_factory=dict)
+    date_from: str | None = None
+    date_to: str | None = None
+
+
+class PeriodComparisonOut(BaseModel):
+    """A single metric's current-period value alongside the immediately preceding period of the
+    same length, plus the % change between them -- the "vs last period" arrow+percentage pattern
+    HubSpot's own dashboards use natively (confirmed via research this session that Zoho/Pipedrive
+    don't offer this at all, making a clean implementation a real point of difference, not just
+    parity). pct_change is null when the previous period had zero to compare against (avoids a
+    division-by-zero reading as a nonsensical "+inf%")."""
+    current: float
+    previous: float
+    pct_change: float | None
+
+
+class SalesVelocityOut(BaseModel):
+    """Standard formula (HubSpot/Salesforce): (open opportunity count x win rate x avg deal size)
+    / avg sales cycle length in days -- "how much pipeline revenue moves through per day". All
+    four inputs are exposed alongside the final number since the formula means nothing to an SME
+    owner without seeing what's driving it."""
+    velocity: float  # INR per day
+    open_opportunity_count: int
+    win_rate: float  # 0-100
+    avg_deal_size: float
+    avg_sales_cycle_days: float | None
+
+
+class StageConversionOut(BaseModel):
+    """One funnel stage's own conversion into the next -- entered_count is every deal that has
+    ever reached this stage (open or since moved on), advanced_count is how many of those went on
+    to a later stage (won counts as reaching the pipeline's own final stage), conversion_pct is
+    advanced/entered. avg_days_in_stage comes straight from DealStageEvent's own entered_at/
+    exited_at (or "now" for a deal still sitting there)."""
+    stage: str
+    position: int
+    entered_count: int
+    advanced_count: int
+    conversion_pct: float | None
+    avg_days_in_stage: float | None
+
+
+class DealAgingRow(BaseModel):
+    """An open deal that has sat in its current stage longer than the configurable threshold --
+    Pipedrive's own "Rotting" concept (confirmed via research as the clearest competitor pattern),
+    surfaced here as a report row rather than a per-card visual flag, matching this app's existing
+    "aggregate into a report" convention rather than adding a new UI treatment to the pipeline
+    board itself."""
+    deal_id: str
+    deal_name: str
+    contact_name: str | None
+    stage: str
+    days_in_stage: int
+    value: float | None
+    owner_name: str | None
+
+
+class ActivityLeaderboardRow(BaseModel):
+    """Ranked by a simple weighted score (deals won counts more than a logged task) rather than
+    raw activity volume alone -- HubSpot's own leaderboard pattern pairs volume with outcome so it
+    doesn't reward busywork (confirmed via research this session)."""
+    user_id: str
+    full_name: str
+    tasks_completed: int
+    deals_won: int
+    deals_won_value: float
+    score: float
+
+
+class QuotaAttainmentRow(BaseModel):
+    user_id: str
+    full_name: str
+    target_value: float
+    actual_value: float
+    attainment_pct: float | None
+
+
+class CrmAdvancedReportsOut(BaseModel):
+    sales_velocity: SalesVelocityOut
+    stage_conversion: list[StageConversionOut]
+    deal_aging: list[DealAgingRow]
+    activity_leaderboard: list[ActivityLeaderboardRow]
+    quota_attainment: list[QuotaAttainmentRow]
+    open_pipeline_comparison: PeriodComparisonOut
+    won_value_comparison: PeriodComparisonOut
+    deals_won_comparison: PeriodComparisonOut
+    win_rate_comparison: PeriodComparisonOut
 
 
 class ReportRow(BaseModel):
     label: str
     value: float
+    label_2: str | None = None  # set only for a matrix/cross-tab report -- this row's column dimension
 
 
 class ReportRunResult(BaseModel):
     rows: list[ReportRow]
+    columns: list[str] | None = None  # matrix reports only -- the distinct label_2 values, in a stable order
 
 
 class ReportDrillDownRequest(BaseModel):
-    object_type: str = Field(pattern="^(deal|lead|task)$")
+    object_type: str = Field(pattern="^(deal|lead|task|quote|sales_invoice|company)$")
     group_by: str = Field(min_length=1, max_length=40)
     group_value: str = Field(min_length=1, max_length=200)
+    group_by_2: str | None = Field(default=None, max_length=40)
+    group_value_2: str | None = Field(default=None, max_length=200)
     filters: dict[str, str] = Field(default_factory=dict)
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 class ReportDrillDownRow(BaseModel):
@@ -2639,21 +2733,27 @@ class SavedReportOut(BaseModel):
     name: str
     object_type: str
     group_by: str
+    group_by_2: str | None = None
     measure: str
     chart_type: str
     filters: dict[str, str]
     schedule: str | None
+    date_from: str | None = None
+    date_to: str | None = None
     created_at: str
 
 
 class SavedReportCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-    object_type: str = Field(pattern="^(deal|lead|task)$")
+    object_type: str = Field(pattern="^(deal|lead|task|quote|sales_invoice|company)$")
     group_by: str = Field(min_length=1, max_length=40)
+    group_by_2: str | None = Field(default=None, max_length=40)
     measure: str = Field(min_length=1, max_length=40)
-    chart_type: str = Field(default="bar", pattern="^(bar|donut|table)$")
+    chart_type: str = Field(default="bar", pattern="^(bar|donut|table|matrix|kpi)$")
     filters: dict[str, str] = Field(default_factory=dict)
     schedule: str | None = Field(default=None, pattern="^(weekly|monthly)$")
+    date_from: str | None = None
+    date_to: str | None = None
 
 
 class SavedReportUpdateRequest(BaseModel):
@@ -2665,6 +2765,7 @@ class DashboardOut(BaseModel):
     name: str
     widget_report_ids: list[str]
     widget_widths: dict[str, str]
+    date_range_days: int | None = None
     created_at: str
 
 
@@ -2677,6 +2778,8 @@ class DashboardUpdateRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
     widget_report_ids: list[str] | None = None
     widget_widths: dict[str, str] | None = None
+    date_range_days: int | None = None
+    clear_date_range: bool = False  # explicit flag since date_range_days=None is ambiguous with "don't change it"
 
     @field_validator("widget_widths")
     @classmethod
