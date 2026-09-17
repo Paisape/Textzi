@@ -131,6 +131,7 @@ const form = reactive({
   title: '',
   description: '',
   stages: [{ approver_user_ids: [] as string[] }],
+  files: [] as File[],
 })
 const saving = ref(false)
 const saveError = ref('')
@@ -139,6 +140,7 @@ function openCreate() {
   form.title = ''
   form.description = ''
   form.stages = [{ approver_user_ids: [] }]
+  form.files = []
   saveError.value = ''
   dialog.value = true
 }
@@ -164,6 +166,20 @@ async function save() {
       method: 'POST',
       body: { title: form.title.trim(), description: form.description.trim() || null, stages: form.stages },
     })
+    for (const file of form.files) {
+      try {
+        const doc = await uploadDocumentFile(created.id, file)
+        created.documents.push(doc)
+      }
+      catch {
+        // The request itself is already created and safe -- a failed attachment here just means
+        // one fewer document on it; the detail view (opened next) still lets the user retry.
+      }
+    }
+    if (form.files.length) {
+      const refreshed = await $api<ApprovalRequest>(`/v1/crm/approvals/${created.id}`)
+      Object.assign(created, refreshed)
+    }
     requests.value.unshift(created)
     dialog.value = false
     openDetail(created)
@@ -257,6 +273,13 @@ function openDetail(request: ApprovalRequest) {
 const uploadingDocument = ref(false)
 const documentError = ref('')
 
+async function uploadDocumentFile(requestId: string, file: File, versionGroupId?: string): Promise<ApprovalDocument> {
+  const formData = new FormData()
+  formData.append('file', file)
+  const params = versionGroupId ? `?version_group_id=${versionGroupId}` : ''
+  return $api<ApprovalDocument>(`/v1/crm/approvals/${requestId}/documents${params}`, { method: 'POST', body: formData })
+}
+
 async function uploadDocument(event: Event, versionGroupId?: string) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
@@ -265,10 +288,7 @@ async function uploadDocument(event: Event, versionGroupId?: string) {
   uploadingDocument.value = true
   documentError.value = ''
   try {
-    const formData = new FormData()
-    formData.append('file', file)
-    const params = versionGroupId ? `?version_group_id=${versionGroupId}` : ''
-    const created = await $api<ApprovalDocument>(`/v1/crm/approvals/${detailRequest.value.id}/documents${params}`, { method: 'POST', body: formData })
+    const created = await uploadDocumentFile(detailRequest.value.id, file, versionGroupId)
     detailRequest.value.documents.push(created)
     const index = requests.value.findIndex(r => r.id === detailRequest.value!.id)
     if (index !== -1)
@@ -487,6 +507,10 @@ onMounted(loadAll)
         </VAlert>
         <VTextField v-model="form.title" label="What are you asking for?" density="compact" autofocus />
         <VTextarea v-model="form.description" label="Details (optional)" rows="2" density="compact" />
+        <VFileInput
+          v-model="form.files" label="Attach documents (optional)" density="compact" multiple chips closable-chips
+          accept=".pdf,.jpg,.jpeg,.png" prepend-icon="tabler-paperclip"
+        />
 
         <div>
           <div class="d-flex align-center justify-space-between mb-2">
