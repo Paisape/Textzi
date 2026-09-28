@@ -22,10 +22,22 @@ from .schemas import (
     PublicBookingLinkOut, PublicBookingRequest, PublicBookingResponse, PublicBookingSlotsOut,
     PublicCustomFieldOut, PublicQuoteOut, PublicQuoteSignRequest, PublicWebFormOut, WebFormSubmitRequest, WebFormSubmitResponse,
 )
-from .services import channel_active, client_ip, log_activity
+from .services import RateLimitError, channel_active, client_ip, enforce_rate_limit, log_activity
 from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
+
+# Turnstile alone only stops scripted/bot abuse -- it doesn't cap repeated submissions from one
+# already-solved human session. Same per-IP-per-hour shape as auth.py's REGISTER_RATE_LIMIT.
+PUBLIC_WRITE_RATE_LIMIT_MAX_REQUESTS = 20
+PUBLIC_WRITE_RATE_LIMIT_WINDOW_SECONDS = 3600
+
+
+def _enforce_public_write_rate_limit(request: Request) -> None:
+    try:
+        enforce_rate_limit(f"ratelimit:crm-public:{client_ip(request)}", PUBLIC_WRITE_RATE_LIMIT_MAX_REQUESTS, PUBLIC_WRITE_RATE_LIMIT_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 
 
 def _active_form(db: Session, form_id: str) -> WebForm:
@@ -54,6 +66,7 @@ def get_public_lead_form(form_id: str, db: Session = Depends(get_db)):
 def submit_public_lead_form(form_id: str, payload: WebFormSubmitRequest, request: Request, db: Session = Depends(get_db)):
     form = _active_form(db, form_id)
     entity_id = form.entity_id
+    _enforce_public_write_rate_limit(request)
     require_turnstile(payload.turnstile_token, request, db)
 
     custom_field_names = set()
@@ -146,6 +159,7 @@ def get_public_quote(quote_id: str, db: Session = Depends(get_db)):
 @router.post("/quote/{quote_id}/sign", response_model=PublicQuoteOut)
 def sign_public_quote(quote_id: str, payload: PublicQuoteSignRequest, request: Request, db: Session = Depends(get_db)):
     quote = _get_sendable_quote(db, quote_id)
+    _enforce_public_write_rate_limit(request)
     require_turnstile(payload.turnstile_token, request, db)
     if quote.status != "sent":
         raise HTTPException(status_code=409, detail=f"This quote has already been {quote.status}")
@@ -232,6 +246,7 @@ def get_public_booking_availability(slug: str, on: str, db: Session = Depends(ge
 @router.post("/booking/{slug}/book", response_model=PublicBookingResponse)
 def book_public_slot(slug: str, payload: PublicBookingRequest, request: Request, db: Session = Depends(get_db)):
     link = _active_booking_link(db, slug)
+    _enforce_public_write_rate_limit(request)
     require_turnstile(payload.turnstile_token, request, db)
     if not payload.email and not payload.phone:
         raise HTTPException(status_code=422, detail="Provide an email or phone number")

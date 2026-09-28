@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from html import escape
 
 import jwt
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -14,10 +14,15 @@ from .email_service import render_email, send_email
 from .models import ContactMessage, PageView, RateCard, Testimonial, VisitorSession
 from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, PublicTurnstileConfigOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
 from .security import decode_access_token
-from .services import client_ip, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
+from .services import RateLimitError, client_ip, enforce_rate_limit, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
 from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
+
+# Same per-IP-per-hour shape as auth.py's REGISTER_RATE_LIMIT -- submit_contact fires a real email
+# on every call, same abuse shape as register.
+CONTACT_RATE_LIMIT_MAX_REQUESTS = 10
+CONTACT_RATE_LIMIT_WINDOW_SECONDS = 3600
 
 
 @router.get("/api-base-url", response_model=PublicApiBaseUrlOut)
@@ -53,6 +58,10 @@ def get_public_turnstile_config(db: Session = Depends(get_db)):
 
 @router.post("/contact", response_model=ContactResponse)
 def submit_contact(payload: ContactRequest, request: Request, db: Session = Depends(get_db)):
+    try:
+        enforce_rate_limit(f"ratelimit:contact:{client_ip(request)}", CONTACT_RATE_LIMIT_MAX_REQUESTS, CONTACT_RATE_LIMIT_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     require_turnstile(payload.turnstile_token, request, db)
     row = ContactMessage(
         name=payload.name,

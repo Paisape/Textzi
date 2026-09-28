@@ -132,7 +132,12 @@ async def lifespan(_: FastAPI):
     scheduler.shutdown(wait=False)
 
 
-app = FastAPI(title="Textzi API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="Textzi API", version="0.1.0", lifespan=lifespan,
+    docs_url="/docs" if settings.environment == "development" else None,
+    redoc_url="/redoc" if settings.environment == "development" else None,
+    openapi_url="/openapi.json" if settings.environment == "development" else None,
+)
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 # Added after CORSMiddleware above -- Starlette runs middleware in reverse-add order (last added
 # wraps outermost, sees the request first), so this sees every /v1/public/webchat/* request before

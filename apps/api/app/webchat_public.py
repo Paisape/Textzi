@@ -32,8 +32,21 @@ from .database import SessionLocal, get_db
 from .geoip import lookup_geo
 from .models import Contact, Conversation, ConversationMessage, CsatResponse, TicketGroup, WebchatVisit, WebchatWidgetSettings
 from .schemas import PublicTurnstileConfigOut, WebchatCsatRequest, WebchatHistoryMessageOut, WebchatHistoryResponse, WebchatMessageRequest, WebchatMessageResponse, WebchatVisitRequest, WebchatVisitResponse
-from .services import client_ip, get_platform_turnstile_settings, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
+from .services import RateLimitError, client_ip, enforce_rate_limit, get_platform_turnstile_settings, is_outside_business_hours, sanitize_rich_text, stamp_sla_due_at
 from .turnstile import require_turnstile
+
+# A real visitor sends many messages in a normal conversation, so this is generous compared to
+# crm_public.py's one-shot form submits -- just enough to stop a script hammering the endpoint
+# (send_visitor_media has no Turnstile check at all, so this is its only abuse guard today).
+WEBCHAT_WRITE_RATE_LIMIT_MAX_REQUESTS = 60
+WEBCHAT_WRITE_RATE_LIMIT_WINDOW_SECONDS = 60
+
+
+def _enforce_webchat_write_rate_limit(request: Request, widget_key: str) -> None:
+    try:
+        enforce_rate_limit(f"ratelimit:webchat:{widget_key}:{client_ip(request)}", WEBCHAT_WRITE_RATE_LIMIT_MAX_REQUESTS, WEBCHAT_WRITE_RATE_LIMIT_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
 from .waba_realtime import message_payload, notify_new_reply, publish_event
 from .webchat_widget_js import WIDGET_JS
 
@@ -299,6 +312,7 @@ def _find_or_create_webchat_conversation(db: Session, entity_id: str, contact_id
 def send_visitor_message(widget_key: str, payload: WebchatMessageRequest, request: Request, db: Session = Depends(get_db)):
     settings_row = _widget_settings(db, widget_key)
     _check_origin(request, settings_row)
+    _enforce_webchat_write_rate_limit(request, widget_key)
     require_turnstile(payload.turnstile_token, request, db)
 
     contact = _find_or_create_webchat_contact(db, settings_row.entity_id, payload.visitor_id, payload.name, payload.email)
@@ -338,6 +352,7 @@ async def send_visitor_media(
     already doesn't care whether the bytes came from Meta, an agent, or here)."""
     settings_row = _widget_settings(db, widget_key)
     _check_origin(request, settings_row)
+    _enforce_webchat_write_rate_limit(request, widget_key)
 
     mime_type = file.content_type or mimetypes.guess_type(file.filename or "")[0]
     message_type = waba_media.message_type_for_mime(mime_type or "")

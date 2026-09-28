@@ -15,6 +15,11 @@ RUN useradd --create-home --uid 1000 appuser && mkdir -p /app/uploads && chown -
 COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 EXPOSE 8000
+# No curl/wget in this slim image -- python's own stdlib avoids adding a package just for this.
+# Hits /health/live (process up), not /health/ready (DB up) -- a slow/unreachable DB shouldn't make
+# Docker/Coolify think the container itself needs restarting.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3).status == 200 else 1)"
 ENTRYPOINT ["docker-entrypoint.sh"]
 # --no-access-log: uvicorn's default access log prints the full request line, including query
 # strings -- a real leak for GET /v1/sms/send-url, whose api_key travels as a query param. The

@@ -14,4 +14,7 @@ FROM nginx:stable-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=builder /app/dist /usr/share/nginx/html
 EXPOSE 80
+# BusyBox's wget ships in the base nginx:alpine image already -- no extra package needed.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -q -O /dev/null http://127.0.0.1:80/ || exit 1
 CMD ["nginx", "-g", "daemon off;"]
