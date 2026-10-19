@@ -1,7 +1,8 @@
-"""Customer-facing shared inbox: conversations, contacts, labels, canned responses. Reads/writes
-the tables added for the native WhatsApp inbox (models.py's "Native shared inbox" section) --
-deliberately its own module, never importing from or importing into dispatch.py/providers.py/
-webhooks.py (the SMS-specific pipeline), same isolation principle as every other WABA module."""
+"""WhatsApp shared inbox: conversations, contacts, labels, canned responses, tickets/helpdesk
+(SLA, macros, CSAT). Reads/writes the tables added for the native WhatsApp inbox (models.py's
+"Native shared inbox" section) -- deliberately its own module, never importing from or importing
+into dispatch.py/providers.py/webhooks.py (the SMS-specific pipeline), same isolation principle
+as every other WABA module."""
 import mimetypes
 from datetime import datetime, timedelta, timezone
 
@@ -18,7 +19,7 @@ import secrets
 
 from .models import (
     AutomationRule, BusinessHours, CannedResponse, Contact, ContactLabel, Conversation, ConversationActivity, ConversationLabel, ConversationMessage,
-    CrmContact, CsatResponse, CsatSettings, Customer, Deal, Label, Lead, Macro, Segment, SlaPolicy, TicketGroup, User,
+    CsatResponse, CsatSettings, Label, Macro, Segment, SlaPolicy, TicketGroup, User,
     WabaConnection, WabaWebhookSubscription,
 )
 from .schemas import (
@@ -26,8 +27,8 @@ from .schemas import (
     CannedResponseCreateRequest, CannedResponseOut, ContactDirectoryEntryOut, ContactMessageRequest, ContactOut, ContactTimelineOut, ContactUpdateRequest,
     ConversationActivityOut, ConversationCcUpdateRequest, ConversationCountsOut, ConversationDetailOut, ConversationMessageCreateRequest, ConversationMessageOut,
     ConversationOut, ConversationSubjectUpdateRequest, ConversationUpdateRequest, ConvertToTicketRequest, CreateTicketRequest,
-    CrmContactOut, CsatSettingsOut, CsatSettingsUpdateRequest, CustomerOut, DealOut, InteractiveButtonRequest, InteractiveListRequest, ProductListMessageRequest, ProductMessageRequest,
-    LabelCreateRequest, LabelOut, LeadOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
+    CsatSettingsOut, CsatSettingsUpdateRequest, InteractiveButtonRequest, InteractiveListRequest, ProductListMessageRequest, ProductMessageRequest,
+    LabelCreateRequest, LabelOut, LocationMessageRequest, MacroCreateRequest, MacroOut, ReactionRequest, SegmentCreateRequest,
     SegmentOut, SlaPolicyOut, SlaPolicyUpdateRequest, StartConversationRequest, TemplateButtonOut, TemplateCreateRequest,
     TemplateMessageRequest, TicketCategoryUpdateRequest, TicketCountsOut, TicketCustomFieldsUpdateRequest, TicketGroupAssignRequest,
     TicketGroupCreateRequest, TicketGroupOut, TicketPriorityUpdateRequest, TicketSummary, WabaTemplateOut, WabaWebhookSubscriptionOut,
@@ -43,13 +44,8 @@ from .waba_dispatch import (
 )
 from .waba_meta import MetaApiError, create_message_template, delete_message_template, list_message_templates, upload_template_header_media
 from .waba_realtime import authenticate_query_token, message_payload, publish_event, publish_notification
-from .webchat_realtime import publish_to_visitor
 
-# Shared inbox module -- owns the Conversation/Task/ticket tables both the plain WhatsApp inbox
-# AND CRM's Tickets/Email/Helpdesk pages call directly, so this is gated to either channel
-# scope, not "waba" alone (unlike waba.py/waba_campaigns.py/waba_reports.py, which really are
-# WhatsApp-only and stay single-channel gated).
-router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"], dependencies=[Depends(require_channel_scope_any(["waba", "crm"]))])
+router = APIRouter(prefix="/v1/waba", tags=["waba-inbox"], dependencies=[Depends(require_channel_scope_any(["waba"]))])
 
 # get_conversation_media below deliberately has no Authorization header at all -- it's fetched by
 # a plain <img>/<video> tag, same reasoning as the /v1/waba/ws WebSocket (waba_realtime.py, whose
@@ -75,16 +71,6 @@ def _contact_out(db: Session, contact: Contact) -> ContactOut:
         consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
         consent_source=contact.consent_source, crm_contact_id=contact.crm_contact_id,
         is_unconfirmed_email=contact.is_unconfirmed_email, created_at=contact.created_at.isoformat(),
-    )
-
-
-def _crm_contact_out(contact: CrmContact) -> CrmContactOut:
-    return CrmContactOut(
-        id=contact.id, name=contact.name, phone=contact.phone, email=contact.email, title=contact.title,
-        company_id=contact.company_id, owner_user_id=contact.owner_user_id, address=contact.address,
-        reports_to_id=contact.reports_to_id, source=contact.source, custom_fields=contact.custom_fields or {},
-        consent_given_at=contact.consent_given_at.isoformat() if contact.consent_given_at else None,
-        consent_source=contact.consent_source, created_at=contact.created_at.isoformat(),
     )
 
 
@@ -295,19 +281,11 @@ def get_conversation_activity(conversation_id: str, user: User = Depends(require
 
 
 def _maybe_send_csat_request(db: Session, entity_id: str, conversation: Conversation, contact: Contact, user_id: str) -> None:
-    """WhatsApp: sent as a 1-10-row interactive list (not a 1-3 button message -- Meta caps those
-    at 3 buttons, too few for a 1-5 scale) with rows titled "1".."5" so the inbound list_reply's
-    own title doubles as the rating; waba_webhooks._match_csat_response reads it back that way.
-    Webchat: no server-sent message -- the widget itself renders an inline 1-5 rating UI once it
-    sees the conversation marked resolved (over the same live WebSocket connection already used
-    for messages), submitting straight to webchat_public.py's own /csat endpoint. Either way, the
-    CsatResponse row is the same shape and created the same way (rating null until answered)."""
+    """Sent as a 1-10-row interactive list (not a 1-3 button message -- Meta caps those at 3
+    buttons, too few for a 1-5 scale) with rows titled "1".."5" so the inbound list_reply's own
+    title doubles as the rating; waba_webhooks._match_csat_response reads it back that way."""
     settings_row = db.get(CsatSettings, entity_id)
     if not settings_row or not settings_row.enabled:
-        return
-    if conversation.channel == "webchat" and contact.visitor_id:
-        db.add(CsatResponse(conversation_id=conversation.id, entity_id=entity_id))
-        publish_to_visitor(contact.visitor_id, {"type": "csat_request", "conversation_id": conversation.id})
         return
     if not contact.wa_id:
         return
@@ -696,16 +674,6 @@ def send_conversation_message(conversation_id: str, payload: ConversationMessage
         publish_event(entity.id, {"type": "message", "message": message_payload(message)})
         return _message_out(message)
 
-    if conversation.channel == "webchat":
-        from .webchat import send_webchat_text  # local import, same rationale as waba_automation.py's own reply action
-        try:
-            message = send_webchat_text(db, entity.id, conversation, contact, payload.body, sent_by_user_id=user.id)
-        except DomainError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        _log_conversation_activity(db, conversation.id, user.id, "replied", f"{user.full_name} replied")
-        db.commit()
-        return _message_out(message)
-
     if conversation.channel == "manual" and not contact.wa_id:
         # A manually-created ticket (create_ticket) with no WhatsApp number on its requester has no
         # live channel to dispatch a reply to -- record it as a real outbound message on the
@@ -746,15 +714,6 @@ async def send_conversation_media(conversation_id: str, file: UploadFile = File(
         raise HTTPException(status_code=422, detail=f"Unsupported file type '{mime_type}'")
     content = await file.read()
 
-    if conversation.channel == "webchat":
-        from .webchat import send_webchat_media  # local import, same rationale as the text-send branch above
-        try:
-            message = send_webchat_media(db, entity.id, conversation, contact, content, mime_type, message_type, caption, sent_by_user_id=user.id)
-        except DomainError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        return _message_out(message)
 
     if not contact.wa_id:
         raise HTTPException(status_code=422, detail="This contact has no WhatsApp number to send to")
@@ -1275,17 +1234,10 @@ def list_contacts_directory(include_unconfirmed: bool = False, user: User = Depe
             .group_by(ConversationMessage.conversation_id),
         ).all()
         last_replies = dict(rows)
-    # Lead.contact_id points at a CrmContact now, not this WABA Contact directly -- resolve
-    # through each contact's own crm_contact_id link (set at conversion time) to find its lead.
-    crm_contact_ids = [c.crm_contact_id for c in contacts if c.crm_contact_id]
-    leads_by_crm_contact_id = {
-        lead.contact_id: lead for lead in db.scalars(select(Lead).where(Lead.contact_id.in_(crm_contact_ids))).all()
-    } if crm_contact_ids else {}
 
     out = []
     for contact in contacts:
         conversation = conversations.get(contact.id)
-        lead = leads_by_crm_contact_id.get(contact.crm_contact_id) if contact.crm_contact_id else None
         out.append(ContactDirectoryEntryOut(
             contact=_contact_out(db, contact),
             conversation_id=conversation.id if conversation else None,
@@ -1296,16 +1248,16 @@ def list_contacts_directory(include_unconfirmed: bool = False, user: User = Depe
             is_ticket=bool(conversation and conversation.is_ticket),
             ticket_number=conversation.ticket_number if conversation else None,
             ticket_status=conversation.status if conversation and conversation.is_ticket else None,
-            lead_id=lead.id if lead else None,
-            customer_id=contact.customer_id,
+            lead_id=None,
+            customer_id=None,
         ))
     return out
 
 
 @router.get("/contacts/{contact_id}/timeline", response_model=ContactTimelineOut)
 def get_contact_timeline(contact_id: str, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    """Full chat trail for one contact plus their CRM link status -- the detail view reachable
-    from the contacts directory's "View" action."""
+    """Full chat trail for one contact -- the detail view reachable from the contacts directory's
+    "View" action."""
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
@@ -1318,51 +1270,13 @@ def get_contact_timeline(contact_id: str, user: User = Depends(require_user), db
     if conversation:
         messages = db.scalars(select(ConversationMessage).where(ConversationMessage.conversation_id == conversation.id).order_by(ConversationMessage.created_at.asc())).all()
 
-    # CRM data now lives on a separate CrmContact (see Contact.crm_contact_id) -- a WABA contact
-    # that's never been converted has no linked CrmContact at all, so lead/deals/customer all
-    # stay empty until an agent explicitly converts it.
-    crm_contact = db.get(CrmContact, contact.crm_contact_id) if contact.crm_contact_id else None
-    lead_out = None
-    deals_out: list[DealOut] = []
-    customer_out = None
-    if crm_contact:
-        crm_contact_out = _crm_contact_out(crm_contact)
-        # Most recent open (or, absent that, most recent overall) thin Lead -- a contact can have
-        # at most one useful "current" Lead at a time even though the row isn't unique-constrained.
-        lead = db.scalar(select(Lead).where(Lead.contact_id == crm_contact.id, Lead.entity_id == entity.id).order_by(Lead.created_at.desc()))
-        deals = db.scalars(select(Deal).where(Deal.contact_id == crm_contact.id, Deal.entity_id == entity.id).order_by(Deal.created_at.desc())).all()
-        customer = db.get(Customer, contact.customer_id) if contact.customer_id else None
-        lead_out = LeadOut(
-            id=lead.id, contact=crm_contact_out, company_name=lead.company_name, source=lead.source, status=lead.status,
-            owner_user_id=lead.owner_user_id, notes=lead.notes, custom_fields=lead.custom_fields or {}, score=lead.score,
-            converted_at=lead.converted_at.isoformat() if lead.converted_at else None, converted_deal_id=lead.converted_deal_id,
-            created_at=lead.created_at.isoformat(),
-        ) if lead else None
-        deals_out = [
-            DealOut(
-                id=deal.id, name=deal.name, contact=crm_contact_out, pipeline_id=deal.pipeline_id, stage=deal.stage, source=deal.source,
-                converted_from_conversation_id=deal.converted_from_conversation_id, converted_from_lead_id=deal.converted_from_lead_id,
-                owner_user_id=deal.owner_user_id, notes=deal.notes, value=float(deal.value) if deal.value is not None else None,
-                probability=deal.probability, expected_close_date=deal.expected_close_date.isoformat() if deal.expected_close_date else None,
-                status=deal.status, lost_reason=deal.lost_reason, next_step=deal.next_step,
-                next_step_due_at=deal.next_step_due_at.isoformat() if deal.next_step_due_at else None,
-                custom_fields=deal.custom_fields or {}, stage_approvals=deal.stage_approvals or {},
-                created_at=deal.created_at.isoformat(),
-            ) for deal in deals
-        ]
-        customer_out = CustomerOut(
-            id=customer.id, contact=crm_contact_out, deal_id=customer.deal_id,
-            converted_from_conversation_id=customer.converted_from_conversation_id, owner_user_id=customer.owner_user_id,
-            notes=customer.notes, custom_fields=customer.custom_fields or {}, created_at=customer.created_at.isoformat(),
-        ) if customer else None
-
     open_tickets = 1 if conversation and conversation.is_ticket and conversation.status != "resolved" else 0
     resolved_tickets = 1 if conversation and conversation.is_ticket and conversation.status == "resolved" else 0
 
     return ContactTimelineOut(
         contact=_contact_out(db, contact), conversation_id=conversation.id if conversation else None,
-        crm_contact_id=contact.crm_contact_id,
-        lead=lead_out, deals=deals_out, customer=customer_out, tickets=TicketSummary(open=open_tickets, resolved=resolved_tickets),
+        crm_contact_id=None,
+        lead=None, deals=[], customer=None, tickets=TicketSummary(open=open_tickets, resolved=resolved_tickets),
         messages=[_message_out(m) for m in messages],
     )
 
@@ -1761,13 +1675,7 @@ def run_macro(conversation_id: str, macro_id: str, user: User = Depends(require_
         action_type, value = action.get("type"), action.get("value")
         if action_type == "reply" and value:
             canned = db.get(CannedResponse, value)
-            if canned and conversation.channel == "webchat":
-                from .webchat import send_webchat_text  # local import, same rationale as _maybe_send_business_hours_reply's own reply action
-                try:
-                    send_webchat_text(db, entity.id, conversation, contact, canned.body, sent_by_user_id=user.id)
-                except DomainError:
-                    pass
-            elif canned and contact.wa_id:
+            if canned and contact.wa_id:
                 try:
                     send_whatsapp_text(db, entity.id, contact.wa_id, canned.body, sent_by_user_id=user.id)
                 except (DomainError, MetaApiError):

@@ -1262,12 +1262,6 @@ def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
         if _channel_has_published_plans(db, "waba"):
             return _has_active_plan_subscription(db, entity_id, "waba")
         return True
-    if channel == "crm":
-        if _channel_has_published_plans(db, "crm"):
-            return _has_active_plan_subscription(db, entity_id, "crm")
-        # No external connection step like WABA's Embedded Signup, and no plan published yet --
-        # the subscription-paid check above (or a zero price) is the whole readiness bar.
-        return True
     has_active_pe = db.scalar(select(PeId).where(PeId.entity_id == entity_id, PeId.status == Status.active).limit(1)) is not None
     return has_active_pe
 
@@ -1329,7 +1323,7 @@ def check_seat_quota(db: Session, organization_id: str) -> None:
     if not entity:
         return
     current_users = db.scalar(select(func.count()).select_from(User).where(User.organization_id == organization_id)) or 0
-    for channel in ("waba", "crm"):
+    for channel in ("waba",):
         subscription = db.get(ChannelSubscription, (entity.id, channel))
         if not subscription or not subscription.plan_id:
             continue

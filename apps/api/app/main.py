@@ -17,18 +17,11 @@ from .admin import router as admin_router, require_admin
 from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
-from .catalog_shopify import public_router as catalog_shopify_public_router, router as catalog_shopify_router, sync_all_shopify_connections
+from .catalog_shopify import router as catalog_shopify_router, sync_all_shopify_connections
 from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
-from .catalog_woocommerce import public_router as catalog_woocommerce_public_router, router as catalog_woocommerce_router, sync_all_woocommerce_connections
+from .catalog_woocommerce import router as catalog_woocommerce_router, sync_all_woocommerce_connections
 from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
-from .crm import router as crm_router, send_due_scheduled_reports
-from .crm_documents import router as crm_documents_router
-from .crm_email import poll_all_email_inboxes, public_router as crm_email_public_router, renew_graph_subscriptions, router as crm_email_router
-from .crm_approvals import router as crm_approvals_router
-from .crm_quotes import router as crm_quotes_router
-from .crm_public import router as crm_public_router
-from .crm_sequences import router as crm_sequences_router, run_due_steps as run_due_sequence_steps
 from .database import Base, engine, get_db
 from .dispatch import dispatch_message as run_dispatch
 from .invoices import router as invoices_router
@@ -42,7 +35,6 @@ from .public import router as public_router
 from .reports import router as reports_router
 from .sms import router as sms_router
 from .team import router as team_router
-from .tally_export import router as tally_export_router
 from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
 from .waba import router as waba_router
@@ -53,9 +45,6 @@ from .waba_realtime import router as waba_realtime_router
 from .waba_reports import router as waba_reports_router
 from .waba_webhooks import router as waba_webhooks_router
 from .wallet import router as wallet_router
-from .webchat import router as webchat_router
-from .webchat_public import WebchatCorsMiddleware, router as webchat_public_router
-from .webchat_realtime import router as webchat_realtime_router
 from .webhooks import router as webhooks_router
 from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
 from .security import encrypt_secret
@@ -92,18 +81,6 @@ async def lifespan(_: FastAPI):
     # double-processing.
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(run_archive_job, CronTrigger(hour=2, minute=0), id="daily_archive_job", misfire_grace_time=3600)
-    # CRM sales-sequence steps (Addendum 4 Phase 4) -- same in-process scheduler, no separate
-    # infra. Hourly is granular enough for day-offset-based steps and cheap enough to just poll.
-    scheduler.add_job(run_due_sequence_steps, IntervalTrigger(hours=1), id="crm_sequence_runner", misfire_grace_time=3600)
-    # Email channel (Addendum 9) -- polls every connected EmailAccount's IMAP inbox for unseen
-    # messages. 10 minutes is granular enough for a support inbox and cheap enough to just poll,
-    # same reasoning as the hourly CRM sequence runner above.
-    scheduler.add_job(poll_all_email_inboxes, IntervalTrigger(minutes=10), id="email_poll_job", misfire_grace_time=600)
-    scheduler.add_job(renew_graph_subscriptions, IntervalTrigger(hours=12), id="graph_subscription_renewal_job", misfire_grace_time=3600)
-    # Custom Report Builder's "email me this weekly/monthly" schedules -- one daily check (same
-    # shape as the archive job above), not a per-report cron; the function itself decides what's
-    # actually due today.
-    scheduler.add_job(send_due_scheduled_reports, CronTrigger(hour=6, minute=0), id="scheduled_report_runner", misfire_grace_time=3600)
     # WhatsApp campaign scheduling -- picks up any campaign whose scheduled_at has passed. 5
     # minutes is granular enough that a customer scheduling "9am" actually goes out close to 9am,
     # unlike the hour/day-granularity jobs above.
@@ -113,19 +90,19 @@ async def lifespan(_: FastAPI):
     # (network blip, a briefly-misconfigured secret, downtime). 15 minutes balances catching a
     # missed credit reasonably quickly against not hammering Razorpay's API per active account.
     scheduler.add_job(run_smart_collect_reconciliation, IntervalTrigger(minutes=15), id="smart_collect_reconcile_job", misfire_grace_time=900)
+    # WhatsApp Commerce abandoned-cart reminders (Addendum 14 Phase 4) -- hourly is enough
+    # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
+    scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
     # WhatsApp Commerce catalog sync (Addendum 14 Phase 1) -- keeps the local WabaCatalogItem
     # mirror close to Meta's own catalog for the agent-inbox product picker. Hourly, same
-    # reasoning as the CRM sequence runner: granular enough, cheap enough to just poll.
+    # reasoning as the other hourly jobs above: granular enough, cheap enough to just poll.
     scheduler.add_job(sync_all_catalogs, IntervalTrigger(hours=1), id="catalog_sync_job", misfire_grace_time=3600)
     # Shopify/WooCommerce -> Meta catalog pushes, same hourly cadence -- runs just before
     # catalog_sync_job's own Meta-side pull each hour would naturally pick up whatever landed.
     scheduler.add_job(sync_all_shopify_connections, IntervalTrigger(hours=1), id="shopify_catalog_sync_job", misfire_grace_time=3600)
     scheduler.add_job(sync_all_woocommerce_connections, IntervalTrigger(hours=1), id="woocommerce_catalog_sync_job", misfire_grace_time=3600)
-    # WhatsApp Commerce abandoned-cart reminders (Addendum 14 Phase 4) -- hourly is enough
-    # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
-    scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), hourly CRM sequence runner, 10-minute email poll, daily report-schedule check, 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly catalog sync, hourly abandoned-cart reminders, and 12-hour Graph subscription renewal")
+    logger.info("scheduled daily archive job (02:00 UTC), 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly abandoned-cart reminders, and hourly catalog sync")
 
     yield
 
@@ -139,31 +116,14 @@ app = FastAPI(
     openapi_url="/openapi.json" if settings.environment == "development" else None,
 )
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
-# Added after CORSMiddleware above -- Starlette runs middleware in reverse-add order (last added
-# wraps outermost, sees the request first), so this sees every /v1/public/webchat/* request before
-# CORSMiddleware's own static web_origin-only check would otherwise reject it. See
-# webchat_public.py's own module docstring for why this exists (a real, verified bug: every widget
-# fetch() call from a real third-party embed site was silently blocked by the app's own CORS
-# policy, confirmed via a live Playwright browser test against this container).
-app.add_middleware(WebchatCorsMiddleware)
 app.include_router(admin_router)
 app.include_router(admin_wallet_router)
 app.include_router(auth_router)
 app.include_router(catalog_sync_router)
 app.include_router(catalog_shopify_router)
-app.include_router(catalog_shopify_public_router)
 app.include_router(catalog_woocommerce_router)
-app.include_router(catalog_woocommerce_public_router)
 app.include_router(channel_billing_router)
 app.include_router(channels_router)
-app.include_router(crm_approvals_router)
-app.include_router(crm_router)
-app.include_router(crm_documents_router)
-app.include_router(crm_email_router)
-app.include_router(crm_email_public_router)
-app.include_router(crm_public_router)
-app.include_router(crm_quotes_router)
-app.include_router(crm_sequences_router)
 app.include_router(invoices_router)
 app.include_router(onboarding_router)
 app.include_router(payments_router)
@@ -175,7 +135,6 @@ app.include_router(public_router)
 app.include_router(reports_router)
 app.include_router(sms_router)
 app.include_router(team_router)
-app.include_router(tally_export_router)
 app.include_router(testimonials_router)
 app.include_router(two_factor_router)
 app.include_router(waba_router)
@@ -188,9 +147,6 @@ app.include_router(waba_realtime_router)
 app.include_router(waba_reports_router)
 app.include_router(waba_webhooks_router)
 app.include_router(wallet_router)
-app.include_router(webchat_router)
-app.include_router(webchat_public_router)
-app.include_router(webchat_realtime_router)
 app.include_router(webhooks_router)
 
 
