@@ -3,35 +3,34 @@ account, alongside the existing Checkout flow in payments.py (never touched by t
 Smart Collect money doesn't go into the SMS-credits Wallet directly: it funds a separate
 rupee-balance TextziWallet, net of PlatformPaymentMethodConfig's flat_fee_paise, via an async
 webhook rather than a synchronous client callback. TextziWallet is then spent (with an OTP
-confirmation step, reusing channels.py's own API-key-action-OTP flow) on SMS credit top-up, WABA
-subscription, or CRM subscription -- see the three spend endpoints at the bottom of this file.
+confirmation step, reusing channels.py's own API-key-action-OTP flow) on SMS credit top-up --
+see the spend endpoint near the bottom of this file.
 
-Deliberately its own module, same "one file per distinct integration surface" convention as
-crm_quotes.py/crm_sequences.py staying separate from crm.py."""
+Deliberately its own module, same "one file per distinct integration surface" convention used
+throughout this codebase."""
 import hashlib
 import hmac
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import razorpay
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .admin import require_admin, require_admin_recent_2fa
 from .auth import require_user
 from .channels import _consume_api_key_otp, _issue_api_key_otp
-from .channel_billing import PERIOD_DAYS
 from .database import SessionLocal, get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .email_service import render_email, send_email
-from .models import BankTransferTopupRequest, BillingPlan, ChannelSubscription, Entity, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
+from .models import BankTransferTopupRequest, Entity, Organization, PaymentOrder, RazorpayVirtualAccount, TextziWallet, TextziWalletTransaction, User, Wallet
 from .schemas import (
-    ApiKeyOtpResponse, BankTransferTopupRequestOut, BillingPlanOut, ChannelSubscriptionStatusOut, RazorpayVirtualAccountOut, RechargeResponse,
-    TextziBankDetailsOut, TextziWalletOut, TextziWalletSpendPlanRequest, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
+    ApiKeyOtpResponse, BankTransferTopupRequestOut, RazorpayVirtualAccountOut, RechargeResponse,
+    TextziBankDetailsOut, TextziWalletOut, TextziWalletSpendSmsRequest, TextziWalletTransactionOut, WalletSpendOtpRequest,
 )
 from .services import (
     DomainError, credit_textzi_wallet, credit_wallet, debit_textzi_wallet, get_gst_rate, get_platform_company_info, get_platform_razorpay_keys,
@@ -164,8 +163,7 @@ def get_textzi_bank_details(user: User = Depends(require_user), db: Session = De
     """Read-only display of Textzi's own bank account (Addendum 15) -- the manual-transfer
     alternative to Smart Collect. resolve_user_entity isn't needed here (these details are the
     same for every customer, not entity-scoped) -- require_user alone is enough to keep this
-    behind a real login, matching the same "logged-in but not entity-specific" gate
-    waba.get_waba_config already uses for its own platform-wide, non-secret config."""
+    behind a real login, since there's no per-entity secret to protect here."""
     info = get_platform_company_info(db)
     return TextziBankDetailsOut(
         bank_account_holder_name=info.bank_account_holder_name, bank_account_number=info.bank_account_number,
@@ -325,10 +323,10 @@ def _handle_smart_collect_refund(db: Session, payload: dict) -> dict:
 
 @webhook_router.post("/smart-collect")
 async def receive_smart_collect_webhook(request: Request, db: Session = Depends(get_db)):
-    """Signature-verified the identical way waba_webhooks.py verifies Meta's own webhooks: HMAC-
-    SHA256 over the raw body, compared with hmac.compare_digest. Always acks 200 for anything past
-    signature verification -- a malformed/unrecognized event is logged and skipped, not raised,
-    since a non-2xx makes Razorpay retry (and can get the webhook disabled if it keeps failing)."""
+    """Signature-verified with HMAC-SHA256 over the raw body, compared with hmac.compare_digest.
+    Always acks 200 for anything past signature verification -- a malformed/unrecognized event is
+    logged and skipped, not raised, since a non-2xx makes Razorpay retry (and can get the webhook
+    disabled if it keeps failing)."""
     raw_body = await request.body()
     signature = request.headers.get("X-Razorpay-Signature")
     webhook_secret = get_platform_razorpay_webhook_secret(db)
@@ -480,48 +478,3 @@ def spend_wallet_on_sms_credit(payload: TextziWalletSpendSmsRequest, user: User 
 
     available = float(sms_wallet.prepaid_balance) + max(0, float(sms_wallet.credit_limit) - float(sms_wallet.credit_used))
     return RechargeResponse(entity_id=entity.id, amount=payload.amount, available_balance=available, credits_purchased=round(credits, 2), gst_amount=gst_amount, total_charged=total)
-
-
-@router.post("/spend/plan/{plan_id}", response_model=ChannelSubscriptionStatusOut)
-def spend_wallet_on_plan(plan_id: str, payload: TextziWalletSpendPlanRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
-    if not payment_method_config(db, "razorpay_smart_collect").enabled:
-        raise HTTPException(status_code=422, detail="Textzi Wallet payment is not available right now")
-    entity = _resolve_entity(db, user)
-    _consume_api_key_otp(db, user.id, "wallet_spend", payload.otp_code)
-
-    plan = db.get(BillingPlan, plan_id)
-    if not plan or not plan.active:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    gst_amount = round(float(plan.price) * get_gst_rate(db), 2)
-    total = round(float(plan.price) + gst_amount, 2)
-    now = datetime.now(timezone.utc)
-    try:
-        debit_textzi_wallet(db, entity.id, total, transaction_type=f"spend_{plan.channel}_subscription")
-        subscription = db.get(ChannelSubscription, (entity.id, plan.channel))
-        if not subscription:
-            subscription = ChannelSubscription(entity_id=entity.id, channel=plan.channel)
-            db.add(subscription)
-        start_from = subscription.period_end if subscription.period_end and subscription.period_end > now and subscription.plan_id == plan.id else now
-        subscription.plan_id = plan.id
-        subscription.period_start = start_from if start_from == now else (subscription.period_start or now)
-        subscription.period_end = start_from + timedelta(days=PERIOD_DAYS[plan.period])
-        subscription.messages_used = 0 if start_from == now else subscription.messages_used
-        subscription.paid_at = now
-        invoice = create_draft_invoice(db, entity, type="channel_subscription", base_amount=float(plan.price), gst_amount=gst_amount, reference="textzi_wallet")
-        issue_invoice(db, invoice)
-    except DomainError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    db.commit()
-    db.refresh(subscription)
-
-    seats_used = db.scalar(select(func.count()).select_from(User).where(User.organization_id == user.organization_id)) or 0
-    return ChannelSubscriptionStatusOut(
-        channel=plan.channel, plan=_plan_out(plan), period_start=subscription.period_start.isoformat(),
-        period_end=subscription.period_end.isoformat(), messages_used=subscription.messages_used, seats_used=seats_used,
-    )
-
-
-def _plan_out(plan: BillingPlan) -> BillingPlanOut:
-    return BillingPlanOut(id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price), message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active)

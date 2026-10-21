@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .auth import require_user
 from .database import get_db
-from .models import Entity, Organization, Status, User, WabaWallet, Wallet
+from .models import Entity, Organization, Status, User, Wallet
 from .schemas import CompanyProfileOut, CompanyProfileUpdateResponse, OrganizationOnboardRequest, OrganizationOnboardResponse
 from .services import GST_STATE_CODES, save_upload
 
@@ -47,7 +47,6 @@ def onboard_organization(payload: OrganizationOnboardRequest, user: User = Depen
     db.flush()
 
     db.add(Wallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
-    db.add(WabaWallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
 
     user.organization_id = org.id
     db.commit()

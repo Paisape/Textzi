@@ -2,17 +2,16 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import datetime
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 import nh3
 from fastapi import HTTPException, Request, UploadFile
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
 from .email_service import render_email, send_email
-from .models import ADMIN_ROLES, AccountActivity, ApiKey, BillingPlan, BusinessHours, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Conversation, CrmSettings, Entity, Header, Invoice, Notification, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformMicrosoftSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWabaSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, SlaPolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, WabaConnection, WabaWallet, Wallet, WalletTransaction, Status
+from .models import ADMIN_ROLES, AccountActivity, ApiKey, ChannelFeeConfig, ChannelSettings, ChannelSubscription, Entity, Header, Invoice, OptOutEntry, PaymentOrder, PeId, PlatformGeneralSettings, PlatformPaymentMethodConfig, PlatformRazorpaySettings, PlatformSmsSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, RateCard, RateCardSlab, RoutePolicy, Template, TextziWallet, TextziWalletTransaction, User, UserRateCard, UserRole, UserStatus, Wallet, WalletTransaction, Status
 from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
@@ -296,18 +295,6 @@ def get_platform_turnstile_settings(db: Session) -> tuple[str, str | None]:
     return site_key, secret
 
 
-def get_platform_waba_settings(db: Session) -> tuple[str | None, str | None, str | None]:
-    """Resolves the admin-UI-editable PlatformWabaSettings row -- unlike Turnstile there's no
-    .env fallback (no sensible placeholder Meta App ID exists), this is purely DB-configured.
-    Returns (app_id, config_id, app_secret); all three are None until an admin has actually
-    filled in Platform Settings > WhatsApp Setting."""
-    row = db.get(PlatformWabaSettings, "platform")
-    if not row:
-        return None, None, None
-    secret = decrypt_secret(row.app_secret_encrypted) if row.app_secret_encrypted else None
-    return row.app_id, row.config_id, secret
-
-
 def get_platform_razorpay_keys(db: Session) -> tuple[str | None, str | None]:
     """Resolves the DB-backed, admin-UI-editable PlatformRazorpaySettings row, falling back
     field-by-field to the .env defaults in config.py wherever the admin hasn't set one -- same
@@ -329,65 +316,6 @@ def get_platform_razorpay_webhook_secret(db: Session) -> str | None:
     this only ever needs to exist once Smart Collect is actually being configured."""
     row = db.get(PlatformRazorpaySettings, "platform")
     return decrypt_secret(row.webhook_secret_encrypted) if row and row.webhook_secret_encrypted else None
-
-
-def get_platform_waba_webhook_verify_token(db: Session) -> str | None:
-    """The value stored to compare against Meta's hub.verify_token GET handshake -- kept
-    separate from get_platform_waba_settings's return tuple so the many existing call sites
-    (connect flow, admin settings/test-connection) don't all need a 4th unused element."""
-    row = db.get(PlatformWabaSettings, "platform")
-    if not row or not row.webhook_verify_token_encrypted:
-        return None
-    return decrypt_secret(row.webhook_verify_token_encrypted)
-
-
-def waba_webhook_url(db: Session) -> str | None:
-    """The single, app-level callback URL every customer's WABA events arrive on -- registered
-    once with Meta (App Dashboard > WhatsApp > Configuration), not per customer; the incoming
-    payload's own phone_number_id is what tells waba_webhooks.py which customer a given event
-    belongs to."""
-    base_url = get_platform_company_info(db).public_api_base_url
-    if not base_url:
-        return None
-    return f"{base_url.rstrip('/')}/v1/webhooks/waba"
-
-
-def get_platform_microsoft_settings(db: Session) -> tuple[str | None, str | None, str | None]:
-    """Resolves the admin-UI-editable PlatformMicrosoftSettings row -- purely DB-configured, no
-    .env fallback (no sensible placeholder Azure app exists). Returns (client_id, tenant_id,
-    client_secret); all three are None until an admin has filled in Platform Settings >
-    Microsoft Setting."""
-    row = db.get(PlatformMicrosoftSettings, "platform")
-    if not row:
-        return None, None, None
-    secret = decrypt_secret(row.client_secret_encrypted) if row.client_secret_encrypted else None
-    return row.client_id, row.tenant_id, secret
-
-
-def microsoft_graph_redirect_uri(db: Session) -> str | None:
-    """The OAuth2 redirect_uri registered on the Azure App Registration (Authentication > Web >
-    Redirect URIs) -- points at the FRONTEND (settings.web_origin), not the API, and must match
-    exactly what's configured there. Microsoft redirects the browser here with a plain GET
-    (?code=&state=, no auth of any kind attached), so this has to be a page the logged-in user's
-    own browser loads -- only then can it call back into the real, authenticated
-    POST /v1/crm/email/microsoft/callback API endpoint carrying that user's own session, the same
-    "frontend page completes the round trip, not a raw API redirect target" shape this codebase
-    already uses for WABA's embedded-signup popup (channels-whatsapp.vue's own postMessage
-    listener), just via a full-page redirect instead of a popup."""
-    if not settings.web_origin:
-        return None
-    return f"{settings.web_origin.rstrip('/')}/crm-email-connected"
-
-
-def microsoft_graph_webhook_url(db: Session) -> str | None:
-    """The single, app-level callback URL every connected mailbox's change notifications arrive
-    on -- registered per-subscription with Graph (crm_email_graph.py), not manually in the Azure
-    portal; each notification's own subscriptionId is what tells the handler which EmailAccount
-    it belongs to."""
-    base_url = get_platform_company_info(db).public_api_base_url
-    if not base_url:
-        return None
-    return f"{base_url.rstrip('/')}/v1/webhooks/microsoft-graph"
 
 
 def ttbs_webhook_url(db: Session, webhook_secret: str) -> str | None:
@@ -699,22 +627,22 @@ def render_template(body: str, variables: dict[str, str]) -> str:
     return re.sub(r"\{#[^{}]*#\}", substitute_dlt, result)
 
 
-def _wallet_available_decimal(wallet: Wallet | WabaWallet) -> Decimal:
+def _wallet_available_decimal(wallet: Wallet) -> Decimal:
     return wallet.prepaid_balance + max(Decimal(0), wallet.credit_limit - wallet.credit_used)
 
 
-def _wallet_available(wallet: Wallet | WabaWallet) -> float:
+def _wallet_available(wallet: Wallet) -> float:
     return float(_wallet_available_decimal(wallet))
 
 
-def available_balance(db: Session, entity_id: str, wallet_model: type[Wallet] | type[WabaWallet] = Wallet) -> float:
-    wallet = db.get(wallet_model, entity_id)
+def available_balance(db: Session, entity_id: str) -> float:
+    wallet = db.get(Wallet, entity_id)
     if not wallet:
         raise DomainError("Wallet is not configured")
     return _wallet_available(wallet)
 
 
-def credit_wallet(db: Session, entity_id: str, amount: float, transaction_type: str, reference: str | None = None, wallet_model: type[Wallet] | type[WabaWallet] = Wallet, channel: str = "sms") -> Wallet | WabaWallet:
+def credit_wallet(db: Session, entity_id: str, amount: float, transaction_type: str, reference: str | None = None, channel: str = "sms") -> Wallet:
     """Adds `amount` (must be positive) to the wallet's prepaid balance and records a ledger
     entry. Row-locked (SELECT ... FOR UPDATE) so two concurrent credits/debits on the same
     wallet serialize instead of both reading a stale balance and losing an update; math is done
@@ -722,7 +650,7 @@ def credit_wallet(db: Session, entity_id: str, amount: float, transaction_type: 
     binary-float artifacts) rather than float to avoid ledger drift across many transactions."""
     if amount <= 0:
         raise DomainError("Credit amount must be positive")
-    wallet = db.get(wallet_model, entity_id, with_for_update=True)
+    wallet = db.get(Wallet, entity_id, with_for_update=True)
     if not wallet:
         raise DomainError("Wallet is not configured")
     amount_dec = Decimal(str(amount))
@@ -735,12 +663,12 @@ def credit_wallet(db: Session, entity_id: str, amount: float, transaction_type: 
     return wallet
 
 
-def debit_wallet(db: Session, entity_id: str, amount: float, reference: str | None = None, wallet_model: type[Wallet] | type[WabaWallet] = Wallet, channel: str = "sms") -> Wallet | WabaWallet:
+def debit_wallet(db: Session, entity_id: str, amount: float, reference: str | None = None, channel: str = "sms") -> Wallet:
     """Deducts `amount` (must be positive), spending prepaid balance first and then credit
     headroom, and records a signed (negative) ledger entry. Row-locked like credit_wallet."""
     if amount <= 0:
         raise DomainError("Debit amount must be positive")
-    wallet = db.get(wallet_model, entity_id, with_for_update=True)
+    wallet = db.get(Wallet, entity_id, with_for_update=True)
     if not wallet:
         raise DomainError("Wallet is not configured")
     amount_dec = Decimal(str(amount))
@@ -1144,35 +1072,9 @@ def resolve_channel_fees(db: Session, channel: str = "sms") -> ChannelFeeConfig:
     return fees
 
 
-def _channel_has_published_plans(db: Session, channel: str) -> bool:
-    return db.scalar(select(BillingPlan).where(BillingPlan.channel == channel, BillingPlan.active.is_(True)).limit(1)) is not None
-
-
-def _has_active_plan_subscription(db: Session, entity_id: str, channel: str) -> bool:
-    subscription = db.get(ChannelSubscription, (entity_id, channel))
-    return bool(subscription and subscription.plan_id and subscription.period_end and subscription.period_end > datetime.now(timezone.utc))
-
-
-def plan_feature_active(db: Session, entity_id: str, channel: str, feature: str) -> bool:
-    """True unless the entity's active plan for `channel` explicitly restricts feature_flags and
-    `feature` isn't in that list. No active plan at all (free/unpriced channel, or a plan-less
-    subscription) is treated as unrestricted -- this is an additive gate on top of channel_active,
-    never a substitute for it; a channel that isn't active at all is still blocked by that check
-    first, same call-site pattern as _require_crm."""
-    subscription = db.get(ChannelSubscription, (entity_id, channel))
-    if not subscription or not subscription.plan_id:
-        return True
-    plan = db.get(BillingPlan, subscription.plan_id)
-    if not plan or plan.feature_flags is None:
-        return True
-    return feature in plan.feature_flags
-
-
 def channel_enabled(db: Session, channel: str) -> bool:
     """The global kill switch alone (ChannelFeeConfig.enabled), independent of any per-entity
-    subscription/connection state -- usable standalone at points like "start connecting WABA"
-    where the full channel_active() below can't apply yet (it wouldn't be connected until this
-    very call succeeds, so channel_active("waba") would always read false beforehand)."""
+    subscription/connection state."""
     fees = db.get(ChannelFeeConfig, channel)
     return not (fees and not fees.enabled)
 
@@ -1188,61 +1090,11 @@ def payment_method_config(db: Session, payment_method: str) -> PlatformPaymentMe
     return PlatformPaymentMethodConfig(payment_method=payment_method, enabled=(payment_method == "razorpay_checkout"), flat_fee_paise=0)
 
 
-def is_outside_business_hours(db: Session, entity_id: str, now: datetime) -> bool:
-    """Same day/time check waba_webhooks.py's own auto-reply uses to decide whether to send it --
-    lives here (not waba_webhooks.py) so channel-agnostic callers (webchat_public.py, this
-    codebase's "never import the WABA send/receive pipeline from another channel" isolation rule)
-    can reuse the exact same logic without reaching into that module. Returns False (not outside
-    hours) whenever hours aren't configured at all, matching the existing auto-reply's own
-    "nothing to do" default."""
-    hours = db.get(BusinessHours, entity_id)
-    if not hours or not hours.enabled:
-        return False
-    try:
-        local_now = now.astimezone(ZoneInfo(hours.timezone))
-    except Exception:
-        return False
-    day_key = local_now.strftime("%a").lower()[:3]
-    day_hours = hours.schedule.get(day_key)
-    if not day_hours:
-        return True
-    try:
-        open_t = time.fromisoformat(day_hours["open"])
-        close_t = time.fromisoformat(day_hours["close"])
-        return not (open_t <= local_now.time() <= close_t)
-    except (KeyError, ValueError):
-        return False
-
-
-def stamp_sla_due_at(db: Session, entity_id: str, conversation: Conversation, now: datetime) -> None:
-    """Starts (or restarts) the first-response clock -- only when there's no pending clock already
-    running, so a burst of several inbound messages before any reply doesn't keep pushing the
-    deadline out. Relocated here from waba_webhooks.py for the same reason
-    is_outside_business_hours was -- pure SlaPolicy/Conversation logic with zero WhatsApp
-    coupling, needed by webchat_public.py without reaching into the WABA receive pipeline."""
-    if conversation.first_response_due_at is not None:
-        return
-    policy = db.get(SlaPolicy, entity_id)
-    if not policy or not policy.enabled:
-        return
-    conversation.first_response_due_at = now + timedelta(minutes=policy.first_response_minutes)
-    conversation.sla_breached = False
-
-
 def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
     """A channel is active once its (possibly-zero) subscription price is paid and the entity
     has completed that channel's own activation requirement. For SMS/DLT-based channels, DLT
     approval is derived from PeId.status rather than a separate flag, so it can never drift out
-    of sync with the actual DLT assets. WABA has no DLT concept at all -- reusing the PE ID check
-    for it (the previous behavior) reported "WABA active" for any customer who merely had SMS DLT
-    active, which was never actually true; WABA's own readiness signal is a connected
-    WabaConnection instead.
-
-    WABA/CRM additionally require an active BillingPlan subscription (see
-    ChannelSubscription.plan_id/period_end and channel_billing.py) -- but only once that channel
-    actually has at least one published plan. Before any plan exists for a channel, it stays on
-    the older free/connection-only gate below, so introducing a plan catalog doesn't retroactively
-    lock out every entity that was already using the channel for free.
+    of sync with the actual DLT assets.
 
     channel_enabled() (the global kill switch) is checked first, unconditionally -- overriding
     every per-entity subscription/connection check below. See its own docstring and
@@ -1255,13 +1107,6 @@ def channel_active(db: Session, entity_id: str, channel: str = "sms") -> bool:
         subscription = db.get(ChannelSubscription, (entity_id, channel))
         if not subscription or not subscription.paid_at:
             return False
-    if channel == "waba":
-        connection = db.get(WabaConnection, entity_id)
-        if not connection or connection.status != "connected":
-            return False
-        if _channel_has_published_plans(db, "waba"):
-            return _has_active_plan_subscription(db, entity_id, "waba")
-        return True
     has_active_pe = db.scalar(select(PeId).where(PeId.entity_id == entity_id, PeId.status == Status.active).limit(1)) is not None
     return has_active_pe
 
@@ -1271,67 +1116,14 @@ def require_channel_active(db: Session, entity_id: str, channel: str = "sms") ->
         raise DomainError(f"Activate the {channel.upper()} channel (complete DLT registration) before using this feature")
 
 
-def notify_user(db: Session, entity_id: str, user_id: str, notif_type: str, title: str, body: str, link: str | None = None) -> Notification:
-    """Creates the in-app Notification row (always), and additionally emails the user if this
-    entity's CrmSettings.notify_email is on. SMS/WhatsApp aren't sent here -- see Notification's
-    own docstring for why (no DLT/template registration to send arbitrary text through yet).
-    Returns the created row (its id, not yet committed) so a caller can also live-push it over the
-    realtime socket -- see waba_realtime.publish_notification, called alongside this at each call
-    site rather than from here, since this module (shared by both the SMS and WhatsApp pipelines)
-    must never import a WABA-specific module."""
-    notification = Notification(entity_id=entity_id, user_id=user_id, type=notif_type, title=title, body=body, link=link)
-    db.add(notification)
-    db.flush()
-    settings_row = db.get(CrmSettings, entity_id)
-    if settings_row and settings_row.notify_email:
-        user = db.get(User, user_id)
-        if user and user.email:
-            send_email(db, user.email, title, render_email(title, f"<p>{body}</p>"))
-    return notification
-
-
-def check_message_quota(db: Session, entity_id: str, channel: str) -> None:
-    """Hard-blocks a send once the entity's active plan's message_limit is reached -- a no-op if
-    the channel has no plan-based subscription (no plan published, or plan has no message_limit
-    set) since there's nothing to enforce. Call before sending; increment_message_usage after a
-    successful send."""
-    subscription = db.get(ChannelSubscription, (entity_id, channel))
-    if not subscription or not subscription.plan_id:
-        return
-    plan = db.get(BillingPlan, subscription.plan_id)
-    if not plan or not plan.message_limit:
-        return
-    if subscription.messages_used >= plan.message_limit:
-        raise DomainError(f"This account has used all {plan.message_limit} messages included in its {plan.name} plan this billing period. Upgrade your plan to send more.")
-
-
-def increment_message_usage(db: Session, entity_id: str, channel: str) -> None:
-    """Row-locked (SELECT ... FOR UPDATE), same reasoning as credit_wallet/debit_wallet -- without
-    it, two concurrent sends both read the same messages_used before either writes, and one
-    increment is silently lost (the counter ends up short by however many sends raced)."""
-    subscription = db.get(ChannelSubscription, (entity_id, channel), with_for_update=True)
-    if subscription and subscription.plan_id:
-        subscription.messages_used += 1
-
-
 def check_seat_quota(db: Session, organization_id: str) -> None:
     """Hard-blocks inviting a new team member once the org's headcount would exceed the tightest
     user_limit among its active plan-based channel subscriptions. Users aren't partitioned per
     channel in this codebase (one invite grants access to everything the org has), so the binding
-    constraint is whichever active plan's seat limit is smallest."""
-    entity = db.scalar(select(Entity).where(Entity.organization_id == organization_id))
-    if not entity:
-        return
-    current_users = db.scalar(select(func.count()).select_from(User).where(User.organization_id == organization_id)) or 0
-    for channel in ("waba",):
-        subscription = db.get(ChannelSubscription, (entity.id, channel))
-        if not subscription or not subscription.plan_id:
-            continue
-        plan = db.get(BillingPlan, subscription.plan_id)
-        if not plan or not plan.user_limit:
-            continue
-        if current_users >= plan.user_limit:
-            raise DomainError(f"This account has reached the {plan.user_limit}-user limit on its {plan.name} plan. Upgrade your plan to add more team members.")
+    constraint is whichever active plan's seat limit is smallest. No channel currently has a
+    seat-limited plan (SMS has no BillingPlan concept), so this is a no-op for now -- kept as the
+    enforcement point for when one exists."""
+    return
 
 
 def is_encryption_enabled(db: Session, entity_id: str, channel: str = "sms") -> bool:

@@ -17,10 +17,6 @@ from .admin import router as admin_router, require_admin
 from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
-from .catalog_shopify import router as catalog_shopify_router, sync_all_shopify_connections
-from .catalog_sync import router as catalog_sync_router, sync_all_catalogs
-from .catalog_woocommerce import router as catalog_woocommerce_router, sync_all_woocommerce_connections
-from .channel_billing import router as channel_billing_router
 from .channels import router as channels_router
 from .database import Base, engine, get_db
 from .dispatch import dispatch_message as run_dispatch
@@ -37,13 +33,6 @@ from .sms import router as sms_router
 from .team import router as team_router
 from .testimonials import router as testimonials_router
 from .two_factor import router as two_factor_router
-from .waba import router as waba_router
-from .waba_campaigns import router as waba_campaigns_router, run_due_campaigns
-from .waba_inbox import media_router as waba_inbox_media_router, router as waba_inbox_router
-from .waba_orders import router as waba_orders_router, send_abandoned_cart_reminders, webhook_router as waba_orders_webhook_router
-from .waba_realtime import router as waba_realtime_router
-from .waba_reports import router as waba_reports_router
-from .waba_webhooks import router as waba_webhooks_router
 from .wallet import router as wallet_router
 from .webhooks import router as webhooks_router
 from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResult, BulkSmsSendRequest, BulkSmsSendResponse, RoutePolicyRequest, SmsSendResponse
@@ -81,28 +70,13 @@ async def lifespan(_: FastAPI):
     # double-processing.
     scheduler = BackgroundScheduler(timezone="UTC")
     scheduler.add_job(run_archive_job, CronTrigger(hour=2, minute=0), id="daily_archive_job", misfire_grace_time=3600)
-    # WhatsApp campaign scheduling -- picks up any campaign whose scheduled_at has passed. 5
-    # minutes is granular enough that a customer scheduling "9am" actually goes out close to 9am,
-    # unlike the hour/day-granularity jobs above.
-    scheduler.add_job(run_due_campaigns, IntervalTrigger(minutes=5), id="waba_campaign_runner", misfire_grace_time=600)
     # Smart Collect's webhook is the primary/real-time credit path -- this is the fallback for a
     # payment that succeeded on Razorpay's side but whose webhook delivery never reached us
     # (network blip, a briefly-misconfigured secret, downtime). 15 minutes balances catching a
     # missed credit reasonably quickly against not hammering Razorpay's API per active account.
     scheduler.add_job(run_smart_collect_reconciliation, IntervalTrigger(minutes=15), id="smart_collect_reconcile_job", misfire_grace_time=900)
-    # WhatsApp Commerce abandoned-cart reminders (Addendum 14 Phase 4) -- hourly is enough
-    # granularity for a 24-hour abandonment window, same reasoning as the other hourly jobs above.
-    scheduler.add_job(send_abandoned_cart_reminders, IntervalTrigger(hours=1), id="abandoned_cart_reminder_job", misfire_grace_time=3600)
-    # WhatsApp Commerce catalog sync (Addendum 14 Phase 1) -- keeps the local WabaCatalogItem
-    # mirror close to Meta's own catalog for the agent-inbox product picker. Hourly, same
-    # reasoning as the other hourly jobs above: granular enough, cheap enough to just poll.
-    scheduler.add_job(sync_all_catalogs, IntervalTrigger(hours=1), id="catalog_sync_job", misfire_grace_time=3600)
-    # Shopify/WooCommerce -> Meta catalog pushes, same hourly cadence -- runs just before
-    # catalog_sync_job's own Meta-side pull each hour would naturally pick up whatever landed.
-    scheduler.add_job(sync_all_shopify_connections, IntervalTrigger(hours=1), id="shopify_catalog_sync_job", misfire_grace_time=3600)
-    scheduler.add_job(sync_all_woocommerce_connections, IntervalTrigger(hours=1), id="woocommerce_catalog_sync_job", misfire_grace_time=3600)
     scheduler.start()
-    logger.info("scheduled daily archive job (02:00 UTC), 5-minute campaign runner, 15-minute Smart Collect reconcile, hourly abandoned-cart reminders, and hourly catalog sync")
+    logger.info("scheduled daily archive job (02:00 UTC) and 15-minute Smart Collect reconcile")
 
     yield
 
@@ -119,10 +93,6 @@ app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_cr
 app.include_router(admin_router)
 app.include_router(admin_wallet_router)
 app.include_router(auth_router)
-app.include_router(catalog_sync_router)
-app.include_router(catalog_shopify_router)
-app.include_router(catalog_woocommerce_router)
-app.include_router(channel_billing_router)
 app.include_router(channels_router)
 app.include_router(invoices_router)
 app.include_router(onboarding_router)
@@ -137,15 +107,6 @@ app.include_router(sms_router)
 app.include_router(team_router)
 app.include_router(testimonials_router)
 app.include_router(two_factor_router)
-app.include_router(waba_router)
-app.include_router(waba_campaigns_router)
-app.include_router(waba_inbox_router)
-app.include_router(waba_inbox_media_router)
-app.include_router(waba_orders_router)
-app.include_router(waba_orders_webhook_router)
-app.include_router(waba_realtime_router)
-app.include_router(waba_reports_router)
-app.include_router(waba_webhooks_router)
 app.include_router(wallet_router)
 app.include_router(webhooks_router)
 

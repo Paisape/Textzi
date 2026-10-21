@@ -20,14 +20,14 @@ from .database import get_db
 from .email_service import render_email, send_email
 from .invoicing import _safe_text, create_draft_invoice, issue_credit_note, issue_invoice
 from .models import (
-    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BankTransferTopupRequest, BillingPlan, ChannelFeeConfig, ChannelSubscription, ContactMessage, CreditNote, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
+    ADMIN_ROLES, AccountActivity, ApiKey, ApiLog, ArchiveManifest, ArchiveRunLog, BankTransferTopupRequest, ChannelFeeConfig, ContactMessage, CreditNote, DeliveryAttempt, DeliveryStatusCodeRule, DltOnboardingRequest, DltOnboardingRequestDocument, EmailVerification, Entity,
     Header as HeaderModel, Invitation, Invoice, Message, MobileVerification, Organization, PaymentOrder, PeId, PlatformMessage, PlatformWallet, PLATFORM_INTERNAL_ROLES, RateCard, RateCardSlab,
-    PageView, PlatformPaymentMethodConfig, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, WabaApiCallLog, WabaWallet, WabaWebhookLog, Wallet, WalletTransaction, ZohoApiCallLog,
+    PageView, PlatformPaymentMethodConfig, ProfileChangeRequest, Status as StatusEnum, Template, Testimonial, TwoFactorAuth, TwoFactorRecoveryCode, User, UserRateCard, UserRole, UserSession, UserStatus, VisitorSession, Wallet, WalletTransaction, ZohoApiCallLog,
 )
 from .schemas import (
-    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse, AdminWabaApiCallLogOut, AdminWabaWebhookLogOut,
+    AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
-    AdminGrantPlanRequest, BillingPlanCreateRequest, BillingPlanOut, ChannelFeeConfigOut, ChannelFeeConfigUpdate, ChannelSubscriptionStatusOut, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     PaymentMethodConfigOut, PaymentMethodConfigUpdate,
     CreditNoteOut, DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceCancelRequest, InvoiceOut,
     MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
@@ -41,7 +41,6 @@ from .security import decode_access_token, decrypt_recipient_lenient, decrypt_se
 from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, pull_payment_status, sync_invoice_to_zoho
 from . import archive_jobs
-from .channel_billing import activate_subscription
 from .services import DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
 from .team import INVITE_TTL_HOURS
 
@@ -189,7 +188,6 @@ def create_entity(payload: EntityCreate, db: Session = Depends(get_db)):
     entity = Entity(**payload.model_dump(), status=StatusEnum.active)
     db.add(entity); db.flush()
     db.add(Wallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
-    db.add(WabaWallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
     db.commit(); db.refresh(entity)
     return {"id": entity.id, "name": entity.name, "status": entity.status}
 
@@ -531,109 +529,6 @@ def update_payment_method(payment_method: str, payload: PaymentMethodConfigUpdat
     config.flat_fee_paise = payload.flat_fee_paise
     db.commit(); db.refresh(config)
     return PaymentMethodConfigOut(payment_method=config.payment_method, enabled=config.enabled, flat_fee_paise=config.flat_fee_paise)
-
-
-def _billing_plan_out(plan: BillingPlan) -> BillingPlanOut:
-    return BillingPlanOut(
-        id=plan.id, channel=plan.channel, name=plan.name, period=plan.period, price=float(plan.price),
-        message_limit=plan.message_limit, user_limit=plan.user_limit, active=plan.active,
-        visible_to_customers=plan.visible_to_customers, feature_flags=plan.feature_flags,
-    )
-
-
-@router.get("/billing-plans", response_model=list[BillingPlanOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_billing_plans(channel: str | None = None, db: Session = Depends(get_db)):
-    query = select(BillingPlan)
-    if channel:
-        query = query.where(BillingPlan.channel == channel)
-    plans = db.scalars(query.order_by(BillingPlan.channel, BillingPlan.price)).all()
-    return [_billing_plan_out(p) for p in plans]
-
-
-def _validate_billing_plan_period(channel: str, period: str) -> None:
-    # CRM is monthly/quarterly only -- unlike WABA, it has no yearly tier (per the original
-    # billing design). Enforced here, not just in the admin UI's own dropdown, since the UI
-    # filtering alone doesn't stop a direct API call from creating an invalid plan.
-    if channel == "crm" and period == "yearly":
-        raise HTTPException(status_code=422, detail="CRM plans don't support a yearly billing period")
-
-
-@router.post("/billing-plans", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def create_billing_plan(payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
-    _validate_billing_plan_period(payload.channel, payload.period)
-    plan = BillingPlan(
-        channel=payload.channel, name=payload.name, period=payload.period, price=payload.price,
-        message_limit=payload.message_limit, user_limit=payload.user_limit, active=payload.active,
-        visible_to_customers=payload.visible_to_customers, feature_flags=payload.feature_flags,
-    )
-    db.add(plan)
-    db.commit(); db.refresh(plan)
-    return _billing_plan_out(plan)
-
-
-@router.put("/billing-plans/{plan_id}", response_model=BillingPlanOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def update_billing_plan(plan_id: str, payload: BillingPlanCreateRequest, db: Session = Depends(get_db)):
-    _validate_billing_plan_period(payload.channel, payload.period)
-    plan = db.get(BillingPlan, plan_id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
-    plan.channel = payload.channel
-    plan.name = payload.name
-    plan.period = payload.period
-    plan.price = payload.price
-    plan.message_limit = payload.message_limit
-    plan.user_limit = payload.user_limit
-    plan.active = payload.active
-    plan.visible_to_customers = payload.visible_to_customers
-    plan.feature_flags = payload.feature_flags
-    db.commit(); db.refresh(plan)
-    return _billing_plan_out(plan)
-
-
-@router.delete("/billing-plans/{plan_id}", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def delete_billing_plan(plan_id: str, db: Session = Depends(get_db)):
-    plan = db.get(BillingPlan, plan_id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Plan not found")
-    # Never hard-delete a plan that's actively subscribed-to -- would orphan
-    # ChannelSubscription.plan_id and break channel_active()'s lookup for that entity. Deactivate
-    # instead; existing subscribers keep working until their period naturally lapses.
-    if db.scalar(select(ChannelSubscription).where(ChannelSubscription.plan_id == plan_id).limit(1)):
-        plan.active = False
-        db.commit()
-        return {"deactivated": True}
-    db.delete(plan)
-    db.commit()
-    return {"deleted": True}
-
-
-@router.post("/organizations/{organization_id}/grant-plan", response_model=ChannelSubscriptionStatusOut, dependencies=[Depends(require_staff("finance")), Depends(require_admin_recent_2fa)])
-def grant_plan(organization_id: str, payload: AdminGrantPlanRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
-    """Manually activates a WABA/CRM plan for a customer with no real payment -- for comp access,
-    support cases, or migrating a customer who paid outside Razorpay. Reuses
-    channel_billing.activate_subscription so the resulting ChannelSubscription row is
-    indistinguishable from a real purchase to channel_active()/check_message_quota()/
-    check_seat_quota() -- same period-extension rule, just no PaymentOrder/invoice created."""
-    org = db.get(Organization, organization_id)
-    if not org:
-        raise HTTPException(status_code=404, detail="Organization not found")
-    entity = db.scalar(select(Entity).where(Entity.organization_id == org.id))
-    if not entity:
-        raise HTTPException(status_code=404, detail="No entity found for this organization")
-    plan = db.get(BillingPlan, payload.plan_id)
-    if not plan or not plan.active:
-        raise HTTPException(status_code=404, detail="Plan not found")
-
-    subscription = activate_subscription(db, entity, plan)
-    log_activity(db, org.id, "channel_plan_granted", f"{plan.channel.upper()} plan '{plan.name}' granted by admin (no payment).", actor_email=_caller_email(authorization, db), request=request)
-    db.commit()
-    db.refresh(subscription)
-
-    seats_used = db.scalar(select(func.count()).select_from(User).where(User.organization_id == org.id)) or 0
-    return ChannelSubscriptionStatusOut(
-        channel=plan.channel, plan=_billing_plan_out(plan), period_start=subscription.period_start.isoformat(),
-        period_end=subscription.period_end.isoformat(), messages_used=subscription.messages_used, seats_used=seats_used,
-    )
 
 
 @router.get("/delivery-status-rules", response_model=list[DeliveryStatusCodeRuleOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -1271,7 +1166,7 @@ def reject_invoice_admin(invoice_id: str, request: Request, authorization: str |
 
 def _credit_note_out(note: CreditNote) -> CreditNoteOut:
     return CreditNoteOut(
-        id=note.id, entity_id=note.entity_id, invoice_id=note.invoice_id, sales_invoice_id=note.sales_invoice_id,
+        id=note.id, entity_id=note.entity_id, invoice_id=note.invoice_id,
         credit_note_number=note.credit_note_number, amount=float(note.amount), gst_amount=float(note.gst_amount),
         total_amount=round(float(note.amount) + float(note.gst_amount), 2), reason=note.reason, created_at=note.created_at.isoformat(),
     )
@@ -1805,7 +1700,6 @@ def create_customer(payload: AdminCreateCustomerRequest, db: Session = Depends(g
     db.flush()
 
     db.add(Wallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
-    db.add(WabaWallet(entity_id=entity.id, prepaid_balance=0, credit_limit=0, credit_used=0))
 
     generated_password = secrets.token_urlsafe(9)
     if existing:
@@ -1951,22 +1845,22 @@ def _delete_where_subselect(db: Session, table: str, column: str, subselect: str
 @router.delete("/customers/{organization_id}", response_model=CustomerDeleteResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def delete_customer(organization_id: str, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Permanently deletes a customer organization and every row under it -- every Entity, CRM
-    object (Lead/Deal/Customer/Contact/Company/Quote/...), WABA object (Conversation/Contact/
-    Campaign/...), Wallet, Message, Invoice, DLT record, Template/Header/PE ID, and every User tied
-    to this org. Restricted to Super Admin/Operator Admin (require_admin, not just require_staff)
-    given the blast radius -- this is irreversible, there is no undo. Staff/admin accounts never
-    have an organization_id (see list_customers' own docstring on this invariant), so this can
-    never touch a platform account regardless of which organization_id is passed in.
+    object (Lead/Deal/Customer/Contact/Company/Quote/...), shared-inbox object (Conversation/
+    Contact/Campaign/...), Wallet, Message, Invoice, DLT record, Template/Header/PE ID, and every
+    User tied to this org. Restricted to Super Admin/Operator Admin (require_admin, not just
+    require_staff) given the blast radius -- this is irreversible, there is no undo. Staff/admin
+    accounts never have an organization_id (see list_customers' own docstring on this invariant),
+    so this can never touch a platform account regardless of which organization_id is passed in.
 
     Raw SQL DELETEs in explicit dependency order rather than loading+deleting ORM objects one at a
     time -- getting the order wrong fails loudly with a FK violation rather than silently
     corrupting anything, but doing it via SQLAlchemy relationships would need every one of those
-    relationships declared first, which they aren't. This list was originally written before CRM/
-    WABA existed and was never extended as those modules grew (~90 tables added since); confirmed
-    by a full audit against every ForeignKey in models.py, not just the tables that happened to
-    come up in testing -- an org with real CRM/WABA activity used to 500 with a ForeignKeyViolation
-    partway through this function (transaction rolled back cleanly, no partial deletes, but the
-    delete never completed)."""
+    relationships declared first, which they aren't. This list was originally written before CRM
+    existed and was never extended as that module grew (~90 tables added since); confirmed by a
+    full audit against every ForeignKey in models.py, not just the tables that happened to come up
+    in testing -- an org with real CRM activity used to 500 with a ForeignKeyViolation partway
+    through this function (transaction rolled back cleanly, no partial deletes, but the delete
+    never completed)."""
     org = db.get(Organization, organization_id)
     if not org:
         raise HTTPException(status_code=404, detail="Organization not found")
@@ -1993,10 +1887,6 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
         ]:
             db.execute(text(stmt_sql).bindparams(bindparam("ids", expanding=True)), {"ids": entity_ids})
 
-        # --- Step 1: WABA commerce (Shopify/WooCommerce order import, native WhatsApp orders) ---
-        _delete_where_subselect(db, "waba_order_items", "order_id", "SELECT id FROM waba_orders WHERE entity_id IN :ids", entity_ids)
-        _delete_where_in(db, "imported_store_orders", "entity_id", entity_ids)
-
         # --- Step 2: shared-inbox rows that reference conversations/contacts/campaigns ---
         _delete_where_in(db, "csat_responses", "entity_id", entity_ids)
         _delete_where_in(db, "webchat_visits", "entity_id", entity_ids)
@@ -2004,7 +1894,6 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
         _delete_where_subselect(db, "conversation_labels", "conversation_id", "SELECT id FROM conversations WHERE entity_id IN :ids", entity_ids)
         _delete_where_subselect(db, "contact_labels", "contact_id", "SELECT id FROM contacts WHERE entity_id IN :ids", entity_ids)
         _delete_where_subselect(db, "conversation_messages", "conversation_id", "SELECT id FROM conversations WHERE entity_id IN :ids", entity_ids)
-        _delete_where_in(db, "waba_orders", "entity_id", entity_ids)
 
         # --- Step 3: CRM rows that reference deals/crm_contacts/products ---
         _delete_where_in(db, "attachments", "entity_id", entity_ids)
@@ -2070,15 +1959,7 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
         _delete_where_in(db, "macros", "entity_id", entity_ids)
         _delete_where_in(db, "csat_settings", "entity_id", entity_ids)
 
-        # --- Step 9: WABA connections / commerce catalog / Textzi Wallet / Smart Collect ---
-        _delete_where_in(db, "waba_catalog_items", "entity_id", entity_ids)
-        _delete_where_in(db, "waba_connections", "entity_id", entity_ids)
-        _delete_where_in(db, "shopify_connections", "entity_id", entity_ids)
-        _delete_where_in(db, "woocommerce_connections", "entity_id", entity_ids)
-        _delete_where_in(db, "tally_connections", "entity_id", entity_ids)
-        _delete_where_in(db, "waba_webhook_subscriptions", "entity_id", entity_ids)
-        _delete_where_in(db, "waba_webhook_logs", "entity_id", entity_ids)
-        _delete_where_in(db, "waba_api_call_logs", "entity_id", entity_ids)
+        # --- Step 9: Textzi Wallet / Smart Collect ---
         _delete_where_in(db, "textzi_wallet_transactions", "entity_id", entity_ids)
         _delete_where_in(db, "textzi_wallets", "entity_id", entity_ids)
         _delete_where_in(db, "razorpay_virtual_accounts", "entity_id", entity_ids)
@@ -2109,7 +1990,6 @@ def delete_customer(organization_id: str, request: Request, authorization: str |
         _delete_where_in(db, "opt_out_entries", "entity_id", entity_ids)
         _delete_where_in(db, "wallet_transactions", "entity_id", entity_ids)
         _delete_where_in(db, "wallets", "entity_id", entity_ids)
-        _delete_where_in(db, "waba_wallets", "entity_id", entity_ids)
         _delete_where_in(db, "payment_orders", "entity_id", entity_ids)
 
     _delete_where_in(db, "account_activity", "organization_id", [organization_id])
@@ -2342,66 +2222,6 @@ def list_admin_api_log(entity_id: str | None = None, status_code: int | None = N
             message_id=l.message_id, endpoint=l.endpoint, method=l.metadata_json.get("method") if l.metadata_json else None,
             status_code=l.status_code, latency_ms=l.latency_ms, error=l.metadata_json.get("error") if l.metadata_json else None,
             ip_address=l.ip_address, country=l.country, user_agent=l.user_agent, created_at=l.created_at.isoformat(),
-        ))
-    return result
-
-
-@router.get("/waba-webhook-log", response_model=list[AdminWabaWebhookLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_admin_waba_webhook_log(status: str | None = None, direction: str | None = None, limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
-    """Every call Meta has made to /v1/webhooks/waba, across every customer -- the GET verify
-    handshake and every POST event delivery, including rejections (bad signature, no matching
-    connection) that never made it into any customer-visible screen. Built specifically so "is
-    Meta even reaching us" is answerable from the admin panel during Embedded Signup/App Review
-    setup, instead of grepping container logs."""
-    limit = max(1, min(limit, MESSAGE_LOG_LIMIT))
-    offset = max(0, offset)
-    query = select(WabaWebhookLog).order_by(WabaWebhookLog.created_at.desc()).limit(limit).offset(offset)
-    if status:
-        query = query.where(WabaWebhookLog.status == status)
-    if direction:
-        query = query.where(WabaWebhookLog.direction == direction)
-    logs = db.scalars(query).all()
-    entity_ids = {l.entity_id for l in logs if l.entity_id}
-    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()} if entity_ids else {}
-    org_ids = {e.organization_id for e in entities.values()}
-    org_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
-    result = []
-    for l in logs:
-        entity = entities.get(l.entity_id) if l.entity_id else None
-        result.append(AdminWabaWebhookLogOut(
-            id=l.id, direction=l.direction, status=l.status, detail=l.detail, phone_number_id=l.phone_number_id,
-            entity_id=l.entity_id, entity_name=entity.name if entity else None,
-            organization_name=org_names.get(entity.organization_id) if entity else None,
-            ip_address=l.ip_address, created_at=l.created_at.isoformat(),
-        ))
-    return result
-
-
-@router.get("/waba-api-call-log", response_model=list[AdminWabaApiCallLogOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
-def list_admin_waba_api_call_log(status: str | None = None, action: str | None = None, limit: int = MESSAGE_LOG_LIMIT, offset: int = 0, db: Session = Depends(get_db)):
-    """The outbound counterpart to /waba-webhook-log -- every call Textzi made TO Meta (sends,
-    phone-number registration), across every customer, including the real Meta error text on
-    failure (e.g. 133010 "Account not registered")."""
-    limit = max(1, min(limit, MESSAGE_LOG_LIMIT))
-    offset = max(0, offset)
-    query = select(WabaApiCallLog).order_by(WabaApiCallLog.created_at.desc()).limit(limit).offset(offset)
-    if status:
-        query = query.where(WabaApiCallLog.status == status)
-    if action:
-        query = query.where(WabaApiCallLog.action == action)
-    logs = db.scalars(query).all()
-    entity_ids = {l.entity_id for l in logs if l.entity_id}
-    entities = {e.id: e for e in db.scalars(select(Entity).where(Entity.id.in_(entity_ids))).all()} if entity_ids else {}
-    org_ids = {e.organization_id for e in entities.values()}
-    org_names = {o.id: o.name for o in db.scalars(select(Organization).where(Organization.id.in_(org_ids))).all()} if org_ids else {}
-    result = []
-    for l in logs:
-        entity = entities.get(l.entity_id) if l.entity_id else None
-        result.append(AdminWabaApiCallLogOut(
-            id=l.id, action=l.action, status=l.status, detail=l.detail, to_wa_id=l.to_wa_id,
-            entity_id=l.entity_id, entity_name=entity.name if entity else None,
-            organization_name=org_names.get(entity.organization_id) if entity else None,
-            created_at=l.created_at.isoformat(),
         ))
     return result
 
@@ -2699,23 +2519,6 @@ def get_organization_overview(organization_id: str, db: Session = Depends(get_db
         payment_rows = db.scalars(select(PaymentOrder).where(PaymentOrder.entity_id.in_(entity_ids)).order_by(PaymentOrder.created_at.desc())).all()
         payments = [PaymentDetailOut(id=p.id, provider=p.provider, provider_order_id=p.provider_order_id, amount=float(p.amount), status=p.status, created_at=p.created_at.isoformat()) for p in payment_rows]
 
-    # A customer org has exactly one entity today (multi-entity orgs aren't a real thing yet
-    # elsewhere in this codebase either), so this reads the first entity's channel state -- same
-    # assumption already made above for wallet_balance/messages_sent.
-    channel_subscriptions: list[ChannelSubscriptionStatusOut] = []
-    if entities:
-        entity = entities[0]
-        for channel in ("waba", "crm"):
-            subscription = db.get(ChannelSubscription, (entity.id, channel))
-            plan = db.get(BillingPlan, subscription.plan_id) if subscription and subscription.plan_id else None
-            channel_subscriptions.append(ChannelSubscriptionStatusOut(
-                channel=channel, plan=_billing_plan_out(plan) if plan else None,
-                period_start=subscription.period_start.isoformat() if subscription and subscription.period_start else None,
-                period_end=subscription.period_end.isoformat() if subscription and subscription.period_end else None,
-                messages_used=subscription.messages_used if subscription else 0,
-                seats_used=len(users),
-            ))
-
     return OrganizationOverviewResponse(
         organization_id=org.id, organization_name=org.name, gstin=org.gstin, pan=org.pan, industry=org.industry,
         address=org.address, zoho_contact_id=org.zoho_contact_id, created_at=org.created_at.isoformat(), entities=entity_details,
@@ -2728,5 +2531,4 @@ def get_organization_overview(organization_id: str, db: Session = Depends(get_db
         invoices=[_invoice_out(i) for i in invoices],
         recharges=recharges,
         payments=payments,
-        channel_subscriptions=channel_subscriptions,
     )
