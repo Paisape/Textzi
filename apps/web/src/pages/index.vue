@@ -9,50 +9,50 @@ definePage({
 })
 
 useHead({
-  title: 'Textzi - WhatsApp & SMS Business Messaging',
+  title: 'Textzi - DLT-Compliant SMS for Indian Businesses',
   meta: [
-    { name: 'description', content: 'Textzi is a DLT-compliant SMS and WhatsApp Business platform for Indian businesses -- send messages, manage a shared team inbox, and run a lightweight CRM from one place.' },
-    { property: 'og:title', content: 'Textzi - WhatsApp & SMS Business Messaging' },
-    { property: 'og:description', content: 'DLT-compliant SMS and WhatsApp Business messaging, a shared team inbox, and a lightweight CRM for Indian businesses.' },
+    { name: 'description', content: 'Textzi is a DLT-compliant SMS platform for Indian businesses -- send transactional and promotional SMS, track delivery, and manage templates from one dashboard or API.' },
+    { property: 'og:title', content: 'Textzi - DLT-Compliant SMS for Indian Businesses' },
+    { property: 'og:description', content: 'DLT-compliant bulk and transactional SMS for Indian businesses, with template management, delivery tracking, and API access.' },
     { property: 'og:url', content: 'https://textzi.in/' },
   ],
 })
 
-const channelCards = [
-  { icon: 'tabler-messages', color: 'info', title: 'SMS', desc: 'DLT-compliant bulk & transactional SMS across India, pay-as-you-go.', to: '/products/sms' },
-  { icon: 'tabler-brand-whatsapp', color: 'success', title: 'WhatsApp Business API', desc: 'Templates, catalog & commerce, and a shared team inbox on the official Cloud API.', to: '/products/whatsapp' },
-  { icon: 'tabler-users-group', color: 'primary', title: 'CRM', desc: 'Pipelines, helpdesk, GST quotes, and live chat — connected to your WhatsApp conversations.', to: '/products/crm' },
+const useCases = [
+  { icon: 'tabler-key', color: 'info', title: 'OTP & Transactional', desc: 'Login OTPs, order updates, and account alerts delivered in real time, over your own registered sender header.' },
+  { icon: 'tabler-speakerphone', color: 'success', title: 'Promotional Campaigns', desc: 'Bulk promotional SMS with DLT-approved templates, scheduled sends, and delivery reports per campaign.' },
+  { icon: 'tabler-code', color: 'primary', title: 'API for Developers', desc: 'A REST API to send and track messages directly from your own app, backend, or workflow.' },
 ]
 
 const showcaseFeatures = [
   {
-    icon: 'tabler-arrow-big-right-lines',
-    title: 'A WhatsApp chat becomes a tracked deal',
-    desc: 'Convert any conversation into a lead or deal with one click — full chat history carries over, so your sales pipeline never starts from a blank contact card.',
+    icon: 'tabler-shield-check',
+    title: 'DLT registration, handled end to end',
+    desc: 'Register your Entity ID, Sender Header, and templates against TRAI\'s DLT platform right from your dashboard — no separate portal, no manual paperwork.',
   },
   {
-    icon: 'tabler-file-invoice',
-    title: 'GST-compliant quotes, sent where the chat is',
-    desc: 'Build a quote with correct CGST/SGST/IGST splits and send it as a WhatsApp document — the customer can accept it right there, no separate email thread.',
+    icon: 'tabler-template',
+    title: 'Templates that actually get approved',
+    desc: 'Build transactional and promotional templates with the exact DLT placeholder format carriers expect, test them before you send, and track approval status in real time.',
   },
   {
-    icon: 'tabler-headset',
-    title: 'One inbox for chat, tickets, and email',
-    desc: 'SLA timers, canned responses, and team assignment work the same way whether a customer messages you on WhatsApp, your website, or email.',
+    icon: 'tabler-chart-line',
+    title: 'Delivery tracking down to the message',
+    desc: 'See sent, delivered, and failed status per message, not just per batch — so you know exactly which numbers didn\'t get through and why.',
   },
 ]
 
 const supportingFeatures = [
   { icon: 'tabler-address-book', title: 'Contact Management', desc: 'Import, segment and manage your contacts effortlessly.' },
-  { icon: 'tabler-chart-line', title: 'Advanced Analytics', desc: 'Delivery rates, read receipts, and campaign performance in real time.' },
-  { icon: 'tabler-bolt', title: 'Rule-Based Automation', desc: 'Auto-assign, auto-label, and route conversations — no black-box AI.' },
-  { icon: 'tabler-shield-check', title: 'DLT & Data Compliance', desc: 'Entity ID, Sender Header, and template registration handled for you.' },
+  { icon: 'tabler-code', title: 'REST API & Dashboard', desc: 'Send from the dashboard or integrate the API directly into your app.' },
+  { icon: 'tabler-send', title: 'Bulk & Transactional Sends', desc: 'OTPs and alerts in real time, or scheduled bulk campaigns at scale.' },
+  { icon: 'tabler-file-invoice', title: 'DLT & Data Compliance', desc: 'Entity ID, Sender Header, and template registration handled for you.' },
 ]
 
 const steps = [
-  { number: '01', title: 'Create Your Account', desc: 'Sign up and connect your WhatsApp Business number. Complete DLT registration for SMS.' },
-  { number: '02', title: 'Import Contacts & Templates', desc: 'Upload your contact list and create message templates. Get templates approved instantly.' },
-  { number: '03', title: 'Launch Campaigns', desc: 'Send broadcasts, set up automations, and watch your engagement metrics soar.' },
+  { number: '01', title: 'Complete DLT Registration', desc: 'Register your Entity ID and Sender Header, then create your first message templates.' },
+  { number: '02', title: 'Get Templates Approved', desc: 'Submit transactional and promotional templates for DLT approval, and track their status from your dashboard.' },
+  { number: '03', title: 'Send & Track Delivery', desc: 'Send via the dashboard or API, then watch delivery status update per message in real time.' },
 ]
 
 const trustPoints = [
@@ -66,7 +66,7 @@ const trustStats = [
   { icon: 'tabler-map-2', label: 'Pan-India Coverage' },
   { icon: 'tabler-bolt', label: '99.9% Uptime' },
   { icon: 'tabler-lock', label: 'DPDP Act Ready' },
-  { icon: 'tabler-brand-whatsapp', label: 'Official Meta Cloud API' },
+  { icon: 'tabler-shield-check', label: 'TRAI DLT Registered' },
 ]
 
 const kpis = [
@@ -82,7 +82,6 @@ type PublicRateCard = { name: string, channel: string, public_tagline: string | 
 const publicRateCards = ref<PublicRateCard[]>([])
 const rateCardError = ref('')
 const smsCard = computed(() => publicRateCards.value.find(c => c.channel === 'sms') || null)
-const whatsappCard = computed(() => publicRateCards.value.find(c => c.channel === 'whatsapp') || null)
 
 async function loadRateCards() {
   try {
@@ -121,13 +120,6 @@ async function loadCompanyInfo() {
   catch {
     companyInfo.value = null
   }
-}
-
-function openLiveChat() {
-  // The webchat widget script (webchat_widget_js.py) mounts its own bubble button with this id --
-  // clicking it programmatically opens the exact same panel a visitor gets by clicking it directly,
-  // rather than this page maintaining a second, separate "open the widget" mechanism.
-  document.getElementById('textzi-widget-bubble')?.click()
 }
 
 const contactForm = reactive({ name: '', email: '', phone: '', company: '', message: '' })
@@ -283,16 +275,6 @@ function animateKpis() {
   requestAnimationFrame(tick)
 }
 
-// Textzi's own webchat widget, embedded on its own landing page -- eating its own dog food the
-// same way Addendum 5's own reasoning already established for the WhatsApp/CRM App Review videos
-// ("Textzi acting as its own first customer"). The widget key isn't a secret (same reasoning as
-// every other widget embed) so it's fine hardcoded here rather than fetched from an endpoint.
-// Injected/removed on mount/unmount rather than living in index.html, since that file is shared
-// by the whole SPA -- this way the bubble only ever appears on the actual marketing page, never
-// on a logged-in dashboard screen.
-const TEXTZI_WEBCHAT_WIDGET_KEY = '35e05759-ac22-4102-acad-3bf4c3eb0c71'
-let webchatScriptEl: HTMLScriptElement | null = null
-
 onMounted(() => {
   loadRateCards()
   loadTestimonials()
@@ -307,18 +289,6 @@ onMounted(() => {
     }, { threshold: 0.4 })
     kpiObserver.observe(kpiSectionEl.value)
   }
-
-  const apiBase = import.meta.env.VITE_API_BASE_URL || '/api'
-  const widgetScriptOrigin = apiBase.startsWith('http') ? apiBase : window.location.origin
-  webchatScriptEl = document.createElement('script')
-  webchatScriptEl.src = `${widgetScriptOrigin}/v1/public/webchat/widget.js`
-  webchatScriptEl.setAttribute('data-widget-key', TEXTZI_WEBCHAT_WIDGET_KEY)
-  webchatScriptEl.async = true
-  document.body.appendChild(webchatScriptEl)
-})
-
-onUnmounted(() => {
-  webchatScriptEl?.remove()
 })
 </script>
 
@@ -344,10 +314,10 @@ onUnmounted(() => {
               Built for Indian businesses
             </VChip>
             <h1 class="hero-title mb-4 hero-anim hero-anim-2">
-              Every customer conversation, <span class="text-primary">one inbox, one pipeline</span>
+              DLT-compliant SMS, <span class="text-primary">sent right the first time</span>
             </h1>
             <p class="hero-subtitle mb-6 hero-anim hero-anim-3">
-              Textzi connects WhatsApp Business API, DLT-compliant SMS, and a real sales CRM in one platform — so a WhatsApp chat can become a tracked lead, a quote, and a closed deal without ever leaving the inbox.
+              Textzi handles DLT registration, template approval, and delivery tracking for transactional and promotional SMS — so you can send OTPs, alerts, and campaigns across India without chasing TRAI paperwork yourself.
             </p>
             <div class="d-flex flex-wrap gap-4 mb-4 hero-anim hero-anim-4">
               <VBtn
@@ -389,7 +359,7 @@ onUnmounted(() => {
                   <span class="hero-mockup-dot" />
                   <span class="hero-mockup-dot" />
                   <span class="hero-mockup-dot" />
-                  <span class="hero-mockup-titlebar-label">Inbox</span>
+                  <span class="hero-mockup-titlebar-label">Delivery Report</span>
                 </div>
                 <div class="hero-mockup-row hero-mockup-row-active">
                   <VAvatar
@@ -398,17 +368,17 @@ onUnmounted(() => {
                     size="36"
                   >
                     <VIcon
-                      icon="tabler-brand-whatsapp"
+                      icon="tabler-check"
                       size="18"
                     />
                   </VAvatar>
                   <div class="hero-mockup-row-body">
                     <div class="d-flex align-center justify-space-between">
-                      <span class="font-weight-medium">Priya Sharma</span>
+                      <span class="font-weight-medium">OTP_LOGIN_V2</span>
                       <span class="text-caption text-medium-emphasis">2m</span>
                     </div>
                     <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
-                      Can you share the GST invoice for order #4521?
+                      Delivered to +91 98xxxxxx21 in 1.8s
                     </p>
                   </div>
                 </div>
@@ -419,17 +389,17 @@ onUnmounted(() => {
                     size="36"
                   >
                     <VIcon
-                      icon="tabler-message-2"
+                      icon="tabler-send"
                       size="18"
                     />
                   </VAvatar>
                   <div class="hero-mockup-row-body">
                     <div class="d-flex align-center justify-space-between">
-                      <span class="font-weight-medium">Rahul Verma</span>
+                      <span class="font-weight-medium">ORDER_SHIPPED</span>
                       <span class="text-caption text-medium-emphasis">14m</span>
                     </div>
                     <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
-                      OTP delivered — thanks, that worked.
+                      3,240 sent · 3,198 delivered
                     </p>
                   </div>
                 </div>
@@ -440,23 +410,23 @@ onUnmounted(() => {
                     size="36"
                   >
                     <VIcon
-                      icon="tabler-users-group"
+                      icon="tabler-shield-check"
                       size="18"
                     />
                   </VAvatar>
                   <div class="hero-mockup-row-body">
                     <div class="d-flex align-center justify-space-between">
-                      <span class="font-weight-medium">Ananya Textiles</span>
+                      <span class="font-weight-medium">DIWALI_OFFER_2026</span>
                       <VChip
                         color="primary"
                         size="x-small"
                         variant="tonal"
                       >
-                        Deal · ₹85,000
+                        DLT Approved
                       </VChip>
                     </div>
                     <p class="text-body-2 text-medium-emphasis mb-0 hero-mockup-snippet">
-                      Moved to "Proposal Sent" stage
+                      Template cleared for sending
                     </p>
                   </div>
                 </div>
@@ -480,10 +450,10 @@ onUnmounted(() => {
                   </VAvatar>
                   <div>
                     <div class="text-body-2 font-weight-medium">
-                      Deal won
+                      Campaign sent
                     </div>
                     <div class="text-caption text-medium-emphasis">
-                      ₹1,20,000 · Ananya Textiles
+                      10,000 messages · 98.7% delivered
                     </div>
                   </div>
                 </VCardText>
@@ -530,55 +500,44 @@ onUnmounted(() => {
             size="small"
             class="mb-3 section-eyebrow"
           >
-            Channels
+            Use Cases
           </VChip>
           <h2 class="text-h3 font-weight-bold mb-3">
-            One Platform, Three Ways to Reach Customers
+            One Platform, Every Kind of SMS
           </h2>
         </div>
 
         <VRow>
           <VCol
-            v-for="(channel, index) in channelCards"
+            v-for="(channel, index) in useCases"
             :key="channel.title"
             cols="12"
             md="4"
             v-reveal="index"
           >
-            <RouterLink
-              :to="channel.to"
-              class="channel-card-link"
+            <VCard
+              variant="outlined"
+              class="channel-card"
+              height="100%"
             >
-              <VCard
-                variant="outlined"
-                class="channel-card"
-                height="100%"
-              >
-                <VCardText>
-                  <VAvatar
-                    :color="channel.color"
-                    variant="tonal"
-                    size="48"
-                    rounded="lg"
-                    class="mb-4"
-                  >
-                    <VIcon :icon="channel.icon" />
-                  </VAvatar>
-                  <h3 class="text-h6 font-weight-bold mb-2">
-                    {{ channel.title }}
-                  </h3>
-                  <p class="text-medium-emphasis mb-4">
-                    {{ channel.desc }}
-                  </p>
-                  <span class="channel-card-cta">
-                    Learn more <VIcon
-                      icon="tabler-arrow-right"
-                      size="16"
-                    />
-                  </span>
-                </VCardText>
-              </VCard>
-            </RouterLink>
+              <VCardText>
+                <VAvatar
+                  :color="channel.color"
+                  variant="tonal"
+                  size="48"
+                  rounded="lg"
+                  class="mb-4"
+                >
+                  <VIcon :icon="channel.icon" />
+                </VAvatar>
+                <h3 class="text-h6 font-weight-bold mb-2">
+                  {{ channel.title }}
+                </h3>
+                <p class="text-medium-emphasis mb-0">
+                  {{ channel.desc }}
+                </p>
+              </VCardText>
+            </VCard>
           </VCol>
         </VRow>
       </VContainer>
@@ -602,10 +561,10 @@ onUnmounted(() => {
             Why Textzi
           </VChip>
           <h2 class="text-h3 font-weight-bold mb-3">
-            Built to Connect, Not Just Send
+            Built for How SMS Actually Works in India
           </h2>
           <p class="text-medium-emphasis">
-            Most platforms stop at sending a message. Textzi carries the conversation through to a quote, a deal, and a resolved ticket.
+            Most platforms stop at sending a message. Textzi handles the DLT compliance and delivery visibility that come before and after it.
           </p>
         </div>
 
@@ -805,10 +764,10 @@ onUnmounted(() => {
             Pricing
           </VChip>
           <h2 class="text-h3 font-weight-bold mb-3">
-            Pricing for Every Channel
+            Simple, Pay-As-You-Go Pricing
           </h2>
           <p class="text-medium-emphasis">
-            Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in — or talk to us for a custom plan.
+            No monthly lock-in — top up, pay per SMS, and scale down whenever you need to. Or talk to us for a custom plan.
           </p>
         </div>
 
@@ -829,7 +788,7 @@ onUnmounted(() => {
           <VCol
             v-reveal="0"
             cols="12"
-            md="4"
+            md="5"
           >
             <VCard
               variant="outlined"
@@ -895,73 +854,7 @@ onUnmounted(() => {
           <VCol
             v-reveal="1"
             cols="12"
-            md="4"
-          >
-            <VCard
-              variant="outlined"
-              class="pricing-card d-flex flex-column"
-              height="100%"
-            >
-              <VCardText class="d-flex flex-column h-100">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <span class="text-h6 font-weight-bold">WhatsApp</span>
-                  <VChip
-                    variant="tonal"
-                    size="small"
-                  >
-                    Pay per message
-                  </VChip>
-                </div>
-                <p class="text-body-2 text-medium-emphasis mb-4">
-                  {{ whatsappCard?.public_tagline || 'Official WhatsApp Business API messaging with templates & media.' }}
-                </p>
-
-                <template v-if="whatsappCard">
-                  <p class="text-caption text-medium-emphasis mb-2">
-                    Minimum top-up: ₹{{ whatsappCard.min_recharge_amount.toLocaleString('en-IN') }}. GST (18%) applies on top.
-                  </p>
-                  <VTable density="compact">
-                    <thead>
-                      <tr>
-                        <th>Recharge amount</th>
-                        <th>Price/message</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        v-for="slab in whatsappCard.slabs"
-                        :key="slab.id"
-                      >
-                        <td>{{ slabLabel(slab) }}</td>
-                        <td>₹{{ slab.price_per_sms.toFixed(2) }}</td>
-                      </tr>
-                    </tbody>
-                  </VTable>
-                </template>
-                <p
-                  v-else
-                  class="text-body-2 text-medium-emphasis"
-                >
-                  Reach out and we'll share current WhatsApp conversation rates for your volume.
-                </p>
-
-                <VSpacer />
-                <VBtn
-                  color="primary"
-                  block
-                  class="mt-6"
-                  :to="whatsappCard ? '/register' : '/#contact'"
-                >
-                  {{ whatsappCard ? 'Get Started' : 'Contact Us' }}
-                </VBtn>
-              </VCardText>
-            </VCard>
-          </VCol>
-
-          <VCol
-            v-reveal="2"
-            cols="12"
-            md="4"
+            md="5"
           >
             <VCard
               variant="outlined"
@@ -980,7 +873,7 @@ onUnmounted(() => {
                   Enterprise
                 </div>
                 <p class="text-body-2 text-medium-emphasis mb-4">
-                  High volume, dedicated account manager, custom integrations, or a bespoke blend of SMS and WhatsApp — let's talk about what you need.
+                  High volume, dedicated account manager, and custom integrations — let's talk about what you need.
                 </p>
                 <div class="d-flex align-center gap-2 mb-2">
                   <VIcon
@@ -1123,7 +1016,7 @@ onUnmounted(() => {
                 <button
                   type="button"
                   class="d-flex align-center gap-3 support-channel-link"
-                  @click="openLiveChat"
+                  @click="scrollToContact"
                 >
                   <VAvatar
                     color="primary"
@@ -1135,7 +1028,7 @@ onUnmounted(() => {
                       size="18"
                     />
                   </VAvatar>
-                  <span class="font-weight-medium">Live Chat</span>
+                  <span class="font-weight-medium">Send a Message</span>
                 </button>
               </VCol>
               <VCol cols="6">
@@ -1249,10 +1142,10 @@ onUnmounted(() => {
         class="text-center"
       >
         <h2 class="text-h3 font-weight-bold mb-4">
-          Ready to Transform Your Customer Communication?
+          Ready to Send Compliant SMS at Scale?
         </h2>
         <p class="mb-6">
-          Join Indian businesses already using Textzi to engage customers on WhatsApp, SMS, and CRM.
+          Join Indian businesses already using Textzi to send DLT-compliant SMS and track every message.
         </p>
         <div class="d-flex flex-wrap justify-center gap-4 mb-4">
           <VBtn
@@ -1512,10 +1405,6 @@ onUnmounted(() => {
   padding-block-end: 72px;
 }
 
-// The webchat widget's bubble is fixed at 20px from the viewport bottom (roughly a 90px
-// footprint including its own size) -- on a short mobile screen the hero's own content can be
-// taller than the viewport, so the mockup's bottom edge renders right where the bubble sits on
-// first paint, before any scrolling. Extra clearance here keeps them from visually overlapping.
 @media (max-width: 600px) {
   .hero-mockup {
     margin-block-end: 96px;

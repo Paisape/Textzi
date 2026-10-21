@@ -16,7 +16,7 @@ type LedgerRow = {
   created_at: string
 }
 
-const channel = ref<'all' | 'sms' | 'waba'>('all')
+const channel = ref<'all' | 'sms'>('all')
 const rows = ref<LedgerRow[]>([])
 const loadError = ref('')
 const loading = ref(true)
@@ -71,9 +71,6 @@ onMounted(load)
         </VBtn>
         <VBtn value="sms">
           SMS
-        </VBtn>
-        <VBtn value="waba">
-          WhatsApp
         </VBtn>
       </VBtnToggle>
     </VCardText>

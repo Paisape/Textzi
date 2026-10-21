@@ -18,7 +18,6 @@ type AdminUser = { id: string, email: string, full_name: string }
 
 const CHANNEL_OPTIONS = [
   { title: 'SMS', value: 'sms' },
-  { title: 'WhatsApp', value: 'whatsapp' },
 ]
 
 const loadError = ref('')
@@ -362,7 +361,7 @@ onMounted(load)
                       size="small"
                       :color="card.channel === 'whatsapp' ? 'success' : 'info'"
                     >
-                      {{ card.channel === 'whatsapp' ? 'WhatsApp' : 'SMS' }}
+                      SMS
                     </VChip>
                     <VChip
                       v-if="card.is_default"
@@ -569,16 +568,6 @@ onMounted(load)
               style="max-inline-size: 200px;"
             />
           </div>
-          <VAlert
-            v-if="newCardChannel === 'whatsapp'"
-            type="info"
-            variant="tonal"
-            density="compact"
-            class="mb-4"
-          >
-            WhatsApp cards are for the public pricing page only right now — WABA billing is
-            still a flat wallet recharge, not priced by these slabs.
-          </VAlert>
           <p class="text-body-2 text-medium-emphasis mb-3">
             Each slab's range is the rupee amount recharged — e.g. a ₹1–₹1000 top-up buys credits at that slab's price per SMS.
           </p>

@@ -7,8 +7,6 @@ const mobileChannelsOpen = ref(false)
 
 const channelLinks = [
   { to: '/products/sms', label: 'SMS', desc: 'DLT-compliant bulk & transactional', icon: 'tabler-messages', color: 'info' },
-  { to: '/products/whatsapp', label: 'WhatsApp', desc: 'Business API, catalog & inbox', icon: 'tabler-brand-whatsapp', color: 'success' },
-  { to: '/products/crm', label: 'CRM', desc: 'Pipeline, helpdesk & quotes', icon: 'tabler-users-group', color: 'primary' },
 ]
 
 function onWindowScroll() {

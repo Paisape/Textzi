@@ -29,7 +29,7 @@ onMounted(loadCompanyInfo)
             <div v-html="logoFull" />
           </div>
           <p class="text-medium-emphasis">
-            WhatsApp, SMS &amp; CRM for Indian businesses.
+            SMS for Indian businesses.
           </p>
         </VCol>
         <VCol
@@ -40,22 +40,10 @@ onMounted(loadCompanyInfo)
             Product
           </div>
           <RouterLink
-            to="/products/whatsapp"
-            class="footer-link d-block"
-          >
-            WhatsApp API
-          </RouterLink>
-          <RouterLink
             to="/products/sms"
             class="footer-link d-block"
           >
             SMS Gateway
-          </RouterLink>
-          <RouterLink
-            to="/products/crm"
-            class="footer-link d-block"
-          >
-            CRM
           </RouterLink>
           <RouterLink
             to="/products/pricing"

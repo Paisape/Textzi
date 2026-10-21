@@ -9,11 +9,11 @@ definePage({
 })
 
 useHead({
-  title: 'Pricing - SMS, WhatsApp & CRM - Textzi',
+  title: 'Pricing - SMS - Textzi',
   meta: [
-    { name: 'description', content: 'Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in. CRM is priced per seat. Talk to us for a custom plan.' },
-    { property: 'og:title', content: 'Pricing - SMS, WhatsApp & CRM - Textzi' },
-    { property: 'og:description', content: 'Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in -- or talk to us for a custom plan.' },
+    { name: 'description', content: 'Pay-as-you-go SMS pricing, no monthly lock-in. Talk to us for a custom plan.' },
+    { property: 'og:title', content: 'Pricing - SMS - Textzi' },
+    { property: 'og:description', content: 'Pay-as-you-go SMS pricing, no monthly lock-in -- or talk to us for a custom plan.' },
     { property: 'og:url', content: 'https://textzi.in/products/pricing' },
   ],
 })
@@ -24,7 +24,6 @@ type PublicRateCard = { name: string, channel: string, public_tagline: string | 
 const publicRateCards = ref<PublicRateCard[]>([])
 const rateCardError = ref('')
 const smsCard = computed(() => publicRateCards.value.find(c => c.channel === 'sms') || null)
-const whatsappCard = computed(() => publicRateCards.value.find(c => c.channel === 'whatsapp') || null)
 
 async function loadRateCards() {
   try {
@@ -59,10 +58,10 @@ onMounted(() => {
           Pricing
         </VChip>
         <h1 class="text-h3 font-weight-bold mb-3">
-          Pricing for Every Channel
+          Simple, Transparent SMS Pricing
         </h1>
         <p class="text-medium-emphasis">
-          Pay-as-you-go SMS and WhatsApp pricing, no monthly lock-in. CRM is priced per seat. Talk to us for a custom plan.
+          Pay-as-you-go SMS pricing, no monthly lock-in. Talk to us for a custom plan.
         </p>
       </VContainer>
     </section>
@@ -85,7 +84,7 @@ onMounted(() => {
         >
           <VCol
             cols="12"
-            md="3"
+            md="5"
           >
             <VCard
               variant="outlined"
@@ -150,111 +149,7 @@ onMounted(() => {
 
           <VCol
             cols="12"
-            md="3"
-          >
-            <VCard
-              variant="outlined"
-              class="pricing-card d-flex flex-column"
-              height="100%"
-            >
-              <VCardText class="d-flex flex-column h-100">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <span class="text-h6 font-weight-bold">WhatsApp</span>
-                  <VChip
-                    variant="tonal"
-                    size="small"
-                  >
-                    Pay per message
-                  </VChip>
-                </div>
-                <p class="text-body-2 text-medium-emphasis mb-4">
-                  {{ whatsappCard?.public_tagline || 'Official WhatsApp Business API messaging with templates & media.' }}
-                </p>
-
-                <template v-if="whatsappCard">
-                  <p class="text-caption text-medium-emphasis mb-2">
-                    Minimum top-up: ₹{{ whatsappCard.min_recharge_amount.toLocaleString('en-IN') }}. GST (18%) applies on top.
-                  </p>
-                  <VTable density="compact">
-                    <thead>
-                      <tr>
-                        <th>Recharge amount</th>
-                        <th>Price/message</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr
-                        v-for="slab in whatsappCard.slabs"
-                        :key="slab.id"
-                      >
-                        <td>{{ slabLabel(slab) }}</td>
-                        <td>₹{{ slab.price_per_sms.toFixed(2) }}</td>
-                      </tr>
-                    </tbody>
-                  </VTable>
-                </template>
-                <p
-                  v-else
-                  class="text-body-2 text-medium-emphasis"
-                >
-                  Reach out and we'll share current WhatsApp conversation rates for your volume.
-                </p>
-
-                <VSpacer />
-                <VBtn
-                  color="primary"
-                  block
-                  class="mt-6"
-                  :to="whatsappCard ? '/register' : '/#contact'"
-                >
-                  {{ whatsappCard ? 'Get Started' : 'Contact Us' }}
-                </VBtn>
-              </VCardText>
-            </VCard>
-          </VCol>
-
-          <VCol
-            cols="12"
-            md="3"
-          >
-            <VCard
-              variant="outlined"
-              class="pricing-card d-flex flex-column"
-              height="100%"
-            >
-              <VCardText class="d-flex flex-column h-100">
-                <div class="d-flex align-center justify-space-between mb-1">
-                  <span class="text-h6 font-weight-bold">CRM</span>
-                  <VChip
-                    variant="tonal"
-                    size="small"
-                  >
-                    Per seat
-                  </VChip>
-                </div>
-                <p class="text-body-2 text-medium-emphasis mb-4">
-                  Pipelines, helpdesk, quotes, and live chat — priced per team seat, monthly or quarterly.
-                </p>
-                <p class="text-body-2 text-medium-emphasis">
-                  Reach out and we'll share current CRM plan pricing for your team size.
-                </p>
-
-                <VSpacer />
-                <VBtn
-                  color="primary"
-                  block
-                  class="mt-6"
-                  to="/#contact"
-                >
-                  Contact Us
-                </VBtn>
-              </VCardText>
-            </VCard>
-          </VCol>
-
-          <VCol
-            cols="12"
-            md="3"
+            md="5"
           >
             <VCard
               variant="outlined"
@@ -273,7 +168,7 @@ onMounted(() => {
                   Enterprise
                 </div>
                 <p class="text-body-2 text-medium-emphasis mb-4">
-                  High volume, dedicated account manager, custom integrations, or a bespoke blend of channels — let's talk about what you need.
+                  High volume, dedicated account manager, custom integrations — let's talk about what you need.
                 </p>
                 <div class="d-flex align-center gap-2 mb-2">
                   <VIcon

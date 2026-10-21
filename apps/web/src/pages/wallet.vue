@@ -195,7 +195,7 @@ onMounted(() => {
     Wallet & Billing
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Track your balance, add funds, and review every credit and debit on your account — SMS and WhatsApp are billed from separate wallets.
+    Track your balance, add funds, and review every credit and debit on your account.
   </p>
 
   <VTabs v-model="activeTab" class="mb-6">
@@ -204,9 +204,6 @@ onMounted(() => {
     </VTab>
     <VTab value="sms">
       SMS Wallet
-    </VTab>
-    <VTab value="waba">
-      WhatsApp Wallet
     </VTab>
   </VTabs>
 
@@ -218,13 +215,6 @@ onMounted(() => {
         recharge-endpoint="/v1/wallet/recharge"
         :credits-based="true"
         :channel-active="channelActive"
-      />
-    </VWindowItem>
-    <VWindowItem value="waba">
-      <WalletPanel
-        title="WhatsApp Wallet"
-        balance-endpoint="/v1/wallet/waba"
-        recharge-endpoint="/v1/wallet/waba/recharge"
       />
     </VWindowItem>
     <VWindowItem value="textzi">
@@ -243,7 +233,7 @@ onMounted(() => {
                 {{ textziWallet ? inr(textziWallet.balance) : '—' }}
               </p>
               <p class="text-body-2 text-medium-emphasis mb-0">
-                Spendable on SMS credit top-up, WhatsApp subscription, or CRM subscription — each spend requires a one-time code sent to your mobile or email.
+                Spendable on SMS credit top-up — each spend requires a one-time code sent to your mobile or email.
               </p>
             </VCardText>
           </VCard>

@@ -26,7 +26,7 @@ const saveSuccess = ref('')
 // --- Global per-channel kill switch -- independent of the SMS-specific fee form below. Off means
 // dead for every customer regardless of their own subscription/connection state. ------------------
 
-const CHANNELS = ['sms', 'waba', 'crm'] as const
+const CHANNELS = ['sms'] as const
 const channelConfigs = ref<Record<string, FeeConfig>>({})
 const channelToggleBusy = ref<string | null>(null)
 const channelToggleError = ref('')

@@ -11,7 +11,7 @@ definePage({
 useHead({
   title: 'Knowledge Base - Textzi',
   meta: [
-    { name: 'description', content: 'Answers to common questions about DLT registration, WhatsApp Business API, billing, and using Textzi\'s SMS, WhatsApp, and CRM platform.' },
+    { name: 'description', content: 'Answers to common questions about DLT registration, billing, and using Textzi\'s SMS platform.' },
     { property: 'og:title', content: 'Knowledge Base - Textzi' },
     { property: 'og:url', content: 'https://textzi.in/knowledge-base' },
   ],
@@ -94,7 +94,7 @@ const categories: Category[] = [
     faqs: [
       {
         q: 'How does billing work?',
-        a: 'Textzi is prepaid — you recharge your SMS (or WhatsApp) wallet, and every message you send debits credits from that wallet based on your rate card. There\'s no monthly subscription or lock-in for the core sending features.',
+        a: 'Textzi is prepaid — you recharge your SMS wallet, and every message you send debits credits from that wallet based on your rate card. There\'s no monthly subscription or lock-in for the core sending features.',
       },
       {
         q: 'What is a "segment" and how does it affect my bill?',

@@ -242,7 +242,7 @@ onMounted(() => {
         Payment methods
       </h2>
       <p class="text-body-2 text-medium-emphasis mb-4">
-        Enable or disable each way a customer can pay -- for wallet top-up, WABA subscription, and CRM subscription. Any combination can be on at once.
+        Enable or disable each way a customer can pay for wallet top-up. Any combination can be on at once.
       </p>
       <VAlert v-if="methodsError" type="error" variant="tonal" density="compact" class="mb-4">
         {{ methodsError }}

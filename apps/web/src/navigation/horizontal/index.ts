@@ -1,14 +1,9 @@
-// Nav items are shared verbatim with navigation/vertical/index.ts (same WABA_NAV_ITEMS/
-// CRM_NAV_ITEMS/SMS_NAV_ITEMS/channelFocusedNav) so the vertical and horizontal layouts never
-// drift apart -- re-exported here for callers that import from the horizontal module directly.
-import { CRM_NAV_ITEMS, SMS_NAV_ITEMS, WABA_NAV_ITEMS } from '@/navigation/vertical'
+// Nav items are shared verbatim with navigation/vertical/index.ts (same SMS_NAV_ITEMS) so the
+// vertical and horizontal layouts never drift apart -- re-exported here for callers that import
+// from the horizontal module directly.
+export { SMS_NAV_ITEMS } from '@/navigation/vertical'
 
-export { CRM_NAV_ITEMS, SMS_NAV_ITEMS, WABA_NAV_ITEMS, channelFocusedNav } from '@/navigation/vertical'
-
-// See navigation/vertical/index.ts for why WhatsApp/CRM are conditionally included, why the group
-// order is SMS -> WhatsApp -> CRM, and why `minimal` (Dashboard page only) collapses them to a
-// single link instead of an expandable group (kept identical between the two nav layouts).
-export function customerNav(status: { wabaActive: boolean, crmActive: boolean }, opts: { minimal?: boolean } = {}) {
+export function customerNav() {
   return [
     {
       title: 'Home',
@@ -20,32 +15,6 @@ export function customerNav(status: { wabaActive: boolean, crmActive: boolean },
       to: { name: 'sms' },
       icon: { icon: 'tabler-message-2' },
     },
-    ...(status.wabaActive
-      ? [opts.minimal
-        ? {
-            title: 'WhatsApp',
-            to: { name: 'waba' },
-            icon: { icon: 'tabler-brand-whatsapp' },
-          }
-        : {
-            title: 'WhatsApp',
-            icon: { icon: 'tabler-brand-whatsapp' },
-            children: WABA_NAV_ITEMS,
-          }]
-      : []),
-    ...(status.crmActive
-      ? [opts.minimal
-        ? {
-            title: 'CRM',
-            to: { name: 'crm' },
-            icon: { icon: 'tabler-address-book' },
-          }
-        : {
-            title: 'CRM',
-            icon: { icon: 'tabler-address-book' },
-            children: CRM_NAV_ITEMS,
-          }]
-      : []),
     {
       title: 'Channels',
       to: { name: 'channels' },
@@ -154,11 +123,6 @@ export const adminNav = [
     icon: { icon: 'tabler-receipt-rupee' },
   },
   {
-    title: 'Billing Plans',
-    to: { name: 'admin-billing-plans' },
-    icon: { icon: 'tabler-credit-card' },
-  },
-  {
     title: 'Users',
     to: { name: 'users' },
     icon: { icon: 'tabler-users' },
@@ -187,11 +151,6 @@ export const adminNav = [
     title: 'API Log & Report',
     to: { name: 'admin-api-log' },
     icon: { icon: 'tabler-api' },
-  },
-  {
-    title: 'WhatsApp API Log',
-    to: { name: 'admin-waba-webhook-log' },
-    icon: { icon: 'tabler-brand-whatsapp' },
   },
   {
     title: 'Contact Us Submissions',
@@ -287,11 +246,6 @@ export const adminNav = [
         title: 'Turnstile Setting',
         to: { name: 'platform-turnstile-settings' },
         icon: { icon: 'tabler-shield-check' },
-      },
-      {
-        title: 'WhatsApp Setting',
-        to: { name: 'platform-waba-settings' },
-        icon: { icon: 'tabler-brand-whatsapp' },
       },
       {
         title: 'Archive Status',

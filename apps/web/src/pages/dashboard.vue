@@ -108,16 +108,11 @@ async function load() {
 
 onMounted(load)
 
-// One tile per channel -- "Open" enters that channel's own focused workspace (/waba, /crm), or
-// its single page directly for SMS which doesn't have a multi-page workspace; "Manage" goes
-// straight to that channel's settings page, skipping the workspace entirely. An inactive
-// WhatsApp/CRM tile points both actions at Manage (there's no workspace to open until it's
-// activated there).
+// One tile per channel -- "Open" enters that channel's own single page; "Manage" goes straight to
+// its settings page.
 type ChannelTile = { key: string, title: string, icon: string, active: boolean, openTo: string, manageTo: string }
 const channelTiles = computed<ChannelTile[]>(() => [
   { key: 'sms', title: 'SMS', icon: 'tabler-message-2', active: true, openTo: '/sms', manageTo: '/channels-sms' },
-  { key: 'waba', title: 'WhatsApp', icon: 'tabler-brand-whatsapp', active: authStore.wabaActive, openTo: '/waba', manageTo: '/channels-whatsapp' },
-  { key: 'crm', title: 'CRM', icon: 'tabler-address-book', active: authStore.crmActive, openTo: '/crm', manageTo: '/channels-crm' },
 ])
 </script>
 
