@@ -46,7 +46,7 @@ onMounted(load)
     Wallet Ledger
   </h1>
   <p class="text-medium-emphasis mb-6">
-    Every credit and debit to your SMS and WhatsApp wallets, most recent first.
+    Every credit and debit to your SMS wallet, most recent first.
   </p>
 
   <VAlert

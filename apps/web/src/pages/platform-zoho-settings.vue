@@ -419,7 +419,7 @@ onMounted(loadSettings)
           <p class="text-body-2 text-medium-emphasis mb-4">
             Three Zoho Items, each matched to a real GST SAC code: "SMS Service" (wallet recharges
             and admin manual credits, SAC 998413), "Platform fee (DLT Registration Service)" (SAC
-            998314), and "Platform fee (WhatsApp Business Platform Fee)" (SAC 998314). Leave blank
+            998314), and "Platform fee (Channel Subscription Fee)" (SAC 998314). Leave blank
             to have Textzi find an existing item with that exact name in Zoho on first use, or
             create one if none exists — paste a Zoho item id here directly only if you want to
             pin a specific one.
@@ -444,7 +444,7 @@ onMounted(loadSettings)
             <VCol cols="12" sm="4">
               <AppTextField
                 v-model="itemCodePlatformFeeWhatsapp"
-                label="Platform fee — WhatsApp (Zoho item id)"
+                label="Platform fee — Channel Subscription (Zoho item id)"
                 hint="Channel subscription invoices. Blank = auto-detect by name."
                 persistent-hint
               />

@@ -11,7 +11,7 @@ type ChannelIcon = {
 
 const channels: ChannelIcon[] = [
   { icon: 'tabler-message-2', color: '#F1600D', size: 64, top: '6%', left: '46%', duration: 6, delay: 0 },
-  { icon: 'tabler-brand-whatsapp', color: '#25D366', size: 56, top: '20%', left: '8%', duration: 7, delay: 0.6 },
+  { icon: 'tabler-shield-check', color: '#25D366', size: 56, top: '20%', left: '8%', duration: 7, delay: 0.6 },
   { icon: 'tabler-mail', color: '#3B82F6', size: 52, top: '18%', left: '78%', duration: 6.5, delay: 1.1 },
   { icon: 'tabler-phone', color: '#8B5CF6', size: 48, top: '52%', left: '4%', duration: 8, delay: 0.3 },
   { icon: 'tabler-bell', color: '#F59E0B', size: 46, top: '58%', left: '84%', duration: 7.5, delay: 0.9 },

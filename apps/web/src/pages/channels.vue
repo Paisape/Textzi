@@ -60,52 +60,5 @@ definePage({
         </VCardText>
       </VCard>
     </VCol>
-
-    <VCol
-      cols="12"
-      sm="6"
-      lg="4"
-      class="d-flex"
-    >
-      <VCard class="h-100 d-flex flex-column flex-grow-1">
-        <VCardText class="flex-grow-1">
-          <div class="d-flex align-center justify-space-between mb-4">
-            <div class="d-flex align-center gap-2">
-              <VIcon
-                icon="tabler-brand-whatsapp"
-                color="success"
-                size="24"
-              />
-              <span class="text-h6">WhatsApp</span>
-            </div>
-            <VChip
-              color="info"
-              size="small"
-            >
-              Connect
-            </VChip>
-          </div>
-          <p class="text-body-2 text-medium-emphasis mb-0">
-            Connect your own WhatsApp Business number through Meta and start messaging customers.
-          </p>
-        </VCardText>
-        <VDivider />
-        <VCardText class="d-flex gap-4">
-          <RouterLink
-            to="/channels-whatsapp"
-            class="font-weight-medium"
-          >
-            Manage
-          </RouterLink>
-          <RouterLink
-            to="/channels-whatsapp?tab=billing"
-            class="font-weight-medium"
-          >
-            Pricing
-          </RouterLink>
-        </VCardText>
-      </VCard>
-    </VCol>
-
   </VRow>
 </template>

@@ -199,7 +199,7 @@ ITEM_GROUP_SAC_CODES = {
 ITEM_GROUP_LABELS = {
     "sms_service": "SMS Service",
     "platform_fee_dlt": "Platform fee (DLT Registration Service)",
-    "platform_fee_whatsapp": "Platform fee (WhatsApp Business Platform Fee)",
+    "platform_fee_whatsapp": "Platform fee (Channel Subscription Fee)",
     "crm_quote": "CRM Quote",
 }
 
