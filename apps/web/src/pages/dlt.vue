@@ -28,6 +28,7 @@ const CATEGORY_OPTIONS = [
 const CATEGORY_LABELS: Record<string, string> = Object.fromEntries(CATEGORY_OPTIONS.map(o => [o.value, o.title]))
 
 const loadError = ref('')
+const approvalError = ref('')
 const organizations = ref<Organization[]>([])
 const entities = ref<Entity[]>([])
 const peIds = ref<PeId[]>([])
@@ -47,6 +48,31 @@ async function loadOrganizations() {
 
 async function loadEntities() {
   entities.value = await $api<Entity[]>('/v1/admin/entities')
+}
+
+async function setAssetStatus(kind: 'pe-ids' | 'headers', id: string, status: 'active' | 'inactive') {
+  approvalError.value = ''
+  try {
+    await $api(`/v1/admin/${kind}/${id}/status`, { method: 'PATCH', body: { status } })
+    await loadDltAssets()
+  }
+  catch (error: any) {
+    approvalError.value = extractErrorMessage(error, 'Could not update the status.')
+  }
+}
+
+async function viewCertificate(peId: string) {
+  approvalError.value = ''
+  try {
+    const blob = await $api<Blob, 'blob'>(`/v1/admin/pe-ids/${peId}/certificate`, { responseType: 'blob' })
+    const url = URL.createObjectURL(blob)
+
+    window.open(url, '_blank')
+    setTimeout(() => URL.revokeObjectURL(url), 60000)
+  }
+  catch (error: any) {
+    approvalError.value = extractErrorMessage(error, 'No certificate on file for this PE ID.')
+  }
 }
 
 async function loadDltAssets() {
@@ -411,6 +437,15 @@ onMounted(load)
   </VAlert>
 
   <template v-else-if="isAdmin">
+    <VAlert
+      v-if="approvalError"
+      type="error"
+      variant="tonal"
+      class="mb-4"
+    >
+      {{ approvalError }}
+    </VAlert>
+
     <VRow class="mb-2">
       <VCol
         cols="12"
@@ -594,6 +629,7 @@ onMounted(load)
                   <th>PE ID</th>
                   <th>Operator</th>
                   <th>Status</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -606,10 +642,37 @@ onMounted(load)
                   <td class="text-capitalize">
                     {{ pe.status }}
                   </td>
+                  <td class="text-no-wrap text-right">
+                    <VBtn
+                      size="small"
+                      variant="text"
+                      @click="viewCertificate(pe.id)"
+                    >
+                      Certificate
+                    </VBtn>
+                    <VBtn
+                      v-if="pe.status !== 'active'"
+                      size="small"
+                      color="success"
+                      variant="tonal"
+                      @click="setAssetStatus('pe-ids', pe.id, 'active')"
+                    >
+                      Approve
+                    </VBtn>
+                    <VBtn
+                      v-if="pe.status !== 'inactive'"
+                      size="small"
+                      color="error"
+                      variant="tonal"
+                      @click="setAssetStatus('pe-ids', pe.id, 'inactive')"
+                    >
+                      {{ pe.status === 'pending' ? 'Reject' : 'Deactivate' }}
+                    </VBtn>
+                  </td>
                 </tr>
                 <tr v-if="!peIds.length">
                   <td
-                    colspan="3"
+                    colspan="4"
                     class="text-center text-medium-emphasis"
                   >
                     No PE IDs registered yet.
@@ -699,6 +762,7 @@ onMounted(load)
                     <th>DLT header id</th>
                     <th>PE ID</th>
                     <th>Status</th>
+                    <th />
                   </tr>
                 </thead>
                 <tbody>
@@ -714,10 +778,30 @@ onMounted(load)
                     <td class="text-capitalize">
                       {{ header.status }}
                     </td>
+                    <td class="text-no-wrap text-right">
+                      <VBtn
+                        v-if="header.status !== 'active'"
+                        size="small"
+                        color="success"
+                        variant="tonal"
+                        @click="setAssetStatus('headers', header.id, 'active')"
+                      >
+                        Approve
+                      </VBtn>
+                      <VBtn
+                        v-if="header.status !== 'inactive'"
+                        size="small"
+                        color="error"
+                        variant="tonal"
+                        @click="setAssetStatus('headers', header.id, 'inactive')"
+                      >
+                        {{ header.status === 'pending' ? 'Reject' : 'Deactivate' }}
+                      </VBtn>
+                    </td>
                   </tr>
                   <tr v-if="!headers.length">
                     <td
-                      colspan="4"
+                      colspan="5"
                       class="text-center text-medium-emphasis"
                     >
                       No headers registered yet.

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import type { RazorpayOrder } from '@/composables/useRazorpayCheckout'
 definePage({
   meta: {
     layout: 'default',
@@ -21,6 +22,7 @@ type ChannelStatus = {
   subscription_paid: boolean
   dlt_status: 'not_started' | 'pending_review' | 'approved'
   channel_active: boolean
+  dev_payment_available: boolean
 }
 
 type PeIdRow = { id: string, value: string, operator: string, status: string }
@@ -291,14 +293,26 @@ async function refreshAll() {
     await loadMyPeIds()
 }
 
-// Subscription payment (only shown if a future channel has a real price)
+// Pays through Razorpay checkout, or the no-payment stand-in endpoint in development only.
+async function payForOrder(devPath: string, orderPath: string, verifyPath: string, description: string) {
+  if (status.value?.dev_payment_available) {
+    await $api(devPath, { method: 'POST' })
+    return
+  }
+  const order = await $api<RazorpayOrder>(orderPath, { method: 'POST' })
+  const payment = await openRazorpayCheckout(order, description)
+
+  await $api(verifyPath, { method: 'POST', body: payment })
+}
+
+// Subscription payment (only shown if the channel has a subscription price)
 const subscriptionPaying = ref(false)
 const subscriptionError = ref('')
 async function onPaySubscription() {
   subscriptionError.value = ''
   subscriptionPaying.value = true
   try {
-    await $api('/v1/channels/sms/subscription/recharge', { method: 'POST' })
+    await payForOrder('/v1/channels/sms/subscription/recharge', '/v1/channels/sms/subscription/razorpay/order', '/v1/channels/sms/subscription/razorpay/verify', 'SMS channel subscription')
     await refreshAll()
   }
   catch (error: any) {
@@ -481,7 +495,9 @@ async function onSubmitRequest() {
     for (const file of otherFiles)
       form.append('other_documents', file)
     const created = await $api<{ id: string }>('/v1/channels/sms/dlt/request', { method: 'POST', body: form })
-    await $api(`/v1/channels/sms/dlt/request/${created.id}/recharge`, { method: 'POST' })
+    const base = `/v1/channels/sms/dlt/request/${created.id}`
+
+    await payForOrder(`${base}/recharge`, `${base}/razorpay/order`, `${base}/razorpay/verify`, 'DLT registration service')
     requestCompanyName.value = ''; requestCompanyPan.value = ''; requestCompanyGst.value = ''
     requestSignatoryName.value = ''; requestContactNumber.value = ''; requestContactEmail.value = ''; requestAadhar.value = ''
     requestNotes.value = ''
