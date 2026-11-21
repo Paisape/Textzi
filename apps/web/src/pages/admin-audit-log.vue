@@ -17,6 +17,7 @@ type AuditLogRow = {
   description: string
   actor_email: string
   ip_address: string | null
+  country: string | null
   user_agent: string | null
   organization_name: string | null
   created_at: string
@@ -122,7 +123,7 @@ onMounted(load)
             <td>{{ row.description }}</td>
             <td>{{ row.actor_email }}</td>
             <td>{{ row.organization_name ?? '—' }}</td>
-            <td>{{ row.ip_address ?? '—' }}</td>
+            <td>{{ row.ip_address ?? '—' }}<span v-if="row.country"> ({{ row.country }})</span></td>
             <td
               class="text-truncate"
               style="max-inline-size: 260px;"

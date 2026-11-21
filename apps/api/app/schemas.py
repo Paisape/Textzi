@@ -1100,6 +1100,7 @@ class ActivityLogEntryOut(BaseModel):
     description: str
     actor_email: str
     ip_address: str | None
+    country: str | None = None
     user_agent: str | None
     created_at: str
 
@@ -1110,6 +1111,7 @@ class AdminAuditLogEntryOut(BaseModel):
     description: str
     actor_email: str
     ip_address: str | None
+    country: str | None = None
     user_agent: str | None
     organization_name: str | None
     created_at: str

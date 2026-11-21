@@ -19,6 +19,7 @@ from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
 from .channels import router as channels_router
 from .database import Base, engine, get_db
+from .sync_schema import sync_schema
 from .dispatch import dispatch_message as run_dispatch
 from .invoices import router as invoices_router
 from .models import ApiLog, Entity, Message, Organization, RoutePolicy, User
@@ -61,6 +62,7 @@ logger = logging.getLogger("textzi.archiving")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)  # Deployment uses Alembic migrations.
+    sync_schema()  # additive only (new tables/columns/indexes, never drops) -- a new model column can't be forgotten at deploy
 
     # Runs the daily local/R2 archive job in-process rather than depending on a separate,
     # easy-to-forget Coolify scheduled-task step. BackgroundScheduler runs jobs on its own thread,

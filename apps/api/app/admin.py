@@ -2099,7 +2099,7 @@ def get_audit_log(actor_email: str | None = None, event_type: str | None = None,
     return [
         AdminAuditLogEntryOut(
             id=r.id, event_type=r.event_type, description=r.description, actor_email=r.actor_email,
-            ip_address=r.ip_address, user_agent=r.user_agent, organization_name=org_names.get(r.organization_id), created_at=r.created_at.isoformat(),
+            ip_address=r.ip_address, country=r.country, user_agent=r.user_agent, organization_name=org_names.get(r.organization_id), created_at=r.created_at.isoformat(),
         )
         for r in rows
     ]

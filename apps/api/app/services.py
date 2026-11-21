@@ -1030,7 +1030,8 @@ def log_activity(db: Session, organization_id: str | None, event_type: str, desc
     telemetry already shown on the Sessions page instead of just an IP."""
     resolved_ip = ip_address if ip_address is not None else (client_ip(request) if request else None)
     user_agent = request.headers.get("user-agent", "")[:300] if request else None
-    db.add(AccountActivity(organization_id=organization_id, user_id=user_id, actor_email=actor_email or "", event_type=event_type, description=description, ip_address=resolved_ip, user_agent=user_agent))
+    country = request_country(request) if request else country_for_ip(resolved_ip)
+    db.add(AccountActivity(organization_id=organization_id, user_id=user_id, actor_email=actor_email or "", event_type=event_type, description=description, ip_address=resolved_ip, country=country, user_agent=user_agent))
 
 
 ALL_CAPABILITIES = {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view", "sms:send"}
