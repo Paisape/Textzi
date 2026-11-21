@@ -3,6 +3,11 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+# Country database for log geolocation. Bump GEOIP_REFRESH (--build-arg) on a monthly rebuild to
+# get the new month's file past the layer cache.
+ARG GEOIP_REFRESH=1
+COPY fetch_geoip.py .
+RUN python fetch_geoip.py
 # Runs as a non-root user rather than the image's default root -- if a dependency vulnerability
 # ever led to arbitrary file write/RCE, this removes root-in-container as an extra blast-radius
 # layer. /app/uploads is where uploaded files/local archives are written (see config.py's

@@ -127,6 +127,12 @@ onMounted(loadCompanyInfo)
       <VDivider class="my-6 border-opacity-25" />
       <div class="text-center text-caption footer-copyright">
         © 2026 {{ companyInfo?.company_name ?? 'Textzi' }}. All rights reserved.
+        <a
+          href="https://db-ip.com"
+          target="_blank"
+          rel="noopener noreferrer"
+          class="text-medium-emphasis"
+        >IP Geolocation by DB-IP</a>
       </div>
     </VContainer>
   </footer>

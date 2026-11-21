@@ -34,7 +34,7 @@ services:
     # shared server. For local development, docker-compose.override.yml re-adds the host mapping
     # automatically (Compose loads it by convention) so `curl localhost:8000` keeps working.
     expose: ["8000"]
-    volumes: [uploads_data:/app/uploads, geoip_data:/app/geoip]
+    volumes: [uploads_data:/app/uploads]
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
@@ -49,4 +49,3 @@ services:
 volumes:
   postgres_data:
   uploads_data:
-  geoip_data:
