@@ -29,7 +29,7 @@ export function useStepUpAuth() {
         method: 'POST',
         body: { code: code.value },
       })
-      useCookie('accessToken').value = data.access_token
+      setAccessToken(data.access_token)
       dialogOpen.value = false
       resolver?.(true)
     }

@@ -39,7 +39,7 @@ const turnstileRef = ref<InstanceType<typeof TurnstileWidget>>()
 const sessionExpiredNotice = route.query.sessionExpired === '1'
 
 async function afterLogin(accessToken: string) {
-  useCookie('accessToken').value = accessToken
+  setAccessToken(accessToken)
   await nextTick()
 
   // Forces the shared auth store to refetch, not just this function's own local variable --

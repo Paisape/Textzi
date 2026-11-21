@@ -9,6 +9,12 @@ const SESSION_CHECK_ENDPOINTS = ['/v1/auth/me', '/v1/auth/permissions']
 
 let handlingSessionExpiry = false
 
+// Secure only over https so plain-http local dev still works; Lax keeps the cookie off cross-site
+// subrequests.
+export function setAccessToken(token: string) {
+  useCookie('accessToken', { sameSite: 'lax', secure: location.protocol === 'https:' }).value = token
+}
+
 export const $api = ofetch.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || '/api',
   async onRequest({ options }) {

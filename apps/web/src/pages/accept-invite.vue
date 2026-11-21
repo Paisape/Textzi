@@ -33,7 +33,7 @@ async function onSubmit() {
       method: 'POST',
       body: { token: token.value, full_name: fullName.value, mobile: mobile.value, password: password.value },
     })
-    useCookie('accessToken').value = data.access_token
+    setAccessToken(data.access_token)
     await nextTick()
     router.push('/dashboard')
   }
