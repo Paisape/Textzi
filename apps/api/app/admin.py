@@ -14,7 +14,7 @@ from sqlalchemy import bindparam, delete, func, or_, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .auth import _issue_otp, _revoke_all_sessions, _send_platform_otp_sms, STEP_UP_WINDOW_MINUTES
-from .channels import _mark_dlt_request_paid
+from .channels import _mark_dlt_request_paid, _mark_subscription_paid
 from .config import settings
 from .database import get_db
 from .email_service import render_email, send_email
@@ -27,7 +27,7 @@ from .models import (
 from .schemas import (
     AdminApiLogOut, AdminAuditLogEntryOut, AdminCreateCustomerRequest, AdminCreateCustomerResponse, AdminInviteUserRequest, AdminMessageOut, AdminPlatformMessageOut, AdminResendVerificationResponse, AdminResetPasswordResponse,
     AnalyticsSummaryOut, ContactMessageAdminOut, TestimonialAdminCreateRequest, TestimonialAdminOut, TestimonialOut, TestimonialStatusUpdateRequest, VisitorSessionAdminOut,
-    ChannelFeeConfigOut, ChannelFeeConfigUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
+    ChannelFeeConfigOut, ChannelFeeConfigUpdate, DltAssetStatusUpdate, CustomerAdminOut, CustomerDeleteResponse, DeliveryAttemptTelemetryOut, DeliveryStatusCodeRuleCreate, DeliveryStatusCodeRuleOut, DltDocumentOut, DltOnboardingRequestAdminOut,
     PaymentMethodConfigOut, PaymentMethodConfigUpdate,
     CreditNoteOut, DltOnboardingRequestStatusUpdate, EntityAdminDetailOut, EntityCreate, EntityStatusUpdateRequest, HeaderAdminOut, HeaderCreate, InvoiceAdminOut, InvoiceCancelRequest, InvoiceOut,
     MessageTelemetryOut, AdminAlertOut, OrganizationOverviewResponse, PaymentDetailOut, PaymentOrderAdminOut, PaymentOrderReconcileResponse, PeCreate, PeIdAdminOut,
@@ -42,6 +42,7 @@ from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, pull_payment_status, sync_invoice_to_zoho
 from . import archive_jobs
 from .services import DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .models import ChannelSubscription
 from .services import client_ip
 from .team import INVITE_TTL_HOURS
 
@@ -317,6 +318,41 @@ def create_api_key(entity_id: str, db: Session = Depends(get_db)):
     item = ApiKey(entity_id=entity_id, key_hash=hash_api_key(raw_key), active=True)
     db.add(item); db.commit()
     return {"api_key": raw_key, "warning": "Store this key securely; it will not be shown again."}
+
+
+@router.patch("/pe-ids/{pe_id}/status", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_pe_status(pe_id: str, payload: DltAssetStatusUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    """Approves (active) or rejects/disables (inactive) a PE ID -- customer-submitted ones start
+    pending, since nothing else verifies the certificate they uploaded."""
+    pe = db.get(PeId, pe_id)
+    if not pe:
+        raise HTTPException(status_code=404, detail="PE ID not found")
+    pe.status = StatusEnum(payload.status)
+    entity = db.get(Entity, pe.entity_id)
+    log_activity(db, entity.organization_id if entity else None, "pe_id_status_changed", f"PE ID {pe.value} set to {payload.status}.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return {"id": pe.id, "status": pe.status}
+
+
+@router.patch("/headers/{header_id}/status", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def update_header_status(header_id: str, payload: DltAssetStatusUpdate, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    header = db.get(HeaderModel, header_id)
+    if not header:
+        raise HTTPException(status_code=404, detail="Header not found")
+    header.status = StatusEnum(payload.status)
+    pe = db.get(PeId, header.pe_id)
+    entity = db.get(Entity, pe.entity_id) if pe else None
+    log_activity(db, entity.organization_id if entity else None, "header_status_changed", f"Sender header {header.value} set to {payload.status}.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return {"id": header.id, "status": header.status}
+
+
+@router.get("/pe-ids/{pe_id}/certificate", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def download_pe_certificate(pe_id: str, db: Session = Depends(get_db)):
+    pe = db.get(PeId, pe_id)
+    if not pe or not pe.certificate_path or not os.path.exists(pe.certificate_path):
+        raise HTTPException(status_code=404, detail="No certificate on file for this PE ID")
+    return FileResponse(pe.certificate_path)
 
 
 @router.get("/entities/{entity_id}/dlt-assets", dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
@@ -1584,6 +1620,10 @@ def reconcile_payment_order(order_id: str, db: Session = Depends(get_db)):
                     request_row = db.get(DltOnboardingRequest, order.reference_id)
                     if request_row and request_row.status == "pending_payment":
                         _mark_dlt_request_paid(db, request_row, payment_id)
+                elif order.purpose == "channel_subscription":
+                    subscription = db.get(ChannelSubscription, (entity.id, "sms"))
+                    if not (subscription and subscription.paid_at):
+                        _mark_subscription_paid(db, entity)
                 else:
                     credits = None
                     if order.price_per_sms:
@@ -2364,6 +2404,13 @@ def get_admin_notifications(db: Session = Depends(get_db)):
         notifications.append(AdminAlertOut(
             id="bank-transfer-pending", severity="info", title=f"{pending_bank_transfers} bank transfer request{'s' if pending_bank_transfers != 1 else ''} awaiting review",
             description="Customers are waiting on a manual bank-transfer top-up to be verified and credited.", link="/admin-bank-transfer-requests",
+        ))
+
+    pending_dlt_assets = (db.scalar(select(func.count()).select_from(PeId).where(PeId.status == StatusEnum.pending)) or 0) + (db.scalar(select(func.count()).select_from(HeaderModel).where(HeaderModel.status == StatusEnum.pending)) or 0)
+    if pending_dlt_assets:
+        notifications.append(AdminAlertOut(
+            id="dlt-assets-pending", severity="info", title=f"{pending_dlt_assets} PE ID/header{'s' if pending_dlt_assets != 1 else ''} awaiting approval",
+            description="Customer-submitted PE IDs and sender headers can't send until an admin approves them.", link="/dlt",
         ))
 
     platform_wallet = db.get(PlatformWallet, "platform")

@@ -176,6 +176,9 @@ def _dlt_status(db: Session, entity_id: str) -> str:
     )
     if pending_request:
         return "pending_review"
+    has_pending_pe = db.scalar(select(PeId).where(PeId.entity_id == entity_id, PeId.status == Status.pending).limit(1)) is not None
+    if has_pending_pe:
+        return "pending_review"
     return "not_started"
 
 
@@ -194,6 +197,7 @@ def get_channel_status(user: User = Depends(require_user), db: Session = Depends
         subscription_paid=subscription_paid,
         dlt_status=_dlt_status(db, entity.id),
         channel_active=channel_active(db, entity.id, "sms"),
+        dev_payment_available=settings.environment == "development",
     )
 
 
@@ -226,24 +230,99 @@ def update_channel_settings(payload: ChannelSettingsUpdate, user: User = Depends
     return ChannelSettingsOut(encryption_enabled=row.encryption_enabled, dr_webhook_url=row.dr_webhook_url)
 
 
-@router.post("/subscription/recharge", response_model=RechargeResponse)
-def simulate_subscription_payment(user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
-    try:
-        entity = resolve_user_entity(db, user)
-    except DomainError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+def _mark_subscription_paid(db: Session, entity: Entity) -> None:
     subscription = db.get(ChannelSubscription, (entity.id, "sms"))
     if not subscription:
         subscription = ChannelSubscription(entity_id=entity.id, channel="sms")
         db.add(subscription)
     subscription.paid_at = datetime.now(timezone.utc)
-    fees = resolve_channel_fees(db, "sms")
-    if float(fees.subscription_price) > 0:
-        gst_amount = round(float(fees.subscription_price) * get_gst_rate(db), 2)
-        invoice = create_draft_invoice(db, entity, type="channel_subscription", base_amount=float(fees.subscription_price), gst_amount=gst_amount)
+    price = float(resolve_channel_fees(db, "sms").subscription_price)
+    if price > 0:
+        gst_amount = round(price * get_gst_rate(db), 2)
+        invoice = create_draft_invoice(db, entity, type="channel_subscription", base_amount=price, gst_amount=gst_amount)
         issue_invoice(db, invoice)
     db.commit()
+
+
+@router.post("/subscription/recharge", response_model=RechargeResponse)
+def simulate_subscription_payment(user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
+    """Development-only stand-in, same convention as the DLT request one below: marks the
+    subscription paid with no payment collected. A free (price 0) subscription needs no payment, so
+    it's the only case allowed outside development; the real path is /subscription/razorpay/*."""
+    try:
+        entity = resolve_user_entity(db, user)
+        price = float(resolve_channel_fees(db, "sms").subscription_price)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if price > 0 and settings.environment != "development":
+        raise HTTPException(status_code=403, detail="Self-service payment is a development-only stand-in; use the Razorpay checkout flow instead.")
+    _mark_subscription_paid(db, entity)
     return RechargeResponse(entity_id=entity.id, amount=0, available_balance=0, dev_note="Development mode — channel subscription marked paid directly.")
+
+
+@router.post("/subscription/razorpay/order", response_model=RazorpayOrderResponse)
+def create_subscription_order(user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
+    client, key_id = _razorpay_client(db)
+    try:
+        entity = resolve_user_entity(db, user)
+        price = float(resolve_channel_fees(db, "sms").subscription_price)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if price <= 0:
+        raise HTTPException(status_code=409, detail="This channel has no subscription fee to pay.")
+    subscription = db.get(ChannelSubscription, (entity.id, "sms"))
+    if subscription and subscription.paid_at:
+        raise HTTPException(status_code=409, detail="The channel subscription is already paid.")
+    total = round(price + round(price * get_gst_rate(db), 2), 2)  # GST-inclusive, like DLT request orders
+    amount_paise = int(round(total * 100))
+    try:
+        order = client.order.create({"amount": amount_paise, "currency": "INR", "receipt": f"s-{entity.id}", "notes": {"entity_id": entity.id, "purpose": "channel_subscription"}})
+    except razorpay.errors.BadRequestError as exc:
+        raise HTTPException(status_code=422, detail=f"Razorpay rejected the order request: {exc}") from exc
+    db.add(PaymentOrder(entity_id=entity.id, provider="razorpay", provider_order_id=order["id"], amount=total, purpose="channel_subscription", status="created", user_id=user.id))
+    db.commit()
+    return RazorpayOrderResponse(order_id=order["id"], key_id=key_id, amount_paise=amount_paise)
+
+
+@router.post("/subscription/razorpay/verify")
+def verify_subscription_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
+    client, _ = _razorpay_client(db)
+    try:
+        entity = resolve_user_entity(db, user)
+    except DomainError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Row-locked like the DLT and wallet verify endpoints, so a double-submit can't pay twice.
+    order = db.scalar(select(PaymentOrder).where(PaymentOrder.provider_order_id == payload.razorpay_order_id, PaymentOrder.entity_id == entity.id, PaymentOrder.purpose == "channel_subscription").with_for_update())
+    if not order:
+        raise HTTPException(status_code=404, detail="No matching payment order for this subscription")
+    if order.status != "created":
+        raise HTTPException(status_code=409, detail=f"This order has already been {order.status}")
+    try:
+        client.utility.verify_payment_signature({
+            "razorpay_order_id": payload.razorpay_order_id,
+            "razorpay_payment_id": payload.razorpay_payment_id,
+            "razorpay_signature": payload.razorpay_signature,
+        })
+    except razorpay.errors.SignatureVerificationError as exc:
+        order.status = "failed"
+        db.commit()
+        raise HTTPException(status_code=422, detail="Payment signature verification failed") from exc
+    try:
+        razorpay_payment = client.payment.fetch(payload.razorpay_payment_id)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="Could not confirm this payment with Razorpay right now. Please try again in a moment.") from exc
+    expected_paise = expected_order_paise(db, order)
+    if razorpay_payment.get("status") != "captured" or razorpay_payment.get("amount") != expected_paise:
+        flag_suspicious_payment(
+            db, order, entity,
+            f"expected {expected_paise} paise captured, Razorpay reports status={razorpay_payment.get('status')} amount={razorpay_payment.get('amount')}",
+            user=user,
+        )
+        db.commit()
+        raise HTTPException(status_code=422, detail=f"We couldn't automatically confirm this payment. It's been flagged for manual review -- contact support with reference {order.id} if this is urgent.")
+    order.status = "paid"
+    _mark_subscription_paid(db, entity)
+    return {"subscription_paid": True}
 
 
 # Textzi's own registered Telemarketer identity on the DLT ecosystem -- the customer must submit
@@ -282,8 +361,8 @@ def submit_self_service_dlt(
     db: Session = Depends(get_db),
 ):
     """A customer who already has their own DLT registration self-declares it here, uploads
-    the PE certificate as proof, and it's approved immediately -- no admin review, matching how
-    admin-created DLT assets already go active on creation without an approval step. Also
+    the PE certificate as proof. The PE ID and header start as pending until an admin has checked
+    the certificate (a customer must not be able to claim any sender ID and send as it). Also
     requires confirming the PE-TM chain mapping request (see PeId.pe_tm_mapping_confirmed) --
     since Textzi never touches their DLT registration in this flow, linking it to Textzi's own
     Telemarketer ID is something only the customer can do, from their own operator login. A plain
@@ -298,12 +377,12 @@ def submit_self_service_dlt(
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == pe_value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
     stored_path, _ = save_upload(certificate, f"pe-certificates/{entity.id}")
-    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_confirmed=True, status=Status.active)
+    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_confirmed=True, status=Status.pending)
     db.add(pe); db.flush()
-    header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.active)
+    header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.pending)
     db.add(header)
     db.commit(); db.refresh(pe); db.refresh(header)
-    return {"pe_id": pe.id, "header_id": header.id, "status": "approved"}
+    return {"pe_id": pe.id, "header_id": header.id, "status": "pending_review"}
 
 
 PAN_PATTERN = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
@@ -571,7 +650,7 @@ def create_my_pe_id(value: str = Form(...), operator: str = Form(...), user: Use
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
-    pe = PeId(entity_id=entity.id, value=value, operator=operator, status=Status.active)
+    pe = PeId(entity_id=entity.id, value=value, operator=operator, status=Status.pending)  # active only once an admin approves it
     db.add(pe)
     try:
         db.commit()
@@ -594,7 +673,7 @@ def create_my_header(pe_id: str, header_id: str = Form(...), value: str = Form(.
         raise HTTPException(status_code=404, detail="PE ID not found")
     if db.scalar(select(Header).where(Header.pe_id == pe_id, Header.header_id == header_id)):
         raise HTTPException(status_code=409, detail="This DLT header id is already registered for this PE ID")
-    header = Header(pe_id=pe_id, header_id=header_id, value=value, status=Status.active)
+    header = Header(pe_id=pe_id, header_id=header_id, value=value, status=Status.pending)  # active only once an admin approves it
     db.add(header)
     try:
         db.commit()

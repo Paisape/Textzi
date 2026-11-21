@@ -853,11 +853,11 @@ def enforce_topup_integrity(db: Session, order: PaymentOrder, entity: Entity, us
 def expected_order_paise(db: Session, order: PaymentOrder) -> int:
     """The paise amount Razorpay should have actually captured for this order, computed the same
     way it was at order-creation time (payments.create_order / channels.create_dlt_request_order)
-    -- wallet recharges are grossed up by GST at checkout, DLT request fees are not (their
-    total_amount is already GST-inclusive when the order is created). Uses the current GST rate,
+    -- wallet recharges are grossed up by GST at checkout, DLT request and channel subscription
+    fees are not (their order amount is already GST-inclusive when the order is created). Uses the current GST rate,
     not a rate snapshotted on the order -- a checkout completes within minutes of order creation,
     well inside any realistic window for a genuine admin-driven rate change."""
-    if order.purpose == "dlt_request":
+    if order.purpose in ("dlt_request", "channel_subscription"):
         return int(round(float(order.amount) * 100))
     return int(round(float(order.amount) * (1 + get_gst_rate(db)) * 100))
 

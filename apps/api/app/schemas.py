@@ -782,6 +782,12 @@ class ChannelStatusResponse(BaseModel):
     subscription_paid: bool
     dlt_status: str = Field(description="not_started | pending_review | approved")
     channel_active: bool
+    # True only in development: the UI uses the simulated (no-payment) endpoints instead of Razorpay.
+    dev_payment_available: bool = False
+
+
+class DltAssetStatusUpdate(BaseModel):
+    status: Literal["active", "inactive"]
 
 
 class ChannelSettingsOut(BaseModel):
