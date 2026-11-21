@@ -39,7 +39,7 @@ from .schemas import ApiSmsSendRequest, ApiSmsSendResponse, BulkSmsRecipientResu
 from .security import encrypt_secret
 from .services import (
     AuthenticationError, AuthorizationError, DomainError, RateLimitError, assert_not_opted_out, available_balance, client_ip,
-    debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, require_channel_active, resolve_entity_from_key,
+    debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, request_country, require_channel_active, resolve_entity_from_key,
     resolve_template_by_dlt_id, resolve_user_route_policy, sms_segment_credits,
 )
 
@@ -260,7 +260,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
             # CF-IPCountry is just a client header) -- truncated to the column widths the same way
             # user_agent already was, so an oversized value degrades to a truncated log entry
             # instead of a Postgres DataError replacing the real response with an unhandled 500.
-            ip_address=(caller_ip or "")[:64], country=(request.headers.get("CF-IPCountry") or "")[:4] or None,
+            ip_address=(caller_ip or "")[:64], country=(request_country(request) or "")[:4] or None,
             user_agent=request.headers.get("user-agent", "")[:300],
         ))
         db.commit()
@@ -358,7 +358,7 @@ def send_sms_bulk(payload: BulkSmsSendRequest, request: Request, x_api_key: str 
         db.add(ApiLog(
             request_id=request_id, entity_id=entity_id, endpoint=request.url.path, status_code=status_code,
             latency_ms=int((time.perf_counter()-started)*1000), metadata_json=metadata,
-            ip_address=(caller_ip or "")[:64], country=(request.headers.get("CF-IPCountry") or "")[:4] or None,
+            ip_address=(caller_ip or "")[:64], country=(request_country(request) or "")[:4] or None,
             user_agent=request.headers.get("user-agent", "")[:300],
         ))
         db.commit()

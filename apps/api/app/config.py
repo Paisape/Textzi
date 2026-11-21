@@ -77,6 +77,10 @@ class Settings(BaseSettings):
     # with full detail before its heavy fields move to local gzip, and how long the local gzip
     # file lives before promotion to R2. R2 credentials themselves live in PlatformR2Settings
     # (DB-backed, admin-editable), not here -- same convention as PlatformSmtpSettings.
+    # MaxMind GeoLite2-Country database (free, needs a MaxMind account) used by services.country_for_ip
+    # to put a country on API/visitor logs. Absent file = lookups quietly return None and the
+    # Cloudflare CF-IPCountry header is used instead.
+    geoip_db_path: str = "/app/geoip/GeoLite2-Country.mmdb"
     archive_local_after_days: int = 7
     archive_r2_after_days: int = 30
 

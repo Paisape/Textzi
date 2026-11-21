@@ -14,7 +14,7 @@ from .email_service import render_email, send_email
 from .models import ContactMessage, PageView, RateCard, Testimonial, VisitorSession
 from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, PublicTurnstileConfigOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
 from .security import decode_access_token
-from .services import RateLimitError, client_ip, enforce_ip_rate_limit, enforce_rate_limit, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
+from .services import RateLimitError, client_ip, enforce_ip_rate_limit, enforce_rate_limit, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, request_country, rate_card_slabs
 from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
@@ -170,7 +170,7 @@ def track_visit(payload: TrackVisitRequest, request: Request, authorization: str
         browser, os_name, device_type = parse_user_agent(request.headers.get("User-Agent"))
         session = VisitorSession(
             ip_address=client_ip(request),
-            country=request.headers.get("CF-IPCountry"),
+            country=request_country(request),
             browser=browser,
             os=os_name,
             device_type=device_type,

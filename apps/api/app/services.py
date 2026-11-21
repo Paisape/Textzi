@@ -553,6 +553,32 @@ def enforce_rate_limit(key: str, max_requests: int, window_seconds: int, amount:
         return
 
 
+_geoip_reader = None
+
+
+def country_for_ip(ip: str | None) -> str | None:
+    """Two-letter country code for an IP from the local GeoLite2 file, or None if the file isn't
+    installed, the IP is private/unknown, or it isn't a valid address."""
+    global _geoip_reader
+    if not ip:
+        return None
+    if _geoip_reader is None:
+        if not os.path.exists(settings.geoip_db_path):
+            return None
+        import geoip2.database
+        _geoip_reader = geoip2.database.Reader(settings.geoip_db_path)
+    import geoip2.errors
+    try:
+        return _geoip_reader.country(ip).country.iso_code
+    except (geoip2.errors.AddressNotFoundError, ValueError):
+        return None
+
+
+def request_country(request: Request) -> str | None:
+    """GeoIP lookup of the caller's IP, falling back to Cloudflare's CF-IPCountry header."""
+    return country_for_ip(client_ip(request)) or request.headers.get("CF-IPCountry") or None
+
+
 def enforce_ip_rate_limit(request: Request, name: str, max_requests: int, window_seconds: int) -> None:
     """Per-caller-IP limit. Skipped when the IP is a private address -- that means the API is behind
     a proxy and TRUST_PROXY_HEADERS is off, so every user would share one bucket and throttle each
