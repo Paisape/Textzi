@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17-alpine@sha256:526f86d93c6ea08fd3f1fe5605650cacc781b2c6013169a0ad8f42c7d3d84f32
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-textzi}
@@ -16,17 +16,18 @@ services:
       timeout: 5s
       retries: 10
   redis:
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     restart: unless-stopped
+    # Only holds rate-limit counters (no volume, nothing to lose on restart). Required so the
+    # deploy fails loudly instead of silently starting an unauthenticated Redis.
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?set REDIS_PASSWORD}"]
     # ports: ["6379:6379"]
-  rabbitmq:
-    image: rabbitmq:3.13-management-alpine
-    restart: unless-stopped
-    # ports: ["5672:5672", "15672:15672"]
   api:
     build: ./apps/api
     restart: unless-stopped
     env_file: .env
+    environment:
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
     # No host port published here -- a reverse proxy in front of this stack (e.g. Coolify's
     # Traefik) reaches this container directly over the internal Docker network via its exposed
     # port, so binding it to the host too is unnecessary and risks "port already allocated" on a
@@ -37,7 +38,6 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_started }
-      rabbitmq: { condition: service_started }
   web:
     build:
       context: ./apps/web
