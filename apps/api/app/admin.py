@@ -42,6 +42,7 @@ from .providers import ttbs_delivery_status_description
 from .zoho_books import ZohoCallError, link_organization, pull_payment_status, sync_invoice_to_zoho
 from . import archive_jobs
 from .services import DomainError, credit_wallet, debit_wallet, expected_order_paise, expected_topup_credits, flag_refunded_payment, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, log_activity, mask_aadhar, mask_mobile, quote_credits, rate_card_slabs, redact_otp, resolve_primary_user, resolve_rate_card, validate_template_body, TOPUP_MISMATCH_TOLERANCE
+from .services import client_ip
 from .team import INVITE_TTL_HOURS
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -61,22 +62,34 @@ def _session_revoked(claims: dict, db: Session) -> bool:
     return not session or session.revoked_at is not None
 
 
-def require_admin(x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def _bootstrap_key_ok(x_admin_key: str, request: Request) -> bool:
+    """The bootstrap key is break-glass: when ADMIN_KEY_ALLOWED_IPS is set, it only works from
+    those addresses, so a leaked key alone isn't enough."""
+    if not hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
+        return False
+    allowed = [ip.strip() for ip in settings.admin_key_allowed_ips.split(",") if ip.strip()]
+    return not allowed or client_ip(request) in allowed
+
+
+def require_admin(request: Request, x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Accepts either the bootstrap X-Admin-Key (for scripting/curl) or a Bearer token belonging
     to a logged-in user with an admin-tier role (Super Admin / Operator Admin), for a real admin
     login through the normal auth flow."""
     if x_admin_key:
         if settings.environment != "development" and settings.admin_bootstrap_key.startswith("development-"):
             raise HTTPException(status_code=503, detail="Admin key is not configured")
-        if hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
+        if _bootstrap_key_ok(x_admin_key, request):
             return
 
     if authorization and authorization.startswith("Bearer "):
         try:
             claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
-            user = db.get(User, claims.get("sub"))
-            if user and user.role in ADMIN_ROLES and user.status == UserStatus.active and not _session_revoked(claims, db):
-                return
+            # A password-only login on a 2FA account yields an "mfa" token -- it only exists to be
+            # exchanged at /login/verify-2fa, never as an API credential.
+            if claims.get("purpose") != "mfa":
+                user = db.get(User, claims.get("sub"))
+                if user and user.role in ADMIN_ROLES and user.status == UserStatus.active and not _session_revoked(claims, db):
+                    return
         except jwt.PyJWTError:
             pass
 
@@ -96,18 +109,19 @@ def require_staff(area: str):
     (X-Admin-Key or a logged-in user's Bearer token) as require_admin, since the bootstrap key
     isn't tied to any single role and should keep bypassing every area check the same way it
     bypasses require_admin."""
-    def _dependency(x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    def _dependency(request: Request, x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
         if x_admin_key:
             if settings.environment != "development" and settings.admin_bootstrap_key.startswith("development-"):
                 raise HTTPException(status_code=503, detail="Admin key is not configured")
-            if hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
+            if _bootstrap_key_ok(x_admin_key, request):
                 return
         if authorization and authorization.startswith("Bearer "):
             try:
                 claims = decode_access_token(authorization.removeprefix("Bearer ").strip())
-                user = db.get(User, claims.get("sub"))
-                if user and user.role in STAFF_AREA_ROLES[area] and user.status == UserStatus.active and not _session_revoked(claims, db):
-                    return
+                if claims.get("purpose") != "mfa":
+                    user = db.get(User, claims.get("sub"))
+                    if user and user.role in STAFF_AREA_ROLES[area] and user.status == UserStatus.active and not _session_revoked(claims, db):
+                        return
             except jwt.PyJWTError:
                 pass
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Access required: provide X-Admin-Key or log in with an authorized account")
@@ -130,7 +144,7 @@ def _caller_email(authorization: str | None, db: Session) -> str:
     return "admin (bootstrap key)"
 
 
-def require_admin_recent_2fa(x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+def require_admin_recent_2fa(request: Request, x_admin_key: str | None = Header(default=None), authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
     """Stacks alongside require_admin on the admin Settings-group endpoints. The bootstrap
     X-Admin-Key already fully authenticates independent of any single user's identity, so it
     skips this check entirely -- same bypass require_admin itself grants it. A real admin-user
@@ -139,7 +153,7 @@ def require_admin_recent_2fa(x_admin_key: str | None = Header(default=None), aut
     -- see require_recent_2fa's docstring in auth.py: a 401 here collides with $api's global
     session-expiry interceptor and force-logs-out the admin instead of showing the step-up
     dialog."""
-    if x_admin_key and hmac.compare_digest(x_admin_key, settings.admin_bootstrap_key):
+    if x_admin_key and _bootstrap_key_ok(x_admin_key, request):
         return
     if not authorization or not authorization.startswith("Bearer "):
         return  # require_admin (the sibling dependency) already rejects this case
@@ -777,12 +791,13 @@ def invite_staff_user(payload: AdminInviteUserRequest, request: Request, authori
             caller = None
     if payload.role.value in ADMIN_ROLES and caller and caller.role != UserRole.super_admin.value:
         raise HTTPException(status_code=403, detail="Only Super Admin can invite an admin-tier role")
-    if db.scalar(select(User).where(User.email == payload.email)):
+    email = payload.email.strip().lower()
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
     token = secrets.token_urlsafe(32)
     invitation = Invitation(
-        organization_id=None, email=payload.email, invited_by_user_id=caller.id if caller else None,
+        organization_id=None, email=email, invited_by_user_id=caller.id if caller else None,
         token_hash=hash_api_key(token), role=payload.role.value,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS),
     )
@@ -792,7 +807,7 @@ def invite_staff_user(payload: AdminInviteUserRequest, request: Request, authori
     accept_url = f"{settings.web_origin}/accept-invite?token={token}"
     send_email(
         db,
-        to=payload.email,
+        to=email,
         subject="You've been invited to join the Textzi team",
         html_body=render_email(
             "You've been invited to Textzi",
@@ -2322,7 +2337,7 @@ def get_platform_message_telemetry(message_id: str, db: Session = Depends(get_db
     )
 
 
-@router.get("/notifications", response_model=list[AdminAlertOut], dependencies=[Depends(require_admin)])
+@router.get("/notifications", response_model=list[AdminAlertOut], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def get_admin_notifications(db: Session = Depends(get_db)):
     """Real signals instead of the nav bar's previously-hardcoded demo data: pending DLT requests
     needing review, a low platform wallet balance (which silently degrades login-OTP sending --

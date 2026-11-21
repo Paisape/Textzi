@@ -27,7 +27,7 @@ from .schemas import (
     RegistrationStatusResponse, TokenResponse, TwoFactorCodeRequest, UserProfile, Verify2faRequest, VerifyEmailRequest, VerifyMobileRequest,
 )
 from .security import create_access_token, decode_access_token, decrypt_secret, generate_otp, hash_otp, hash_password, normalize_recovery_code, verify_password, verify_totp
-from .services import DomainError, RateLimitError, capabilities_for, client_ip, debit_platform_wallet, enforce_rate_limit, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
+from .services import DomainError, RateLimitError, capabilities_for, client_ip, debit_platform_wallet, enforce_ip_rate_limit, enforce_rate_limit, get_platform_sms_settings, log_activity, mask_mobile, redact_otp, redact_payload_values, render_template, sms_segment_credits
 from .turnstile import require_turnstile
 
 logger = logging.getLogger("textzi.auth")
@@ -229,15 +229,24 @@ def send_platform_test_sms(db: Session, recipient: str) -> PlatformMessage:
 
 OTP_ISSUE_COOLDOWN_SECONDS = 30
 OTP_ISSUE_MAX_PER_HOUR = 5
+OTP_IP_MAX_PER_HOUR = 10
+OTP_DESTINATION_MAX_PER_HOUR = 3
 
 
 @router.post("/request-mobile-otp", response_model=RequestMobileOtpResponse)
-def request_mobile_otp(payload: RequestMobileOtpRequest, db: Session = Depends(get_db)):
+def request_mobile_otp(payload: RequestMobileOtpRequest, request: Request, db: Session = Depends(get_db)):
     """This endpoint is intentionally unauthenticated (it runs before a session token exists, as
     part of register -> verify-email -> verify-mobile), and the mobile number is caller-supplied
     -- without a limit, it's an open SMS-bomb-any-number-you-like primitive that also drains the
     platform wallet per send. Rate-limited per account: a short cooldown between requests plus a
     hard cap per rolling hour."""
+    # user_ids are free to create, so the per-account limits below don't stop SMS pumping on their
+    # own -- also cap per caller IP and per destination number.
+    try:
+        enforce_ip_rate_limit(request, "otp:ip", OTP_IP_MAX_PER_HOUR, 3600)
+        enforce_rate_limit(f"ratelimit:otp:dest:{payload.mobile}", OTP_DESTINATION_MAX_PER_HOUR, 3600)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     user = db.get(User, payload.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -289,6 +298,10 @@ def verify_mobile(payload: VerifyMobileRequest, db: Session = Depends(get_db)):
 MFA_TOKEN_TTL_MINUTES = 5
 STEP_UP_WINDOW_MINUTES = 15
 LOGIN_MAX_ATTEMPTS = 5
+LOGIN_IP_MAX_PER_WINDOW = 30
+LOGIN_IP_WINDOW_SECONDS = 900
+FORGOT_PASSWORD_IP_MAX_PER_HOUR = 10
+FORGOT_PASSWORD_EMAIL_MAX_PER_HOUR = 3
 LOGIN_LOCKOUT_MINUTES = 15
 TOTP_MAX_ATTEMPTS = 5
 TOTP_LOCKOUT_MINUTES = 15
@@ -373,8 +386,14 @@ def _verify_2fa_code(db: Session, two_factor: TwoFactorAuth, code: str) -> None:
 
 @router.post("/login", response_model=TokenResponse)
 def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)):
-    require_turnstile(payload.turnstile_token, request, db)
     ip = client_ip(request)
+    # The per-account lockout below can be abused to lock someone else out and doesn't slow a
+    # spray across many accounts -- this caps attempts per source IP.
+    try:
+        enforce_ip_rate_limit(request, "login", LOGIN_IP_MAX_PER_WINDOW, LOGIN_IP_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
+    require_turnstile(payload.turnstile_token, request, db)
     user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
     if user and user.login_locked_until and user.login_locked_until > datetime.now(timezone.utc):
         raise HTTPException(status_code=429, detail="Too many failed login attempts; try again later")
@@ -574,9 +593,18 @@ def forgot_password(payload: ForgotPasswordRequest, request: Request, db: Sessio
     want in front of your most privileged accounts. Staff passwords only ever get reset by
     another admin (POST /v1/admin/users/{id}/reset-password). The response is identical whether
     or not the email exists or belongs to staff, to avoid leaking account existence/tier."""
+    try:
+        enforce_ip_rate_limit(request, "forgot:ip", FORGOT_PASSWORD_IP_MAX_PER_HOUR, 3600)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     require_turnstile(payload.turnstile_token, request, db)
     generic = ForgotPasswordResponse(message="If an account with that email exists, we've sent a password reset code.")
-    user = db.scalar(select(User).where(func.lower(User.email) == payload.email.strip().lower()))
+    email = payload.email.strip().lower()
+    try:
+        enforce_rate_limit(f"ratelimit:forgot:email:{email}", FORGOT_PASSWORD_EMAIL_MAX_PER_HOUR, 3600)
+    except RateLimitError:
+        return generic  # same response as any other case, so this reveals nothing about the account
+    user = db.scalar(select(User).where(func.lower(User.email) == email))
     # A suspended account must stay locked out through this public, unauthenticated path -- an
     # admin suspended it for a reason (abuse, fraud, non-payment), and letting anyone silently set
     # a new password for it defeats the suspension entirely: the account activates on whatever

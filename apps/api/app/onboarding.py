@@ -91,6 +91,10 @@ def update_company_profile(
     db: Session = Depends(get_db),
 ):
     org = _require_own_organization(user, db)
+    if org.profile_completed_at:
+        # Name/PAN/GSTIN feed GST invoices -- once the profile is completed, changes go through an
+        # admin-reviewed request (POST /v1/auth/profile-change-requests), not a direct edit.
+        raise HTTPException(status_code=403, detail="Company details are locked after setup. Submit a profile change request instead.")
     if not PAN_PATTERN.match(pan.strip().upper()):
         raise HTTPException(status_code=422, detail="Enter a valid PAN (e.g. ABCDE1234F)")
     gstin = (gstin or "").strip().upper() or None

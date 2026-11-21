@@ -178,7 +178,9 @@ class VerifyEmailRequest(BaseModel):
 
 class RequestMobileOtpRequest(BaseModel):
     user_id: str
-    mobile: str = Field(pattern=r"^[1-9][0-9]{9,14}$")
+    # Indian mobiles only (10 digits, optional 91 prefix) -- this unauthenticated endpoint sends a
+    # real SMS, so accepting any country would make it an international SMS-pumping primitive.
+    mobile: str = Field(pattern=r"^(91)?[6-9][0-9]{9}$")
 
 
 class RequestMobileOtpResponse(BaseModel):
@@ -731,11 +733,11 @@ class PublicTestimonialOut(BaseModel):
 
 
 class TrackVisitRequest(BaseModel):
-    session_id: str | None = None
-    path: str
-    referrer: str | None = None
-    viewport_width: int | None = None
-    viewport_height: int | None = None
+    session_id: str | None = Field(default=None, max_length=64)
+    path: str = Field(max_length=500)
+    referrer: str | None = Field(default=None, max_length=500)
+    viewport_width: int | None = Field(default=None, ge=0, le=20000)
+    viewport_height: int | None = Field(default=None, ge=0, le=20000)
 
 
 class TrackVisitResponse(BaseModel):

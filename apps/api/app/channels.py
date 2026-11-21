@@ -34,7 +34,7 @@ from .schemas import (
     ReportsSummaryResponse,
 )
 from .security import decrypt_secret, encrypt_secret, generate_otp, hash_api_key, hash_otp
-from .services import DomainError, channel_active, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
+from .services import DomainError, RateLimitError, channel_active, enforce_rate_limit, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, mask_aadhar, mask_email, mask_mobile, require_channel_active, resolve_channel_fees, resolve_user_entity, save_upload, validate_template_body
 
 API_KEY_OTP_TTL_MINUTES = 10
 API_KEY_OTP_MAX_ATTEMPTS = 5
@@ -44,7 +44,15 @@ ACTION_LABELS = {
 }
 
 
+API_KEY_OTP_MAX_PER_WINDOW = 5
+
+
 def _issue_api_key_otp(db: Session, user: User, action: str) -> ApiKeyOtpResponse:
+    # Every issue sends a real SMS/email (and debits the platform SMS wallet) -- cap it per user.
+    try:
+        enforce_rate_limit(f"ratelimit:action-otp:{user.id}", API_KEY_OTP_MAX_PER_WINDOW, API_KEY_OTP_TTL_MINUTES * 60)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     code = generate_otp()
     expires_at = datetime.now(timezone.utc) + timedelta(minutes=API_KEY_OTP_TTL_MINUTES)
     db.add(ApiKeyActionOtp(user_id=user.id, action=action, code_hash=hash_otp(code), expires_at=expires_at))
@@ -219,7 +227,7 @@ def update_channel_settings(payload: ChannelSettingsUpdate, user: User = Depends
 
 
 @router.post("/subscription/recharge", response_model=RechargeResponse)
-def simulate_subscription_payment(user: User = Depends(require_user), db: Session = Depends(get_db)):
+def simulate_subscription_payment(user: User = Depends(require_capability("channels:manage")), db: Session = Depends(get_db)):
     try:
         entity = resolve_user_entity(db, user)
     except DomainError as exc:
@@ -270,7 +278,7 @@ def submit_self_service_dlt(
     header_value: str = Form(...),
     certificate: UploadFile = File(...),
     pe_tm_mapping_confirmed: bool = Form(...),
-    user: User = Depends(require_user),
+    user: User = Depends(require_capability("channels:manage")),
     db: Session = Depends(get_db),
 ):
     """A customer who already has their own DLT registration self-declares it here, uploads
@@ -330,7 +338,7 @@ def submit_dlt_request(
     director_list: UploadFile = File(...),
     authorization_letter: UploadFile = File(...),
     other_documents: list[UploadFile] | None = File(default=None),
-    user: User = Depends(require_user),
+    user: User = Depends(require_capability("channels:manage")),
     db: Session = Depends(get_db),
 ):
     """A customer without existing DLT registration asks Textzi to handle it for them. Fees are

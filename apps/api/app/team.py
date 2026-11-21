@@ -2,11 +2,12 @@
 invite creates a new User whose organization_id is inherited directly from the invitation,
 skipping org onboarding entirely (the router guard in the frontend only forces onboarding when
 organization_id is null)."""
+import html
 import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -39,7 +40,8 @@ def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = D
         raise HTTPException(status_code=422, detail="Complete organisation onboarding before inviting teammates")
     if payload.role not in INVITABLE_ROLES:
         raise HTTPException(status_code=422, detail="That role cannot be granted through a team invite")
-    if db.scalar(select(User).where(User.email == payload.email)):
+    email = payload.email.strip().lower()
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
     try:
         check_seat_quota(db, user.organization_id)
@@ -48,7 +50,7 @@ def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = D
 
     token = secrets.token_urlsafe(32)
     invitation = Invitation(
-        organization_id=user.organization_id, email=payload.email, invited_by_user_id=user.id,
+        organization_id=user.organization_id, email=email, invited_by_user_id=user.id,
         token_hash=hash_api_key(token), role=payload.role.value, channel_scope=payload.channel_scope,
         page_scope=payload.page_scope if payload.channel_scope else None,
         expires_at=datetime.now(timezone.utc) + timedelta(hours=INVITE_TTL_HOURS),
@@ -60,11 +62,11 @@ def invite_teammate(payload: TeamInviteRequest, request: Request, user: User = D
     accept_url = f"{settings.web_origin}/accept-invite?token={token}"
     send_email(
         db,
-        to=payload.email,
-        subject=f"{user.full_name} invited you to join their Textzi team",
+        to=email,
+        subject=f"{user.full_name} invited you to join their Textzi team".replace("\r", " ").replace("\n", " "),
         html_body=render_email(
             "You've been invited to Textzi",
-            f"<p>{user.full_name} invited you to join their organization on Textzi as {payload.role.value.replace('_', ' ').title()}.</p>"
+            f"<p>{html.escape(user.full_name)} invited you to join their organization on Textzi as {payload.role.value.replace('_', ' ').title()}.</p>"
             f"<p>Click below to set up your account. This invite expires in {INVITE_TTL_HOURS} hours.</p>",
             cta_label="Accept Invite",
             cta_url=accept_url,
@@ -91,11 +93,11 @@ def accept_invite(payload: AcceptInviteRequest, request: Request, db: Session = 
         raise HTTPException(status_code=422, detail="This invite link is invalid or has already been used")
     if invitation.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=422, detail="This invite link has expired")
-    if db.scalar(select(User).where(User.email == invitation.email)):
+    if db.scalar(select(User).where(func.lower(User.email) == invitation.email.lower())):
         raise HTTPException(status_code=409, detail="An account with this email already exists")
 
     user = User(
-        email=invitation.email, password_hash=hash_password(payload.password), full_name=payload.full_name,
+        email=invitation.email.lower(), password_hash=hash_password(payload.password), full_name=payload.full_name,
         mobile=payload.mobile, organization_id=invitation.organization_id, role=invitation.role, status=UserStatus.active,
         email_verified=True, channel_scope=invitation.channel_scope, page_scope=invitation.page_scope,
     )

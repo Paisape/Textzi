@@ -14,7 +14,7 @@ from .email_service import render_email, send_email
 from .models import ContactMessage, PageView, RateCard, Testimonial, VisitorSession
 from .schemas import ContactRequest, ContactResponse, PublicApiBaseUrlOut, PublicCompanyInfoOut, PublicRateCardOut, PublicTestimonialOut, PublicTurnstileConfigOut, RateCardSlabOut, TrackVisitRequest, TrackVisitResponse
 from .security import decode_access_token
-from .services import RateLimitError, client_ip, enforce_rate_limit, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
+from .services import RateLimitError, client_ip, enforce_ip_rate_limit, enforce_rate_limit, get_platform_company_info, get_platform_turnstile_settings, parse_user_agent, rate_card_slabs
 from .turnstile import require_turnstile
 
 router = APIRouter(prefix="/v1/public", tags=["public"])
@@ -23,6 +23,8 @@ router = APIRouter(prefix="/v1/public", tags=["public"])
 # on every call, same abuse shape as register.
 CONTACT_RATE_LIMIT_MAX_REQUESTS = 10
 CONTACT_RATE_LIMIT_WINDOW_SECONDS = 3600
+TRACK_RATE_LIMIT_MAX_REQUESTS = 120
+TRACK_RATE_LIMIT_WINDOW_SECONDS = 60
 
 
 @router.get("/api-base-url", response_model=PublicApiBaseUrlOut)
@@ -159,6 +161,10 @@ def track_visit(payload: TrackVisitRequest, request: Request, authorization: str
     database. If the caller happens to already be logged in (Authorization header present and
     valid), the session is linked to that user_id -- best-effort, a missing/invalid/expired token
     here is never an error, since most visits to this endpoint are genuinely anonymous."""
+    try:
+        enforce_ip_rate_limit(request, "track", TRACK_RATE_LIMIT_MAX_REQUESTS, TRACK_RATE_LIMIT_WINDOW_SECONDS)
+    except RateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc)) from exc
     session = db.get(VisitorSession, payload.session_id) if payload.session_id else None
     if not session:
         browser, os_name, device_type = parse_user_agent(request.headers.get("User-Agent"))

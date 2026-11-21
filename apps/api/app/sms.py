@@ -12,7 +12,7 @@ from .config import settings
 from .database import get_db
 from .dispatch import dispatch_message
 from .models import Message, OptOutEntry, Status, Template, User
-from .permissions import require_channel_scope
+from .permissions import require_capability, require_channel_scope
 from .schemas import ApiSmsSendResponse, MessageOut, OptOutEntryCreate, OptOutEntryOut, SmsSendRequest, SmsSendResponse, TemplateSummary
 from .security import decrypt_recipient_lenient, encrypt_secret
 from .services import DomainError, RateLimitError, assert_not_opted_out, available_balance, debit_wallet, enforce_rate_limit, is_encryption_enabled, mask_mobile, render_template, require_channel_active, resolve_routes, resolve_template, resolve_user_entity, sms_segment_credits
@@ -31,7 +31,7 @@ def list_my_templates(user: User = Depends(require_user), db: Session = Depends(
 
 
 @router.post("/compose", response_model=ApiSmsSendResponse)
-def compose_sms(payload: SmsSendRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def compose_sms(payload: SmsSendRequest, user: User = Depends(require_capability("sms:send")), db: Session = Depends(get_db)):
     try:
         entity = resolve_user_entity(db, user)
         # Shared rate-limit key namespace with the external /v1/sms/send API (main.py) -- keyed

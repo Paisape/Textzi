@@ -1,3 +1,4 @@
+import ipaddress
 import os
 import re
 import uuid
@@ -16,6 +17,7 @@ from .security import decrypt_secret, hash_api_key
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png"}
+UPLOAD_MAGIC_BYTES = {".pdf": b"%PDF", ".jpg": b"\xff\xd8\xff", ".jpeg": b"\xff\xd8\xff", ".png": b"\x89PNG"}
 
 # Strict allowlist for untrusted-user-supplied rich text (webchat visitor messages) -- nh3 is a
 # Rust-backed sanitizer (same allowlist model as the Python "bleach" package, actively
@@ -116,9 +118,11 @@ def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
     ext = os.path.splitext(upload.filename or "")[1].lower()
     if ext not in ALLOWED_UPLOAD_EXTENSIONS:
         raise HTTPException(status_code=422, detail=f"Unsupported file type '{ext}'. Allowed: PDF, JPG, PNG.")
-    content = upload.file.read()
+    content = upload.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=422, detail="File is too large (max 10MB).")
+    if not content.startswith(UPLOAD_MAGIC_BYTES[ext]):
+        raise HTTPException(status_code=422, detail="File content does not match its extension.")
     directory = os.path.join(settings.uploads_dir, subdir)
     os.makedirs(directory, exist_ok=True)
     stored_name = f"{uuid.uuid4()}{ext}"
@@ -547,6 +551,19 @@ def enforce_rate_limit(key: str, max_requests: int, window_seconds: int, amount:
             raise RateLimitError(f"Rate limit exceeded: max {max_requests} requests per {window_seconds}s")
     except redis_lib.RedisError:
         return
+
+
+def enforce_ip_rate_limit(request: Request, name: str, max_requests: int, window_seconds: int) -> None:
+    """Per-caller-IP limit. Skipped when the IP is a private address -- that means the API is behind
+    a proxy and TRUST_PROXY_HEADERS is off, so every user would share one bucket and throttle each
+    other instead of the abuser."""
+    ip = client_ip(request)
+    try:
+        if not ip or ipaddress.ip_address(ip).is_private:
+            return
+    except ValueError:
+        return
+    enforce_rate_limit(f"ratelimit:{name}:{ip}", max_requests, window_seconds)
 
 
 def resolve_entity_from_key(db: Session, api_key: str, client_ip: str | None = None) -> Entity:
@@ -987,16 +1004,16 @@ def log_activity(db: Session, organization_id: str | None, event_type: str, desc
     db.add(AccountActivity(organization_id=organization_id, user_id=user_id, actor_email=actor_email or "", event_type=event_type, description=description, ip_address=resolved_ip, user_agent=user_agent))
 
 
-ALL_CAPABILITIES = {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view"}
+ALL_CAPABILITIES = {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view", "sms:send"}
 
 ROLE_CAPABILITIES: dict[str, set[str]] = {
     # activity:view (org-wide login/security history across every teammate) is deliberately not
     # granted to any of the internal sub-roles below -- it's account-owner-only, unlike
     # team:view/invoices:view which every sub-role gets for visibility into their own org.
-    UserRole.enterprise_customer.value: {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view"},
-    UserRole.sub_user.value: {"wallet:recharge", "channels:manage", "invoices:view", "team:view"},
+    UserRole.enterprise_customer.value: {"wallet:recharge", "channels:manage", "invoices:view", "team:invite", "team:view", "activity:view", "sms:send"},
+    UserRole.sub_user.value: {"wallet:recharge", "channels:manage", "invoices:view", "team:view", "sms:send"},
     UserRole.finance_user.value: {"wallet:recharge", "invoices:view", "team:view"},
-    UserRole.marketing_user.value: {"channels:manage", "team:view"},
+    UserRole.marketing_user.value: {"channels:manage", "team:view", "sms:send"},
     UserRole.read_only_user.value: {"invoices:view", "team:view"},
     # Internal-only roles: their real boundaries were never specified, so they keep today's
     # pre-existing full access rather than having a restriction invented for them here -- but

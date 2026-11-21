@@ -17,6 +17,7 @@ from .config import settings
 from .database import get_db
 from .invoicing import create_draft_invoice, issue_invoice
 from .models import PaymentOrder, User
+from .permissions import require_capability
 from .schemas import RazorpayOrderRequest, RazorpayOrderResponse, RazorpayVerifyRequest, RechargeResponse
 from .services import DomainError, client_ip, credit_wallet, enforce_topup_integrity, expected_order_paise, flag_suspicious_payment, get_gst_rate, get_platform_razorpay_keys, quote_credits, require_channel_active, require_min_recharge, resolve_rate_card, resolve_user_entity
 
@@ -31,7 +32,7 @@ def _client(db: Session) -> tuple[razorpay.Client, str]:
 
 
 @router.post("/order", response_model=RazorpayOrderResponse)
-def create_order(payload: RazorpayOrderRequest, request: Request, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def create_order(payload: RazorpayOrderRequest, request: Request, user: User = Depends(require_capability("wallet:recharge")), db: Session = Depends(get_db)):
     client, key_id = _client(db)
     try:
         entity = resolve_user_entity(db, user)
@@ -64,7 +65,7 @@ def create_order(payload: RazorpayOrderRequest, request: Request, user: User = D
 
 
 @router.post("/verify", response_model=RechargeResponse)
-def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def verify_payment(payload: RazorpayVerifyRequest, user: User = Depends(require_capability("wallet:recharge")), db: Session = Depends(get_db)):
     client, _ = _client(db)
     try:
         entity = resolve_user_entity(db, user)

@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_minutes: int = 60
     web_origin: str = "http://localhost:5173"
-    environment: str = "development"
+    # Production unless explicitly opted out -- a missing ENVIRONMENT must never turn on the dev-only
+    # shortcuts (OTP echo, /docs, Turnstile skip, free self-service recharge).
+    environment: str = "production"
     admin_bootstrap_key: str = "development-admin-key-change-me"
     worker_key: str = "development-worker-key-change-me"
+    # Optional comma-separated IPs allowed to use X-Admin-Key (break-glass). Blank = any IP.
+    admin_key_allowed_ips: str = ""
     provider_secret_key: str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="  # dev-only placeholder Fernet key; override in .env
     # Cloudflare Turnstile credentials (turnstile.py) -- .env-level fallback only. The primary,
     # admin-UI-editable source is the PlatformTurnstileSettings DB row (services.
@@ -93,14 +97,15 @@ if settings.environment != "development":
     # ADMIN_BOOTSTRAP_KEY, WORKER_KEY) or a complete break of every "encrypted" secret in the
     # system (PROVIDER_SECRET_KEY) -- fail at import time, before the app can serve a single
     # request, rather than relying on a per-request check that only catches the exact placeholder.
+    PLACEHOLDER_PREFIXES = ("development-", "replace-with-")  # dev defaults + the .env.example placeholders
     MIN_SECRET_LENGTH = 20  # same floor as the API key length already enforced elsewhere (main.py)
-    if settings.jwt_secret == "development-only-change-me" or len(settings.jwt_secret) < MIN_SECRET_LENGTH:
+    if settings.jwt_secret.startswith(PLACEHOLDER_PREFIXES) or len(settings.jwt_secret) < MIN_SECRET_LENGTH:
         raise RuntimeError("JWT_SECRET must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
     if settings.provider_secret_key == "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=":
         raise RuntimeError("PROVIDER_SECRET_KEY must be set to a real generated Fernet key outside development (see .env.example)")
-    if settings.admin_bootstrap_key.startswith("development-") or len(settings.admin_bootstrap_key) < MIN_SECRET_LENGTH:
+    if settings.admin_bootstrap_key.startswith(PLACEHOLDER_PREFIXES) or len(settings.admin_bootstrap_key) < MIN_SECRET_LENGTH:
         raise RuntimeError("ADMIN_BOOTSTRAP_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
-    if settings.worker_key.startswith("development-") or len(settings.worker_key) < MIN_SECRET_LENGTH:
+    if settings.worker_key.startswith(PLACEHOLDER_PREFIXES) or len(settings.worker_key) < MIN_SECRET_LENGTH:
         raise RuntimeError("WORKER_KEY must be set to a real, unique secret (at least 20 characters) outside development (see .env.example)")
     if settings.turnstile_secret == "development-turnstile-secret-change-me":
         # Deliberately a warning, not a RuntimeError like the four above -- unlike those, this one

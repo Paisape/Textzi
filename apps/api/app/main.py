@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from .config import settings
-from .admin import router as admin_router, require_admin
+from .admin import router as admin_router, require_admin, require_admin_recent_2fa
 from .admin_wallet import router as admin_wallet_router
 from .archive_jobs import run as run_archive_job
 from .auth import router as auth_router
@@ -89,6 +89,16 @@ app = FastAPI(
     redoc_url="/redoc" if settings.environment == "development" else None,
     openapi_url="/openapi.json" if settings.environment == "development" else None,
 )
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000"
+    return response
+
+
 app.add_middleware(CORSMiddleware, allow_origins=[settings.web_origin], allow_credentials=False, allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE"], allow_headers=["*"])
 app.include_router(admin_router)
 app.include_router(admin_wallet_router)
@@ -213,7 +223,7 @@ def send_sms(payload: ApiSmsSendRequest, request: Request, x_api_key: str = Head
         # /v1/internal/messages/{id}/dispatch on its own. Inline dispatch blocks this response on
         # the provider's own network latency (bounded by each provider adapter's own timeout,
         # currently 10s) -- acceptable for now given nothing else drives delivery, but a real
-        # async worker consuming the already-provisioned RabbitMQ/Redis is the right fix before
+        # async worker consuming a queue is the right fix before
         # this needs to handle meaningful throughput.
         run_dispatch(db, message)
         db.refresh(message)
@@ -395,7 +405,7 @@ def dispatch_message(message_id: str, db: Session = Depends(get_db)):
     return run_dispatch(db, message)
 
 
-@app.get("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin)])
+@app.get("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def list_route_policies(db: Session = Depends(get_db)):
     """subject_id for a "user"/"entity" policy is the real internal User.id/Entity.id (a UUID)
     -- meaningless on its own in the admin UI, so this batch-resolves a human label for every
@@ -421,7 +431,7 @@ def list_route_policies(db: Session = Depends(get_db)):
     ]
 
 
-@app.post("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin)])
+@app.post("/v1/admin/route-policies", tags=["routing"], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def upsert_route_policy(payload: RoutePolicyRequest, db: Session = Depends(get_db)):
     policy = db.scalar(select(RoutePolicy).where(RoutePolicy.subject_type == payload.subject_type, RoutePolicy.subject_id == payload.subject_id))
     if policy: policy.routes = payload.routes
@@ -430,7 +440,7 @@ def upsert_route_policy(payload: RoutePolicyRequest, db: Session = Depends(get_d
     return {"id": policy.id, "subject_type": policy.subject_type, "subject_id": policy.subject_id, "routes": policy.routes}
 
 
-@app.delete("/v1/admin/route-policies/{policy_id}", tags=["routing"], dependencies=[Depends(require_admin)])
+@app.delete("/v1/admin/route-policies/{policy_id}", tags=["routing"], dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
 def delete_route_policy(policy_id: str, db: Session = Depends(get_db)):
     policy = db.get(RoutePolicy, policy_id)
     if not policy:

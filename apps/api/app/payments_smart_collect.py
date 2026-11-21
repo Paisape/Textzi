@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 
 from .admin import require_admin, require_admin_recent_2fa
 from .auth import require_user
+from .permissions import require_capability
 from .channels import _consume_api_key_otp, _issue_api_key_otp
 from .database import SessionLocal, get_db
 from .invoicing import create_draft_invoice, issue_invoice
@@ -185,7 +186,7 @@ def _bank_transfer_request_out(row: BankTransferTopupRequest) -> BankTransferTop
 def submit_bank_transfer_request(
     transfer_date: str = Form(...), mode: str = Form(...), amount: float = Form(...), utr_number: str = Form(...),
     notes: str | None = Form(default=None), receipt: UploadFile = File(...),
-    user: User = Depends(require_user), db: Session = Depends(get_db),
+    user: User = Depends(require_capability("wallet:recharge")), db: Session = Depends(get_db),
 ):
     """Customer submits an "I sent a bank transfer" claim for manual admin verification --
     amount/date/UTR are exactly what the customer reports, not verified against anything at
@@ -444,12 +445,12 @@ def reconcile_smart_collect_account(db: Session, virtual_account: "RazorpayVirtu
 # --- Spending the Textzi Wallet (OTP-gated) --------------------------------------------------
 
 @router.post("/spend/request-otp", response_model=ApiKeyOtpResponse)
-def request_wallet_spend_otp(payload: WalletSpendOtpRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def request_wallet_spend_otp(payload: WalletSpendOtpRequest, user: User = Depends(require_capability("wallet:recharge")), db: Session = Depends(get_db)):
     return _issue_api_key_otp(db, user, "wallet_spend")
 
 
 @router.post("/spend/sms-credit", response_model=RechargeResponse)
-def spend_wallet_on_sms_credit(payload: TextziWalletSpendSmsRequest, user: User = Depends(require_user), db: Session = Depends(get_db)):
+def spend_wallet_on_sms_credit(payload: TextziWalletSpendSmsRequest, user: User = Depends(require_capability("wallet:recharge")), db: Session = Depends(get_db)):
     if not payment_method_config(db, "razorpay_smart_collect").enabled:
         raise HTTPException(status_code=422, detail="Textzi Wallet payment is not available right now")
     entity = _resolve_entity(db, user)
