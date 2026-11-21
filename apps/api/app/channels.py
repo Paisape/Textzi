@@ -176,9 +176,6 @@ def _dlt_status(db: Session, entity_id: str) -> str:
     )
     if pending_request:
         return "pending_review"
-    has_pending_pe = db.scalar(select(PeId).where(PeId.entity_id == entity_id, PeId.status == Status.pending).limit(1)) is not None
-    if has_pending_pe:
-        return "pending_review"
     return "not_started"
 
 
@@ -361,8 +358,8 @@ def submit_self_service_dlt(
     db: Session = Depends(get_db),
 ):
     """A customer who already has their own DLT registration self-declares it here, uploads
-    the PE certificate as proof. The PE ID and header start as pending until an admin has checked
-    the certificate (a customer must not be able to claim any sender ID and send as it). Also
+    the PE certificate as proof, and it's approved immediately -- no admin review, matching how
+    admin-created DLT assets already go active on creation without an approval step. Also
     requires confirming the PE-TM chain mapping request (see PeId.pe_tm_mapping_confirmed) --
     since Textzi never touches their DLT registration in this flow, linking it to Textzi's own
     Telemarketer ID is something only the customer can do, from their own operator login. A plain
@@ -377,12 +374,12 @@ def submit_self_service_dlt(
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == pe_value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
     stored_path, _ = save_upload(certificate, f"pe-certificates/{entity.id}")
-    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_confirmed=True, status=Status.pending)
+    pe = PeId(entity_id=entity.id, value=pe_value, operator=operator, certificate_path=stored_path, pe_tm_mapping_confirmed=True, status=Status.active)
     db.add(pe); db.flush()
-    header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.pending)
+    header = Header(pe_id=pe.id, header_id=header_id, value=header_value, status=Status.active)
     db.add(header)
     db.commit(); db.refresh(pe); db.refresh(header)
-    return {"pe_id": pe.id, "header_id": header.id, "status": "pending_review"}
+    return {"pe_id": pe.id, "header_id": header.id, "status": "approved"}
 
 
 PAN_PATTERN = re.compile(r"[A-Z]{5}[0-9]{4}[A-Z]")
@@ -650,7 +647,7 @@ def create_my_pe_id(value: str = Form(...), operator: str = Form(...), user: Use
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if db.scalar(select(PeId).where(PeId.entity_id == entity.id, PeId.value == value)):
         raise HTTPException(status_code=409, detail="This PE ID is already registered for your account")
-    pe = PeId(entity_id=entity.id, value=value, operator=operator, status=Status.pending)  # active only once an admin approves it
+    pe = PeId(entity_id=entity.id, value=value, operator=operator, status=Status.active)
     db.add(pe)
     try:
         db.commit()
@@ -673,7 +670,7 @@ def create_my_header(pe_id: str, header_id: str = Form(...), value: str = Form(.
         raise HTTPException(status_code=404, detail="PE ID not found")
     if db.scalar(select(Header).where(Header.pe_id == pe_id, Header.header_id == header_id)):
         raise HTTPException(status_code=409, detail="This DLT header id is already registered for this PE ID")
-    header = Header(pe_id=pe_id, header_id=header_id, value=value, status=Status.pending)  # active only once an admin approves it
+    header = Header(pe_id=pe_id, header_id=header_id, value=value, status=Status.active)
     db.add(header)
     try:
         db.commit()
