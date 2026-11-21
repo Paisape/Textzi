@@ -121,7 +121,10 @@ def save_upload(upload: UploadFile, subdir: str) -> tuple[str, bytes]:
     content = upload.file.read(MAX_UPLOAD_BYTES + 1)
     if len(content) > MAX_UPLOAD_BYTES:
         raise HTTPException(status_code=422, detail="File is too large (max 10MB).")
-    if not content.startswith(UPLOAD_MAGIC_BYTES[ext]):
+    magic = UPLOAD_MAGIC_BYTES[ext]
+    # PDFs may carry a few junk bytes before the header (the spec allows the first 1KB)
+    header_ok = magic in content[:1024] if ext == ".pdf" else content.startswith(magic)
+    if not header_ok:
         raise HTTPException(status_code=422, detail="File content does not match its extension.")
     directory = os.path.join(settings.uploads_dir, subdir)
     os.makedirs(directory, exist_ok=True)
