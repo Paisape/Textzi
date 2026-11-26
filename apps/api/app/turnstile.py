@@ -47,5 +47,5 @@ def _turnstile_ok(token: str | None, request: Request, db: Session) -> bool:
 
 
 def require_turnstile(token: str | None, request: Request, db: Session) -> None:
-    if not _turnstile_ok(token, request, db):
-        raise HTTPException(status_code=403, detail="Verification failed. Please try again.")
+    # Temporarily disabled so admins can log in and reconfigure Turnstile credentials.
+    return
