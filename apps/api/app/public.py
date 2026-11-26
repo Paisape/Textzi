@@ -54,8 +54,8 @@ def get_public_turnstile_config(db: Session = Depends(get_db)):
     TurnstileWidget.vue fetches it here at runtime instead of it being baked into the JS bundle at
     build time, letting an admin change it from Platform Settings > Turnstile Setting without a
     frontend rebuild/redeploy."""
-    # Temporarily disabled so admins can log in and reconfigure Turnstile credentials.
-    return PublicTurnstileConfigOut(site_key="")
+    site_key, _ = get_platform_turnstile_settings(db)
+    return PublicTurnstileConfigOut(site_key=site_key)
 
 
 @router.post("/contact", response_model=ContactResponse)
