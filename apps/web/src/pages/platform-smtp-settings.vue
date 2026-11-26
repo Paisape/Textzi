@@ -33,12 +33,18 @@ const saveError = ref('')
 const saveSuccess = ref('')
 const saving = ref(false)
 
+const testEmail = ref('')
+const testing = ref(false)
+const testResult = ref<{ ok: boolean, detail: string } | null>(null)
+
 async function loadSettings() {
   loadError.value = ''
   try {
     await authStore.load()
     if (!authStore.isAdmin)
       return
+    if (!testEmail.value && authStore.profile?.email)
+      testEmail.value = authStore.profile.email
     const result = await $api<SmtpSettings>('/v1/admin/platform/smtp-settings')
     host.value = result.host ?? ''
     port.value = result.port
@@ -77,6 +83,23 @@ async function onSave() {
   }
   finally {
     saving.value = false
+  }
+}
+
+async function onSendTestEmail() {
+  testResult.value = null
+  testing.value = true
+  try {
+    testResult.value = await $api('/v1/admin/platform/smtp-settings/test', {
+      method: 'POST',
+      body: { to_email: testEmail.value.trim() },
+    })
+  }
+  catch (error: any) {
+    testResult.value = { ok: false, detail: extractErrorMessage(error, 'Could not send test email.') }
+  }
+  finally {
+    testing.value = false
   }
 }
 
@@ -193,6 +216,50 @@ onMounted(loadSettings)
               :loading="saving"
             >
               Save
+            </VBtn>
+          </VCol>
+        </VRow>
+      </VForm>
+
+      <VDivider class="my-6" />
+
+      <h2 class="text-subtitle-1 font-weight-medium mb-1">
+        Send Test Email
+      </h2>
+      <p class="text-body-2 text-medium-emphasis mb-4">
+        Sends a test email using the currently saved SMTP settings.
+      </p>
+
+      <VAlert
+        v-if="testResult"
+        :type="testResult.ok ? 'success' : 'error'"
+        variant="tonal"
+        density="compact"
+        class="mb-4"
+      >
+        {{ testResult.detail }}
+      </VAlert>
+
+      <VForm @submit.prevent="onSendTestEmail">
+        <VRow align="end">
+          <VCol cols="12" sm="8">
+            <AppTextField
+              v-model="testEmail"
+              type="email"
+              label="Recipient email"
+              placeholder="admin@textzi.in"
+              :disabled="!configured"
+            />
+          </VCol>
+          <VCol cols="12" sm="4">
+            <VBtn
+              type="submit"
+              variant="tonal"
+              block
+              :loading="testing"
+              :disabled="!configured || !testEmail.trim()"
+            >
+              Send Test Email
             </VBtn>
           </VCol>
         </VRow>

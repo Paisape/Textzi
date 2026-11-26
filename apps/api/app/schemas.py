@@ -1356,6 +1356,15 @@ class PlatformSmtpSettingsUpdate(BaseModel):
     use_tls: bool = True
 
 
+class PlatformSmtpTestRequest(BaseModel):
+    to_email: EmailStr
+
+
+class SmtpTestResponse(BaseModel):
+    ok: bool
+    detail: str
+
+
 class PlatformR2SettingsOut(BaseModel):
     account_id: str | None
     access_key_id: str | None

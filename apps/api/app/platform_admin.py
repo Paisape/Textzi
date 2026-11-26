@@ -1,6 +1,7 @@
 """Admin-only configuration for the platform's own operational sending -- its SMS sender
 identity, its SMTP config, and its wallet. Deliberately separate from every tenant-facing router:
 this is Textzi's own infrastructure, not something any customer sees or touches."""
+import html
 import requests
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from sqlalchemy import select
@@ -10,12 +11,13 @@ from .admin import _caller_email, require_admin, require_admin_recent_2fa
 from .archiving import _r2_client
 from .auth import send_platform_test_sms
 from .database import get_db
+from .email_service import EmailMessage, SmtpEmailProvider, render_email
 from .models import PlatformGeneralSettings, PlatformR2Settings, PlatformRazorpaySettings, PlatformSmsSettings, PlatformSmtpSettings, PlatformTurnstileSettings, PlatformWallet, PlatformWalletTransaction, PlatformZohoSettings
 from .schemas import (
     PlatformGeneralSettingsOut, PlatformGeneralSettingsUpdate,
-    PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformRazorpaySettingsOut, PlatformRazorpaySettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate,
+    PlatformR2SettingsOut, PlatformR2SettingsUpdate, PlatformRazorpaySettingsOut, PlatformRazorpaySettingsUpdate, PlatformSmsSettingsOut, PlatformSmsSettingsUpdate, PlatformSmtpSettingsOut, PlatformSmtpSettingsUpdate, PlatformSmtpTestRequest,
     PlatformTestSmsRequest, PlatformTestSmsResponse, PlatformTurnstileSettingsOut, PlatformTurnstileSettingsUpdate, PlatformWalletOut, PlatformWalletTopupRequest, PlatformWalletTransactionOut,
-    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, TurnstileTestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
+    PlatformZohoSettingsOut, PlatformZohoSettingsUpdate, R2TestConnectionResponse, SmtpTestResponse, TurnstileTestConnectionResponse, ZohoAccountOut, ZohoConnectRequest, ZohoTaxRateOut,
 )
 from .security import encrypt_secret
 from .services import DomainError, credit_platform_wallet, get_gst_rate, get_platform_company_info, get_platform_razorpay_keys, get_platform_turnstile_settings, log_activity, mask_mobile
@@ -75,6 +77,28 @@ def update_smtp_settings(payload: PlatformSmtpSettingsUpdate, request: Request, 
     log_activity(db, None, "platform_smtp_settings_updated", "Platform SMTP settings updated.", actor_email=_caller_email(authorization, db), request=request)
     db.commit(); db.refresh(row)
     return PlatformSmtpSettingsOut(host=row.host, port=row.port, username=row.username, from_address=row.from_address, use_tls=row.use_tls, configured=bool(row.host))
+
+
+@router.post("/smtp-settings/test", response_model=SmtpTestResponse, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
+def test_smtp_settings(payload: PlatformSmtpTestRequest, request: Request, authorization: str | None = Header(default=None), db: Session = Depends(get_db)):
+    row = db.get(PlatformSmtpSettings, "platform")
+    if not row or not row.host:
+        return SmtpTestResponse(ok=False, detail="SMTP is not configured -- fill in and save your SMTP settings first.")
+    body_html = render_email(
+        "SMTP test email",
+        "<p>This is a test email from Textzi Platform SMTP Settings.</p>"
+        f"<p>Sent via <b>{html.escape(row.host)}:{row.port}</b> from <b>{html.escape(row.from_address)}</b>.</p>",
+    )
+    result = SmtpEmailProvider(row).send(EmailMessage(
+        to=str(payload.to_email),
+        subject="Textzi SMTP test email",
+        html_body=body_html,
+    ))
+    if not result.accepted:
+        return SmtpTestResponse(ok=False, detail=f"Failed to send test email: {result.error or 'Unknown SMTP error'}")
+    log_activity(db, None, "platform_smtp_test_sent", f"Test SMTP email sent to {payload.to_email}.", actor_email=_caller_email(authorization, db), request=request)
+    db.commit()
+    return SmtpTestResponse(ok=True, detail=f"Test email sent to {payload.to_email}.")
 
 
 @router.get("/r2-settings", response_model=PlatformR2SettingsOut, dependencies=[Depends(require_admin), Depends(require_admin_recent_2fa)])
